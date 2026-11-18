@@ -48,6 +48,86 @@ export interface GuildUpdateNodeInput {
   completed: boolean;
 }
 
+export interface GuildEvent {
+  id: number;
+  kind: string;
+  nodeId: number | null;
+  actorSubject: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface GuildEventListResponse {
+  items: GuildEvent[];
+  hasMore: boolean;
+  nextAfter: number;
+  latestId: number;
+  serverTime: string;
+}
+
+export interface GuildDueNodeItem {
+  id: number;
+  parentId: number | null;
+  title: string;
+  dueAt: string;
+  leaders: string[];
+  members: string[];
+  overdue: boolean;
+}
+
+export interface GuildDueNodesResponse {
+  items: GuildDueNodeItem[];
+  serverTime: string;
+}
+
+export interface GuildActivitySummaryNode {
+  id: number;
+  parentId: number | null;
+  title: string;
+  dueAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+}
+
+export interface GuildActivitySummaryComment {
+  id: number;
+  nodeId: number;
+  nodeTitle: string;
+  authorSubject: string;
+  bodyPreview: string;
+  createdAt: string;
+}
+
+export interface GuildActivitySummary {
+  start: string;
+  end: string;
+  snapshotAt: string;
+  createdCount: number;
+  completedCount: number;
+  commentCount: number;
+  openCount: number;
+  overdueCount: number;
+  createdNodes: GuildActivitySummaryNode[];
+  completedNodes: GuildActivitySummaryNode[];
+  recentComments: GuildActivitySummaryComment[];
+  overdueNodes: GuildActivitySummaryNode[];
+}
+
+export interface GuildDueNodesParams {
+  since?: string;
+  advanceHours?: number;
+  dueAfter?: string;
+  dueBefore?: string;
+  includeOverdue?: boolean;
+  limit?: number;
+}
+
+export interface GuildSseFrame {
+  id?: string;
+  event: string;
+  data: string;
+}
+
 export class GuildInternalClient {
   #apiUrl: string;
   #token: string;
@@ -213,10 +293,244 @@ export class GuildInternalClient {
     );
   }
 
-  async #request<T>(
+  public async moveNode(
+    actorSubject: string,
+    nodeId: number,
+    parentId: number | null,
+  ): Promise<GuildNodeDetail & { url: string }> {
+    const detail = await this.#request<GuildNodeDetail>(
+      "PUT",
+      `/api/internal/nodes/${nodeId}/move`,
+      actorSubject,
+      { parentId },
+    );
+
+    return { ...detail, url: this.nodeUrl(detail.id) };
+  }
+
+  public listEvents(after = 0, limit = 50): Promise<GuildEventListResponse> {
+    const params = new URLSearchParams({
+      after: String(after),
+      limit: String(limit),
+    });
+
+    return this.#serviceGet<GuildEventListResponse>(
+      `/api/internal/events?${params.toString()}`,
+    );
+  }
+
+  public listDueNodes(
+    query: GuildDueNodesParams = {},
+  ): Promise<GuildDueNodesResponse> {
+    const params = new URLSearchParams();
+
+    if (query.since) {
+      params.set("since", query.since);
+    }
+
+    if (query.advanceHours !== undefined) {
+      params.set("advanceHours", String(query.advanceHours));
+    }
+
+    if (query.dueAfter) {
+      params.set("dueAfter", query.dueAfter);
+    }
+
+    if (query.dueBefore) {
+      params.set("dueBefore", query.dueBefore);
+    }
+
+    if (query.includeOverdue !== undefined) {
+      params.set("includeOverdue", String(query.includeOverdue));
+    }
+
+    if (query.limit !== undefined) {
+      params.set("limit", String(query.limit));
+    }
+
+    const qs = params.toString();
+
+    return this.#serviceGet<GuildDueNodesResponse>(
+      qs ? `/api/internal/due-nodes?${qs}` : "/api/internal/due-nodes",
+    );
+  }
+
+  public getActivitySummary(
+    start?: string,
+    end?: string,
+  ): Promise<GuildActivitySummary> {
+    const params = new URLSearchParams();
+
+    if (start) {
+      params.set("start", start);
+    }
+
+    if (end) {
+      params.set("end", end);
+    }
+
+    const qs = params.toString();
+
+    return this.#serviceGet<GuildActivitySummary>(
+      qs
+        ? `/api/internal/activity-summary?${qs}`
+        : "/api/internal/activity-summary",
+    );
+  }
+
+  public async *streamEvents(
+    after: number | undefined,
+    signal: AbortSignal,
+    onOpen?: () => void,
+  ): AsyncGenerator<GuildSseFrame> {
+    if (!this.enabled) {
+      throw new Error(
+        "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
+      );
+    }
+
+    const qs =
+      after === undefined ? "" : `?after=${encodeURIComponent(String(after))}`;
+    const res = await fetch(`${this.#apiUrl}/api/internal/events/stream${qs}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${this.#token}`,
+        Accept: "text/event-stream",
+        ...(after === undefined ? {} : { "Last-Event-ID": String(after) }),
+      },
+      signal,
+    });
+
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as {
+        message?: string;
+        error?: string;
+      };
+
+      throw new Error(
+        data.message || data.error || `Guild SSE HTTP ${res.status}`,
+      );
+    }
+
+    if (!res.body) {
+      throw new Error("Guild SSE response body is empty");
+    }
+
+    onOpen?.();
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let eventName = "message";
+    let eventId: string | undefined;
+    let dataLines: string[] = [];
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+
+        while (true) {
+          const nlIndex = buffer.indexOf("\n");
+
+          if (nlIndex === -1) {
+            break;
+          }
+
+          let line = buffer.slice(0, nlIndex);
+
+          buffer = buffer.slice(nlIndex + 1);
+
+          if (line.endsWith("\r")) {
+            line = line.slice(0, -1);
+          }
+
+          if (line === "") {
+            if (dataLines.length > 0) {
+              yield {
+                ...(eventId === undefined ? {} : { id: eventId }),
+                event: eventName,
+                data: dataLines.join("\n"),
+              };
+            }
+
+            eventName = "message";
+            eventId = undefined;
+            dataLines = [];
+
+            continue;
+          }
+
+          if (line.startsWith(":")) {
+            continue;
+          }
+
+          const colon = line.indexOf(":");
+          const field = colon === -1 ? line : line.slice(0, colon);
+          const rawValue = colon === -1 ? "" : line.slice(colon + 1);
+          const fieldValue = rawValue.startsWith(" ")
+            ? rawValue.slice(1)
+            : rawValue;
+
+          switch (field) {
+            case "id": {
+              eventId = fieldValue;
+
+              break;
+            }
+
+            case "event": {
+              eventName = fieldValue || "message";
+
+              break;
+            }
+
+            case "data": {
+              dataLines.push(fieldValue);
+
+              break;
+            }
+          }
+        }
+      }
+    } finally {
+      await reader.cancel().catch(() => undefined);
+    }
+  }
+
+  #serviceGet<T>(path: string): Promise<T> {
+    return this.#fetchJson<T>("GET", path, {
+      Authorization: `Bearer ${this.#token}`,
+    });
+  }
+
+  #request<T>(
     method: string,
     path: string,
     actorSubject: string,
+    body?: unknown,
+  ): Promise<T> {
+    return this.#fetchJson<T>(
+      method,
+      path,
+      {
+        "Authorization": `Bearer ${this.#token}`,
+        "X-Act-As-Subject": actorSubject,
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body,
+    );
+  }
+
+  async #fetchJson<T>(
+    method: string,
+    path: string,
+    headers: Record<string, string>,
     body?: unknown,
   ): Promise<T> {
     if (!this.enabled) {
@@ -227,11 +541,7 @@ export class GuildInternalClient {
 
     const res = await fetch(`${this.#apiUrl}${path}`, {
       method,
-      headers: {
-        "Authorization": `Bearer ${this.#token}`,
-        "X-Act-As-Subject": actorSubject,
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      },
+      headers,
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: AbortSignal.timeout(15_000),
     });

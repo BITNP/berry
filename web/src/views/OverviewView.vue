@@ -74,7 +74,6 @@ interface OverviewResponse {
   gate24h: { reply: number; memory: number; ignore: number };
   chatCount: number;
   activeChatCount: number;
-  todayCalls: number;
   todayUsage: {
     calls: number;
     inputTokens: number;
@@ -83,7 +82,7 @@ interface OverviewResponse {
     totalTokens: number;
   };
   guildApiConfigured: boolean;
-  guildDatabaseConfigured: boolean;
+  guildStreamConnected: boolean;
   keycloakConfigured: boolean;
   mcpServers: McpStatus[];
   storage: StorageSummary;
@@ -133,8 +132,11 @@ interface ConversationView {
   messages: {
     role: string;
     content: string | null;
-    name?: string;
-    timestamp: number;
+    tool_call_id?: string;
+    tool_calls?: {
+      id: string;
+      function: { name: string; arguments: string };
+    }[];
   }[];
   pendingResults: {
     module: string;
@@ -600,7 +602,7 @@ onMounted(() => {
       <div class="metric-cell">
         <span class="metric-label">今日模型调用</span>
         <span class="metric-value">
-          {{ overview.todayCalls }}
+          {{ overview.todayUsage.calls }}
         </span>
       </div>
       <div class="metric-cell">
@@ -667,11 +669,9 @@ onMounted(() => {
         </NTag>
         <NTag
           size="small"
-          :type="overview.guildDatabaseConfigured ? 'success' : 'default'"
+          :type="overview.guildStreamConnected ? 'success' : 'default'"
         >
-          公会只读库：{{
-            overview.guildDatabaseConfigured ? "已连接" : "未配置"
-          }}
+          公会事件流：{{ overview.guildStreamConnected ? "已连接" : "未连接" }}
         </NTag>
         <NTag
           size="small"
@@ -889,13 +889,30 @@ onMounted(() => {
             >
               <div class="turn-head">
                 <NTag size="tiny">{{ turn.role }}</NTag>
-                <span v-if="turn.name" class="mono">{{ turn.name }}</span>
-                <span class="tabular ml-auto turn-time">
-                  {{ formatTime(turn.timestamp) }}
+                <NTag
+                  v-for="call in turn.tool_calls ?? []"
+                  :key="call.id"
+                  size="tiny"
+                  type="info"
+                >
+                  {{ call.function.name }}
+                </NTag>
+                <span v-if="turn.tool_call_id" class="mono">
+                  {{ turn.tool_call_id }}
                 </span>
               </div>
               <pre class="code-block mt-xs">{{
-                turn.content || "(tool call)"
+                turn.content ||
+                (turn.tool_calls?.length
+                  ? JSON.stringify(
+                      turn.tool_calls.map((c) => ({
+                        tool: c.function.name,
+                        args: c.function.arguments,
+                      })),
+                      null,
+                      2,
+                    )
+                  : "(empty)")
               }}</pre>
             </div>
           </NSpace>

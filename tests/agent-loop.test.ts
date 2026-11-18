@@ -165,12 +165,10 @@ test("agent loop mechanics: byte-static systemPrompt, one-shot OutputResult feed
       {
         role: "user" as const,
         content: `问题 ${idx} ${"长内容".repeat(200)}`,
-        timestamp: Date.now(),
       },
       {
         role: "assistant" as const,
         content: `回答 ${idx} ${"详情".repeat(200)}`,
-        timestamp: Date.now(),
       },
     ]).flat();
     const conv = await app.store.conversations.open();

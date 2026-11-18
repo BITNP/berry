@@ -1,16 +1,7 @@
-import { jsonrepair } from "jsonrepair";
 import { Type } from "typebox";
-import * as Value from "typebox/value";
 
 import type { RuntimeSettings } from "../config/settings.ts";
-import type { MessageGatewayClient } from "../gateway/client.ts";
-import type { GuildInternalClient } from "../guild/client.ts";
-import type { IdentityDirectory } from "../identity/keycloak.ts";
-import type { KnowledgeBase } from "../knowledge/files.ts";
-import type { McpHub } from "../mcp/hub.ts";
-import type { MediaProcessor } from "../media/processor.ts";
-import type { Store } from "../store/index.ts";
-import { buildMainTools } from "../tools/index.ts";
+import { buildMainTools, createMemoryManageTool } from "../tools/index.ts";
 import type {
   ChatKey,
   MessageRecord,
@@ -21,6 +12,7 @@ import type {
 import { parseChatKey } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage, estimateTokens, formatDateTime } from "../utils/time.ts";
+import type { AgentServices } from "./loop.ts";
 import { runChatToolLoop } from "./loop.ts";
 import { ModelIds } from "./model-ids.ts";
 import { buildStaticSystemPrompt, resultsAsText } from "./prompt.ts";
@@ -67,51 +59,35 @@ const agentOutputSchema = Type.Object(
   { additionalProperties: false },
 );
 
+const compactionOutputSchema = Type.Object(
+  {
+    summary: Type.String({ minLength: 1 }),
+  },
+  { additionalProperties: false },
+);
+
 const COMPACTION_MAX_MESSAGES = 100;
 const COMPACTION_KEEP_RECENT_TURNS = 12;
 
 export class BerryAgent {
-  #store: Store;
-  #gateway: MessageGatewayClient;
-  #media: MediaProcessor;
-  #knowledge: KnowledgeBase;
-  #directory: IdentityDirectory;
-  #guild: GuildInternalClient;
-  #mcp: McpHub;
-  #getSettings: () => RuntimeSettings;
+  #services: AgentServices;
   #logger = new Logger("agent");
   #compacting = false;
 
-  constructor(options: {
-    store: Store;
-    gateway: MessageGatewayClient;
-    media: MediaProcessor;
-    knowledge: KnowledgeBase;
-    directory: IdentityDirectory;
-    guild: GuildInternalClient;
-    mcp: McpHub;
-    getSettings: () => RuntimeSettings;
-  }) {
-    this.#store = options.store;
-    this.#gateway = options.gateway;
-    this.#media = options.media;
-    this.#knowledge = options.knowledge;
-    this.#directory = options.directory;
-    this.#guild = options.guild;
-    this.#mcp = options.mcp;
-    this.#getSettings = options.getSettings;
+  constructor(services: AgentServices) {
+    this.#services = services;
   }
 
   public async invoke(input: UnifiedInput): Promise<{
     units: OutputUnit[];
     mutated: boolean;
   }> {
-    const settings = this.#getSettings();
-    const allChats = await this.#store.chats.list();
+    const { store, gateway, media, directory, guild, mcp } = this.#services;
+    const settings = this.#services.getSettings();
+    const allChats = await store.chats.list();
     const chat = allChats.find((c) => c.chatKey === input.chatKey) ?? null;
-    const conversation = await this.#store.conversations.open();
-    const drainedResults =
-      await this.#store.conversations.drainPendingResults();
+    const conversation = await store.conversations.open();
+    const drainedResults = await store.conversations.drainPendingResults();
     const feedText = resultsAsText(drainedResults);
 
     const ids = new ModelIds();
@@ -130,7 +106,7 @@ export class BerryAgent {
         : ids.userRef(input.chatId);
 
     const requestMessages = (
-      await this.#store.messages.getByIds(input.triggerMessageIds)
+      await store.messages.getByIds(input.triggerMessageIds)
     ).filter(
       (m) => m.recalledAt === null && m.id > conversation.afterMessageId,
     );
@@ -146,7 +122,7 @@ export class BerryAgent {
         continue;
       }
 
-      const quoted = await this.#store.messages.findByOnebotId(
+      const quoted = await store.messages.findByOnebotId(
         input.chatKey,
         reqMsg.replyToMessageId,
       );
@@ -159,10 +135,10 @@ export class BerryAgent {
     const firstId = requestMessages[0]?.id;
     const recentContext =
       firstId === undefined
-        ? await this.#store.messages.recent(input.chatKey, 12, {
+        ? await store.messages.recent(input.chatKey, 12, {
             afterId: conversation.afterMessageId,
           })
-        : await this.#store.messages.recent(input.chatKey, 20, {
+        : await store.messages.recent(input.chatKey, 20, {
             beforeId: firstId,
             afterId: conversation.afterMessageId,
           });
@@ -171,19 +147,19 @@ export class BerryAgent {
     const speakerName =
       input.senderName ?? requestMessages.at(-1)?.senderName ?? null;
     const identityUser = speakerQQ
-      ? await this.#directory.byQQ(speakerQQ).catch(() => null)
+      ? await directory.byQQ(speakerQQ).catch(() => null)
       : null;
 
-    const memoryIndex = await this.#store.memories.index(
+    const memoryIndex = await store.memories.index(
       input.chatKey,
       speakerQQ ?? undefined,
     );
 
-    await this.#media.waitForMessages([
+    await media.waitForMessages([
       ...requestMessages.map((m) => m.id),
       ...quotedMessages.map((m) => m.id),
     ]);
-    const enrichedText = await this.#media.enrichMessagesText(input.chatKey, [
+    const enrichedText = await media.enrichMessagesText(input.chatKey, [
       ...requestMessages,
       ...quotedMessages,
       ...recentContext,
@@ -267,64 +243,34 @@ export class BerryAgent {
 
     const systemPrompt = buildStaticSystemPrompt({
       personaPrompt: settings.bot.personaPrompt,
-      mcpTools: this.#mcp.tools,
-      guildEnabled: this.#guild.enabled,
+      mcpTools: mcp.tools,
+      guildEnabled: guild.enabled,
     });
 
-    const tools = buildMainTools({
-      chatKey: input.chatKey,
-      senderQQ: speakerQQ,
-      actorSubject: identityUser?.subject ?? null,
-      actorName: identityUser?.name ?? speakerName,
-      actorIsAdmin,
-      triggerMessageId: requestMessages.at(-1)?.id ?? null,
-      settings,
-      store: this.#store,
-      gateway: this.#gateway,
-      media: this.#media,
-      knowledge: this.#knowledge,
-      directory: this.#directory,
-      guild: this.#guild,
-      mcp: this.#mcp,
+    const tools = buildMainTools(
+      this.#services,
+      {
+        chatKey: input.chatKey,
+        senderQQ: speakerQQ,
+        actorSubject: identityUser?.subject ?? null,
+        actorName: identityUser?.name ?? speakerName,
+        actorIsAdmin,
+        triggerMessageId: requestMessages.at(-1)?.id ?? null,
+      },
       ids,
-    });
+    );
 
-    const result = await runChatToolLoop<{ units: OutputUnit[] }>({
+    const result = await runChatToolLoop({
       purpose: "dialog",
       chatKey: input.chatKey,
       settings,
-      store: this.#store,
+      store,
       systemPrompt,
       history: conversation.messages,
       userContent,
       tools,
       maxRounds: 12,
-      validateFinal: (text) => {
-        try {
-          let parsed: unknown;
-
-          try {
-            parsed = JSON.parse(text);
-          } catch {
-            parsed = JSON.parse(jsonrepair(text));
-          }
-
-          if (!Value.Check(agentOutputSchema, parsed)) {
-            const errs = [...Value.Errors(agentOutputSchema, parsed)]
-              .map((err) => `${err.instancePath || "/"} ${err.message}`)
-              .join("; ");
-
-            return { ok: false, issue: errs };
-          }
-
-          return { ok: true, value: parsed };
-        } catch (error) {
-          return {
-            ok: false,
-            issue: `JSON 解析失败: ${errorMessage(error)}`,
-          };
-        }
-      },
+      outputSchema: agentOutputSchema,
     });
 
     // Resolve opaque quote, reaction, and optional targetRef handles back to real OneBot IDs.
@@ -466,7 +412,7 @@ export class BerryAgent {
     }
 
     for (const dispatch of plannedDispatches) {
-      await this.#gateway.dispatchUnit(
+      await gateway.dispatchUnit(
         dispatch.targetChatKey,
         dispatch.unit,
         settings.bot.botQQ,
@@ -478,9 +424,8 @@ export class BerryAgent {
       const persistedUser: TurnMessage = {
         role: "user",
         content: cleanUserContent,
-        timestamp: Date.now(),
       };
-      const updated = await this.#store.conversations.appendTurn(
+      const updated = await store.conversations.appendTurn(
         conversation.sessionId,
         [persistedUser, ...result.turnMessages],
       );
@@ -503,54 +448,45 @@ export class BerryAgent {
     chatKey: ChatKey,
     messageId: number,
   ): Promise<void> {
-    const settings = this.#getSettings();
-    const message = await this.#store.messages.get(messageId);
+    const { store } = this.#services;
+    const settings = this.#services.getSettings();
+    const message = await store.messages.get(messageId);
 
     if (message?.recalledAt !== null) {
       return;
     }
 
-    const conversation = await this.#store.conversations.open();
+    const conversation = await store.conversations.open();
 
     if (message.id <= conversation.afterMessageId) {
       return;
     }
 
-    const context = await this.#store.messages.recent(chatKey, 12, {
+    const context = await store.messages.recent(chatKey, 12, {
       beforeId: message.id,
       afterId: conversation.afterMessageId,
     });
-    const memoryIndex = await this.#store.memories.index(
-      chatKey,
-      message.userId,
-    );
+    const memoryIndex = await store.memories.index(chatKey, message.userId);
     const ids = new ModelIds();
     const userRef = ids.userRef(message.userId);
-    const actorIsAdmin = settings.policy.adminQQs.includes(message.userId);
-
-    const tools = buildMainTools({
-      chatKey,
-      senderQQ: message.userId,
-      actorSubject: null,
-      actorName: message.senderName,
-      actorIsAdmin,
-      triggerMessageId: message.id,
-      settings,
-      store: this.#store,
-      gateway: this.#gateway,
-      media: this.#media,
-      knowledge: this.#knowledge,
-      directory: this.#directory,
-      guild: this.#guild,
-      mcp: this.#mcp,
+    const memoryTool = createMemoryManageTool(
+      this.#services,
+      {
+        chatKey,
+        senderQQ: message.userId,
+        actorSubject: null,
+        actorName: message.senderName,
+        actorIsAdmin: settings.policy.adminQQs.includes(message.userId),
+        triggerMessageId: message.id,
+      },
       ids,
-    }).filter((tool) => tool.name === "memory_manage");
+    );
 
     await runChatToolLoop({
       purpose: "memory_update",
       chatKey,
       settings,
-      store: this.#store,
+      store,
       systemPrompt:
         '你是树莓娘的静默记忆助手。结合上下文和已有记忆索引，如需要则调用 memory_manage 写入或更新长期事实（群排期、项目决策或成员稳定偏好），不向群聊发言。结束后输出 {"done":true}。',
       history: [],
@@ -567,9 +503,8 @@ export class BerryAgent {
         })),
         memoryIndex,
       }),
-      tools,
+      tools: [memoryTool],
       maxRounds: 4,
-      validateFinal: () => ({ ok: true, value: true }),
     });
   }
 
@@ -578,7 +513,8 @@ export class BerryAgent {
       return;
     }
 
-    const conversation = await this.#store.conversations.get();
+    const { store } = this.#services;
+    const conversation = await store.conversations.get();
 
     if (!conversation || conversation.messages.length === 0) {
       return;
@@ -646,11 +582,11 @@ export class BerryAgent {
     this.#compacting = true;
 
     try {
-      const res = await runChatToolLoop<{ summary: string }>({
+      const res = await runChatToolLoop({
         purpose: "compaction",
         chatKey: null,
         settings,
-        store: this.#store,
+        store,
         systemPrompt:
           '你是会话历史压缩器。将已有摘要和即将归档的历史对话合并为一份紧凑中文摘要，保留已确认结论、任务 ID、成员偏好和未决事项；丢弃冗余过程细节。只输出 JSON：{"summary":"..."}',
         history: [],
@@ -660,42 +596,20 @@ export class BerryAgent {
         }),
         tools: [],
         maxRounds: 2,
-        validateFinal: (text) => {
-          try {
-            let parsed: unknown;
-
-            try {
-              parsed = JSON.parse(text);
-            } catch {
-              parsed = JSON.parse(jsonrepair(text));
-            }
-
-            if (
-              !parsed ||
-              typeof parsed !== "object" ||
-              typeof (parsed as { summary?: unknown }).summary !== "string" ||
-              !(parsed as { summary: string }).summary.trim()
-            ) {
-              return { ok: false, issue: "必须返回非空字符串 summary" };
-            }
-
-            return {
-              ok: true,
-              value: {
-                summary: (parsed as { summary: string }).summary.trim(),
-              },
-            };
-          } catch (error) {
-            return { ok: false, issue: errorMessage(error) };
-          }
-        },
+        outputSchema: compactionOutputSchema,
       });
 
-      const saved = await this.#store.conversations.compact(
+      const summary = res.structured.summary.trim();
+
+      if (!summary) {
+        throw new Error("必须返回非空字符串 summary");
+      }
+
+      const saved = await store.conversations.compact(
         conversation.sessionId,
         conversation.summary,
         splitIndex,
-        res.structured.summary,
+        summary,
       );
 
       if (saved) {

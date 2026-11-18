@@ -1,3 +1,5 @@
+import type { ChatCompletionMessageFunctionToolCall } from "openai/resources/chat/completions";
+
 export const GLOBAL_CONVERSATION_KEY = "global";
 
 export type ChatKind = "group" | "private";
@@ -88,33 +90,17 @@ export interface OutputResult {
   createdAt: number;
 }
 
-export interface ToolCallRecord {
-  id: string;
-  type: "function";
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
-
 export type TurnMessage =
-  | {
-      role: "user";
-      content: string;
-      timestamp: number;
-    }
+  | { role: "user"; content: string }
   | {
       role: "assistant";
       content: string | null;
-      tool_calls?: ToolCallRecord[];
-      timestamp: number;
+      tool_calls?: ChatCompletionMessageFunctionToolCall[];
     }
   | {
       role: "tool";
       tool_call_id: string;
-      name: string;
       content: string;
-      timestamp: number;
     };
 
 export interface ConversationRecord {
@@ -253,13 +239,20 @@ export interface MemoryRecord {
   updatedAt: number;
 }
 
+export type GuildAuditAction =
+  | "create_node"
+  | "update_node"
+  | "move_node"
+  | "replace_members"
+  | "create_comment";
+
 export interface GuildAuditRecord {
   id: number;
   chatKey: string;
   qqUserId: string;
   actorSubject: string;
   actorName: string;
-  action: "create_node" | "update_node" | "replace_members" | "create_comment";
+  action: GuildAuditAction;
   nodeId: number | null;
   targetTitle: string;
   requestJson: string;

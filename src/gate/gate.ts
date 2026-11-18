@@ -71,10 +71,6 @@ export class MessageGate {
       return;
     }
 
-    if (settings.policy.allowlistEnabled && !chat.enabled) {
-      return;
-    }
-
     if (
       message.kind === "group" &&
       chat.triggerMode === "mention_only" &&

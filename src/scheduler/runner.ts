@@ -1,53 +1,22 @@
+import type { AgentServices } from "../agent/loop.ts";
 import { ModelIds } from "../agent/model-ids.ts";
 import { runSubagent } from "../agent/subagents.ts";
-import type { RuntimeSettings } from "../config/settings.ts";
-import type { MessageGatewayClient } from "../gateway/client.ts";
-import type { GuildInternalClient } from "../guild/client.ts";
-import type { IdentityDirectory } from "../identity/keycloak.ts";
-import type { KnowledgeBase } from "../knowledge/files.ts";
-import type { McpHub } from "../mcp/hub.ts";
-import type { MediaProcessor } from "../media/processor.ts";
-import type { Store } from "../store/index.ts";
-import type { ChatKey, JobRecord } from "../types.ts";
+import type { ChatKey, JobRecord, ScheduleRecord } from "../types.ts";
 import { makeChatKey } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage, formatDateTime, formatDay } from "../utils/time.ts";
 
 export class ScheduleRunner {
-  #store: Store;
-  #gateway: MessageGatewayClient;
-  #media: MediaProcessor;
-  #knowledge: KnowledgeBase;
-  #directory: IdentityDirectory;
-  #guild: GuildInternalClient;
-  #mcp: McpHub;
-  #getSettings: () => RuntimeSettings;
+  #services: AgentServices;
   #wake: () => void;
   #logger = new Logger("scheduler");
   #timer: ReturnType<typeof setInterval> | null = null;
   #ticking = false;
   #lastDigestCheck = 0;
 
-  constructor(options: {
-    store: Store;
-    gateway: MessageGatewayClient;
-    media: MediaProcessor;
-    knowledge: KnowledgeBase;
-    directory: IdentityDirectory;
-    guild: GuildInternalClient;
-    mcp: McpHub;
-    getSettings: () => RuntimeSettings;
-    wake: () => void;
-  }) {
-    this.#store = options.store;
-    this.#gateway = options.gateway;
-    this.#media = options.media;
-    this.#knowledge = options.knowledge;
-    this.#directory = options.directory;
-    this.#guild = options.guild;
-    this.#mcp = options.mcp;
-    this.#getSettings = options.getSettings;
-    this.#wake = options.wake;
+  constructor(services: AgentServices, wake: () => void) {
+    this.#services = services;
+    this.#wake = wake;
   }
 
   public start(): void {
@@ -77,35 +46,16 @@ export class ScheduleRunner {
 
     try {
       const now = Date.now();
-      const settings = this.#getSettings();
-      const due = await this.#store.schedules.due(now);
+      const settings = this.#services.getSettings();
+      const due = await this.#services.store.schedules.due(now);
 
       for (const task of due) {
-        await this.#store.schedules.markFired(task, now, settings.bot.timezone);
-
-        const hasTarget = Boolean(task.kind && task.chatId);
-        const chatKey: ChatKey = hasTarget
-          ? makeChatKey(task.kind as "group" | "private", task.chatId)
-          : "private:0";
-
-        await this.#store.jobs.enqueue(
-          "invoke",
-          `schedule:${task.id}:${now}`,
-          chatKey,
-          {
-            source: "schedule",
-            chatKey,
-            kind: hasTarget ? (task.kind as "group" | "private") : "private",
-            chatId: hasTarget ? task.chatId : "0",
-            triggerMessageIds: [],
-            content: hasTarget
-              ? `定时任务触发「${task.title}」：${task.content}`
-              : `无目标聊天的后台定时任务触发「${task.title}」：${task.content}（请通过工具完成并将 units 返回为空数组 []）`,
-            metadata: { scheduleId: task.id },
-          },
+        await this.#services.store.schedules.markFired(
+          task,
           now,
+          settings.bot.timezone,
         );
-        this.#wake();
+        await this.#enqueueScheduleTask(task, now, "schedule", "触发");
       }
 
       if (
@@ -113,7 +63,7 @@ export class ScheduleRunner {
         now - this.#lastDigestCheck >= 30_000
       ) {
         this.#lastDigestCheck = now;
-        await this.#checkDigests(settings, now);
+        await this.#checkDigests(now);
       }
     } catch (error) {
       this.#logger.warn("Scheduler tick failed", {
@@ -124,49 +74,13 @@ export class ScheduleRunner {
     }
   }
 
-  async #checkDigests(settings: RuntimeSettings, now: number): Promise<void> {
-    const intervalMs = settings.groupDigest.intervalMinutes * 60 * 1000;
-
-    for (const groupId of settings.groupDigest.groups) {
-      const cursorKey = `digest_cursor:${groupId}`;
-      const saved = await this.#store.cursors.get(cursorKey);
-      const startMs = saved ? Number(saved) : now - intervalMs;
-
-      if (!saved) {
-        await this.#store.cursors.set(cursorKey, String(startMs));
-      }
-
-      if (now - startMs < intervalMs) {
-        continue;
-      }
-
-      const chatKey = makeChatKey("group", groupId);
-
-      await this.#store.jobs.enqueue(
-        "group_digest",
-        `digest:${groupId}:${startMs}-${now}`,
-        chatKey,
-        {
-          chatKey,
-          groupId,
-          startTimeMs: startMs,
-          endTimeMs: now,
-          prompt: settings.groupDigest.prompt,
-          uploadTool: settings.groupDigest.uploadTool,
-        },
-        now,
-      );
-      await this.#store.cursors.set(cursorKey, String(now));
-      this.#wake();
-    }
-  }
-
   public async runGroupDigest(job: JobRecord<"group_digest">): Promise<void> {
-    const settings = this.#getSettings();
+    const { store, knowledge, mcp } = this.#services;
+    const settings = this.#services.getSettings();
     const { chatKey, groupId, startTimeMs, endTimeMs, prompt, uploadTool } =
       job.payload;
 
-    const messages = await this.#store.messages.search(chatKey, {
+    const messages = await store.messages.search(chatKey, {
       startTimeMs,
       endTimeMs,
       limit: 400,
@@ -180,7 +94,7 @@ export class ScheduleRunner {
       return;
     }
 
-    const chat = await this.#store.chats.get(chatKey);
+    const chat = await store.chats.get(chatKey);
     const ids = new ModelIds();
     const gRef = ids.groupRef(groupId);
     const windowStartIso = new Date(startTimeMs).toISOString();
@@ -196,19 +110,14 @@ export class ScheduleRunner {
     const subagentResult = await runSubagent({
       kind: "chat_analyst",
       task,
-      chatKey,
-      senderQQ: null,
-      actorSubject: null,
-      actorName: null,
-      actorIsAdmin: true,
-      settings,
-      store: this.#store,
-      gateway: this.#gateway,
-      media: this.#media,
-      knowledge: this.#knowledge,
-      directory: this.#directory,
-      guild: this.#guild,
-      mcp: this.#mcp,
+      services: this.#services,
+      actor: {
+        chatKey,
+        senderQQ: null,
+        actorSubject: null,
+        actorName: null,
+        actorIsAdmin: true,
+      },
       ids,
     });
 
@@ -225,10 +134,10 @@ export class ScheduleRunner {
     const path = `group-digests/${groupId}/${day}-${stamp}.md`;
     const title = `群 ${groupId} 讨论摘要 (${day})`;
 
-    await this.#knowledge.writeNotebook(path, `# ${title}\n\n${markdown}\n`);
+    await knowledge.writeNotebook(path, `# ${title}\n\n${markdown}\n`);
 
     if (uploadTool) {
-      await this.#mcp.call(uploadTool, {
+      await mcp.call(uploadTool, {
         title,
         markdown,
         metadata: { groupId, startTimeMs, endTimeMs },
@@ -237,36 +146,18 @@ export class ScheduleRunner {
   }
 
   public async triggerScheduleNow(scheduleId: string): Promise<boolean> {
-    const task = await this.#store.schedules.get(scheduleId);
+    const task = await this.#services.store.schedules.get(scheduleId);
 
     if (!task) {
       return false;
     }
 
-    const now = Date.now();
-    const hasTarget = Boolean(task.kind && task.chatId);
-    const chatKey: ChatKey = hasTarget
-      ? makeChatKey(task.kind as "group" | "private", task.chatId)
-      : "private:0";
-
-    await this.#store.jobs.enqueue(
-      "invoke",
-      `schedule-manual:${task.id}:${now}`,
-      chatKey,
-      {
-        source: "schedule",
-        chatKey,
-        kind: hasTarget ? (task.kind as "group" | "private") : "private",
-        chatId: hasTarget ? task.chatId : "0",
-        triggerMessageIds: [],
-        content: hasTarget
-          ? `定时任务立即执行「${task.title}」：${task.content}`
-          : `无目标聊天的定时任务立即执行「${task.title}」：${task.content}（请通过工具完成并将 units 返回为空数组 []）`,
-        metadata: { scheduleId: task.id },
-      },
-      now,
+    await this.#enqueueScheduleTask(
+      task,
+      Date.now(),
+      "schedule-manual",
+      "立即执行",
     );
-    this.#wake();
 
     return true;
   }
@@ -276,10 +167,10 @@ export class ScheduleRunner {
     lookbackHours = 24,
   ): Promise<void> {
     const now = Date.now();
-    const settings = this.#getSettings();
+    const settings = this.#services.getSettings();
     const chatKey = makeChatKey("group", groupId);
 
-    await this.#store.jobs.enqueue(
+    await this.#services.store.jobs.enqueue(
       "group_digest",
       `digest-manual:${groupId}:${now}`,
       chatKey,
@@ -290,6 +181,76 @@ export class ScheduleRunner {
         endTimeMs: now,
         prompt: settings.groupDigest.prompt,
         uploadTool: settings.groupDigest.uploadTool,
+      },
+      now,
+    );
+    this.#wake();
+  }
+
+  async #checkDigests(now: number): Promise<void> {
+    const { store } = this.#services;
+    const settings = this.#services.getSettings();
+    const intervalMs = settings.groupDigest.intervalMinutes * 60 * 1000;
+
+    for (const groupId of settings.groupDigest.groups) {
+      const cursorKey = `digest_cursor:${groupId}`;
+      const saved = await store.cursors.get(cursorKey);
+      const startMs = saved ? Number(saved) : now - intervalMs;
+
+      if (!saved) {
+        await store.cursors.set(cursorKey, String(startMs));
+      }
+
+      if (now - startMs < intervalMs) {
+        continue;
+      }
+
+      const chatKey = makeChatKey("group", groupId);
+
+      await store.jobs.enqueue(
+        "group_digest",
+        `digest:${groupId}:${startMs}-${now}`,
+        chatKey,
+        {
+          chatKey,
+          groupId,
+          startTimeMs: startMs,
+          endTimeMs: now,
+          prompt: settings.groupDigest.prompt,
+          uploadTool: settings.groupDigest.uploadTool,
+        },
+        now,
+      );
+      await store.cursors.set(cursorKey, String(now));
+      this.#wake();
+    }
+  }
+
+  async #enqueueScheduleTask(
+    task: ScheduleRecord,
+    now: number,
+    dedupePrefix: string,
+    actionLabel: string,
+  ): Promise<void> {
+    const hasTarget = Boolean(task.kind && task.chatId);
+    const kind = hasTarget ? (task.kind as "group" | "private") : "private";
+    const chatId = hasTarget ? task.chatId : "0";
+    const chatKey: ChatKey = makeChatKey(kind, chatId);
+
+    await this.#services.store.jobs.enqueue(
+      "invoke",
+      `${dedupePrefix}:${task.id}:${now}`,
+      chatKey,
+      {
+        source: "schedule",
+        chatKey,
+        kind,
+        chatId,
+        triggerMessageIds: [],
+        content: hasTarget
+          ? `定时任务${actionLabel}「${task.title}」：${task.content}`
+          : `无目标聊天的定时任务${actionLabel}「${task.title}」：${task.content}（请通过工具完成并将 units 返回为空数组 []）`,
+        metadata: { scheduleId: task.id },
       },
       now,
     );

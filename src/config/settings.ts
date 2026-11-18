@@ -10,7 +10,7 @@ export const DEFAULT_PERSONA = `你是北京理工大学网络开拓者协会（
 性格可靠、亲切、直率不装腔，用自然口语和群友交流，避免官方套话与无意义感叹号。
 回答技术问题、协查任务或操作公会看板前，先核对事实与权限，不确定时不编造。`;
 
-const scheduleSpecSchema = Type.Union([
+export const scheduleSpecSchema = Type.Union([
   Type.Object({
     kind: Type.Literal("once"),
     at: Type.String({ minLength: 1 }),

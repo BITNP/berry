@@ -1,6 +1,4 @@
-import OpenAI from "openai";
-import postgres from "postgres";
-
+import { completeChat } from "../agent/llm.ts";
 import type { EnvConfig } from "../config/env.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
 import type { MessageGatewayClient } from "../gateway/client.ts";
@@ -12,9 +10,10 @@ import { computeNextRunAt } from "../store/schedules.ts";
 import { makeChatKey } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage, formatDateTime, formatDay } from "../utils/time.ts";
+import type { GuildEvent, GuildInternalClient } from "./client.ts";
 
 const DUE_CURSOR = "guild_due_cursor";
-const ASSIGN_CURSOR = "guild_assign_cursor";
+const EVENT_CURSOR = "guild_event_cursor";
 const WEEKLY_CURSOR = "guild_weekly_last_period";
 
 export function previousNaturalWeek(atMs = Date.now()): {
@@ -47,21 +46,27 @@ export function previousNaturalWeek(atMs = Date.now()): {
 }
 
 export class GuildAutomationRunner {
-  #sql: ReturnType<typeof postgres> | null = null;
+  #env: EnvConfig;
+  #guild: GuildInternalClient;
   #store: Store;
   #directory: IdentityDirectory;
   #gateway: MessageGatewayClient;
   #knowledge: KnowledgeBase;
   #mcp: McpHub;
-  #env: EnvConfig;
   #getSettings: () => RuntimeSettings;
   #logger = new Logger("guild:auto");
   #timer: ReturnType<typeof setInterval> | null = null;
+  #started = false;
   #running = false;
   #lastPollAt = 0;
+  #streamConnected = false;
+  #streamAbort: AbortController | null = null;
+  #streamPromise: Promise<void> | null = null;
+  #eventQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     env: EnvConfig,
+    guild: GuildInternalClient,
     store: Store,
     directory: IdentityDirectory,
     gateway: MessageGatewayClient,
@@ -70,55 +75,66 @@ export class GuildAutomationRunner {
     getSettings: () => RuntimeSettings,
   ) {
     this.#env = env;
+    this.#guild = guild;
     this.#store = store;
     this.#directory = directory;
     this.#gateway = gateway;
     this.#knowledge = knowledge;
     this.#mcp = mcp;
     this.#getSettings = getSettings;
-
-    if (env.guildDatabaseUrl) {
-      this.#sql = postgres(env.guildDatabaseUrl, {
-        max: 2,
-        idle_timeout: 30,
-        connect_timeout: 10,
-        connection: {
-          default_transaction_read_only: true,
-          statement_timeout: 10_000,
-        },
-      });
-    }
   }
 
-  public get databaseConfigured(): boolean {
-    return this.#sql !== null;
+  public get streamConnected(): boolean {
+    return this.#streamConnected;
   }
 
   public start(): void {
-    if (this.#timer) {
-      return;
+    this.#started = true;
+
+    if (!this.#timer) {
+      this.#timer = setInterval(() => {
+        void this.tick();
+      }, 15_000);
+      this.#timer.unref();
     }
 
-    this.#timer = setInterval(() => {
-      void this.tick();
-    }, 15_000);
-    this.#timer.unref();
+    this.syncState();
   }
 
   public async stop(): Promise<void> {
+    this.#started = false;
+
     if (this.#timer) {
       clearInterval(this.#timer);
       this.#timer = null;
     }
 
-    if (this.#sql) {
-      await this.#sql.end({ timeout: 5 });
-      this.#sql = null;
+    await this.#stopStream();
+    await this.#eventQueue.catch(() => undefined);
+  }
+
+  public syncState(): void {
+    if (!this.#started) {
+      return;
+    }
+
+    if (this.#shouldStream()) {
+      if (!this.#streamPromise) {
+        const promise = this.#runStreamLoop().finally(() => {
+          if (this.#streamPromise === promise) {
+            this.#streamPromise = null;
+          }
+        });
+
+        this.#streamPromise = promise;
+      }
+    } else {
+      void this.#stopStream();
     }
   }
 
   public async tick(): Promise<void> {
-    if (this.#running || !this.#sql) {
+    if (this.#running || !this.#guild.enabled) {
       return;
     }
 
@@ -142,7 +158,10 @@ export class GuildAutomationRunner {
         await this.runDueReminders();
       }
 
-      if (settings.guildAutomation.assignmentsEnabled) {
+      if (
+        settings.guildAutomation.assignmentsEnabled &&
+        !this.#streamConnected
+      ) {
         await this.runAssignments();
       }
 
@@ -157,177 +176,122 @@ export class GuildAutomationRunner {
   }
 
   public async runDueReminders(): Promise<{ notified: number }> {
-    if (!this.#sql) {
-      throw new Error("BERRY_GUILD_DATABASE_URL 未配置");
+    if (!this.#guild.enabled) {
+      throw new Error(
+        "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
+      );
     }
 
     const settings = this.#getSettings();
-    const nowRow = await this.#sql<
-      { now: Date }[]
-    >`SELECT clock_timestamp() AS now`;
-    const dbNow = nowRow[0]!.now;
     const saved = await this.#store.cursors.get(DUE_CURSOR);
 
     if (!saved) {
-      await this.#store.cursors.set(DUE_CURSOR, dbNow.toISOString());
+      const seed = await this.#guild.listDueNodes({
+        dueBefore: "1970-01-01T00:00:00Z",
+        includeOverdue: false,
+        limit: 1,
+      });
+
+      await this.#store.cursors.set(DUE_CURSOR, seed.serverTime);
 
       return { notified: 0 };
     }
 
-    const cursorDate = new Date(saved);
-
-    if (dbNow <= cursorDate) {
-      return { notified: 0 };
-    }
-
-    const advanceMs = settings.guildAutomation.dueAdvanceHours * 3600 * 1000;
-    const windowStart = new Date(cursorDate.getTime() + advanceMs);
-    const windowEnd = new Date(dbNow.getTime() + advanceMs);
-
-    const rows = await this.#sql<
-      { id: number; title: string; due_at: Date; subject: string }[]
-    >`
-      SELECT n.id, n.title, n.due_at, m.subject
-      FROM nodes n
-      JOIN node_members m ON m.node_id = n.id AND m.role = 'leader'
-      WHERE n.completed_at IS NULL
-        AND n.due_at >= ${windowStart}
-        AND n.due_at < ${windowEnd}
-        AND n.due_at > ${dbNow}
-      ORDER BY n.due_at, n.id, m.subject
-    `;
+    const res = await this.#guild.listDueNodes({
+      since: saved,
+      advanceHours: settings.guildAutomation.dueAdvanceHours,
+      includeOverdue: false,
+    });
 
     let notified = 0;
 
-    for (const row of rows) {
-      const deadline = formatDateTime(
-        row.due_at.getTime(),
-        settings.bot.timezone,
-      );
+    for (const item of res.items) {
+      const dueMs = Date.parse(item.dueAt);
+      const deadline = formatDateTime(dueMs, settings.bot.timezone);
       const url = this.#env.guildPublicUrl
-        ? `\n${this.#env.guildPublicUrl}/nodes/${row.id}`
+        ? `\n${this.#env.guildPublicUrl}/nodes/${item.id}`
         : "";
-      const text = `任务即将到期：${row.title}\n截止时间：${deadline}${url}`;
+      const text = `任务即将到期：${item.title}\n截止时间：${deadline}${url}`;
 
-      if (await this.#notifySubject(row.subject, text, settings.bot.botQQ)) {
-        notified++;
+      for (const subject of item.leaders) {
+        if (await this.#notifySubject(subject, text, settings.bot.botQQ)) {
+          notified++;
+        }
       }
     }
 
-    await this.#store.cursors.set(DUE_CURSOR, dbNow.toISOString());
+    await this.#store.cursors.set(DUE_CURSOR, res.serverTime);
 
     return { notified };
   }
 
-  public async runAssignments(): Promise<{ notified: number }> {
-    if (!this.#sql) {
-      throw new Error("BERRY_GUILD_DATABASE_URL 未配置");
+  public runAssignments(): Promise<{ notified: number }> {
+    if (!this.#guild.enabled) {
+      return Promise.reject(
+        new Error(
+          "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
+        ),
+      );
     }
 
-    const settings = this.#getSettings();
-    const nowRow = await this.#sql<
-      { now: Date }[]
-    >`SELECT clock_timestamp() AS now`;
-    const dbNow = nowRow[0]!.now;
-    const saved = await this.#store.cursors.get(ASSIGN_CURSOR);
+    return this.#enqueueEventWork(async () => {
+      const settings = this.#getSettings();
+      const saved = await this.#store.cursors.get(EVENT_CURSOR);
 
-    if (!saved) {
-      await this.#store.cursors.set(ASSIGN_CURSOR, dbNow.toISOString());
+      if (!saved) {
+        const seed = await this.#guild.listEvents(0, 1);
 
-      return { notified: 0 };
-    }
+        await this.#store.cursors.set(EVENT_CURSOR, String(seed.latestId));
 
-    const cursorDate = new Date(saved);
-
-    if (dbNow <= cursorDate) {
-      return { notified: 0 };
-    }
-
-    const rows = await this.#sql<
-      {
-        id: number;
-        title: string;
-        subject: string;
-        role: string;
-        created_at: Date;
-      }[]
-    >`
-      SELECT n.id, n.title, m.subject, m.role, m.created_at
-      FROM node_members m
-      JOIN nodes n ON n.id = m.node_id
-      WHERE m.created_at >= ${cursorDate} AND m.created_at < ${dbNow}
-      ORDER BY m.created_at, n.id, m.subject
-    `;
-
-    let notified = 0;
-
-    for (const row of rows) {
-      const roleLabel = row.role === "leader" ? "负责人" : "成员";
-      const url = this.#env.guildPublicUrl
-        ? `\n${this.#env.guildPublicUrl}/nodes/${row.id}`
-        : "";
-      const text = `你已被指定为公会任务的${roleLabel}：${row.title}${url}`;
-
-      if (await this.#notifySubject(row.subject, text, settings.bot.botQQ)) {
-        notified++;
+        return { notified: 0 };
       }
-    }
 
-    await this.#store.cursors.set(ASSIGN_CURSOR, dbNow.toISOString());
+      let cursor = this.#parseCursor(saved);
+      let notified = 0;
 
-    return { notified };
+      while (true) {
+        const batch = await this.#guild.listEvents(cursor, 100);
+
+        for (const ev of batch.items) {
+          if (ev.id <= cursor) {
+            continue;
+          }
+
+          if (await this.#processEvent(ev, settings)) {
+            notified++;
+          }
+
+          cursor = ev.id;
+        }
+
+        await this.#store.cursors.set(EVENT_CURSOR, String(cursor));
+
+        if (!batch.hasMore || batch.items.length === 0) {
+          break;
+        }
+      }
+
+      return { notified };
+    });
   }
 
   public async runWeeklyReport(atMs = Date.now()): Promise<{
     path: string;
     periodStart: string;
   }> {
-    if (!this.#sql) {
-      throw new Error("BERRY_GUILD_DATABASE_URL 未配置");
+    if (!this.#guild.enabled) {
+      throw new Error(
+        "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
+      );
     }
 
     const settings = this.#getSettings();
     const period = previousNaturalWeek(atMs);
-    const snapshotAt = new Date();
-
-    const [nodes, comments] = await Promise.all([
-      this.#sql<
-        {
-          id: number;
-          parent_id: number | null;
-          title: string;
-          created_at: Date;
-          completed_at: Date | null;
-          due_at: Date | null;
-        }[]
-      >`
-        SELECT id, parent_id, title, created_at, completed_at, due_at
-        FROM nodes
-        ORDER BY id
-      `,
-      this.#sql<
-        { id: number; node_id: number; body: string; created_at: Date }[]
-      >`
-        SELECT id, node_id, body, created_at
-        FROM comments
-        WHERE created_at >= ${period.start} AND created_at < ${period.end}
-        ORDER BY created_at
-      `,
-    ]);
-
-    const created = nodes.filter(
-      (n) => n.created_at >= period.start && n.created_at < period.end,
+    const data = await this.#guild.getActivitySummary(
+      period.start.toISOString(),
+      period.end.toISOString(),
     );
-    const completed = nodes.filter(
-      (n) =>
-        n.completed_at !== null &&
-        n.completed_at >= period.start &&
-        n.completed_at < period.end,
-    );
-    const openNodes = nodes.filter((n) => n.completed_at === null);
-    const overdue = openNodes.filter(
-      (n) => n.due_at !== null && n.due_at < snapshotAt,
-    );
+    const snapshotMs = Date.parse(data.snapshotAt);
 
     const endDisplay = formatDay(
       period.end.getTime() - 86_400 * 1000,
@@ -338,76 +302,70 @@ export class GuildAutomationRunner {
     let summary = "本周无新增自动化总结（主模型未配置）。";
 
     if (settings.mainModel.apiKey && settings.mainModel.model) {
-      const started = performance.now();
-      const client = new OpenAI({
+      const res = await completeChat({
         apiKey: settings.mainModel.apiKey,
         baseURL: settings.mainModel.baseURL,
-        timeout: settings.mainModel.timeoutMs,
-      });
-
-      const res = await client.chat.completions.create({
         model: settings.mainModel.model,
-        temperature: 0.2,
-        max_tokens: 2048,
-        messages: [
-          {
-            role: "system",
-            content:
-              "你是 BITNP 公会周报整理助手。统计区间为 UTC+8 上一自然周，当前未完成和逾期是生成时刻的实时状态，不是历史快照。只依据提供的数据总结进展、讨论、未完成事项与需要关注的问题，使用平实中文 Markdown。",
-          },
-          {
-            role: "user",
-            content: JSON.stringify({
-              periodStart: period.start.toISOString(),
-              periodEndExclusive: period.end.toISOString(),
-              snapshotAt: snapshotAt.toISOString(),
-              createdInPeriod: created.map((n) => ({
-                id: n.id,
-                title: n.title,
-              })),
-              completedInPeriod: completed.map((n) => ({
-                id: n.id,
-                title: n.title,
-              })),
-              commentsInPeriod: comments.slice(0, 100).map((c) => ({
-                nodeId: c.node_id,
-                body: c.body.slice(0, 200),
-              })),
-              currentlyOpenCount: openNodes.length,
-              currentlyOverdue: overdue.map((n) => ({
-                id: n.id,
-                title: n.title,
-                dueAt: n.due_at?.toISOString(),
-              })),
-            }),
-          },
-        ],
-      });
-
-      const usage = res.usage;
-
-      await this.#store.usage.record({
-        purpose: "report",
-        model: settings.mainModel.model,
-        inputTokens: usage?.prompt_tokens ?? 0,
-        cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
-        outputTokens: usage?.completion_tokens ?? 0,
-        durationMs: Math.round(performance.now() - started),
+        timeoutMs: settings.mainModel.timeoutMs,
+        maxRetries: 2,
+        store: this.#store,
         timeZone: settings.bot.timezone,
+        purpose: "report",
+        params: {
+          temperature: 0.2,
+          max_tokens: 2048,
+          messages: [
+            {
+              role: "system",
+              content:
+                "你是 BITNP 公会周报整理助手。统计区间为 UTC+8 上一自然周，当前未完成和逾期是生成时刻的实时状态，不是历史快照。只依据提供的数据总结进展、讨论、未完成事项与需要关注的问题，使用平实中文 Markdown。",
+            },
+            {
+              role: "user",
+              content: JSON.stringify({
+                periodStart: data.start,
+                periodEndExclusive: data.end,
+                snapshotAt: data.snapshotAt,
+                createdInPeriod: data.createdNodes.map((n) => ({
+                  id: n.id,
+                  title: n.title,
+                })),
+                completedInPeriod: data.completedNodes.map((n) => ({
+                  id: n.id,
+                  title: n.title,
+                })),
+                commentsInPeriod: data.recentComments
+                  .slice(0, 100)
+                  .map((c) => ({
+                    nodeId: c.nodeId,
+                    nodeTitle: c.nodeTitle,
+                    body: c.bodyPreview,
+                  })),
+                currentlyOpenCount: data.openCount,
+                currentlyOverdue: data.overdueNodes.map((n) => ({
+                  id: n.id,
+                  title: n.title,
+                  dueAt: n.dueAt,
+                })),
+              }),
+            },
+          ],
+        },
       });
+
       summary = res.choices[0]?.message?.content?.trim() || summary;
     }
 
     const markdown = `# ${title}
 
 统计区间：[${period.start.toISOString()}, ${period.end.toISOString()})
-状态采集时间：${formatDateTime(snapshotAt.getTime(), "Asia/Shanghai")} (UTC+8)
+状态采集时间：${formatDateTime(Number.isFinite(snapshotMs) ? snapshotMs : Date.now(), "Asia/Shanghai")} (UTC+8)
 
-- 周内新增：${created.length}
-- 周内完成：${completed.length}
-- 周内评论：${comments.length}
-- 当前未完成：${openNodes.length}
-- 当前逾期：${overdue.length}
+- 周内新增：${data.createdCount}
+- 周内完成：${data.completedCount}
+- 周内评论：${data.commentCount}
+- 当前未完成：${data.openCount}
+- 当前逾期：${data.overdueCount}
 
 ${summary}
 `;
@@ -426,6 +384,222 @@ ${summary}
     }
 
     return { path: relPath, periodStart: period.label };
+  }
+
+  #shouldStream(): boolean {
+    if (!this.#started || !this.#guild.enabled) {
+      return false;
+    }
+
+    const settings = this.#getSettings();
+
+    return (
+      settings.guildAutomation.enabled &&
+      settings.guildAutomation.assignmentsEnabled
+    );
+  }
+
+  async #stopStream(): Promise<void> {
+    this.#streamConnected = false;
+
+    if (this.#streamAbort) {
+      this.#streamAbort.abort();
+      this.#streamAbort = null;
+    }
+
+    if (this.#streamPromise) {
+      await this.#streamPromise.catch(() => undefined);
+    }
+  }
+
+  async #runStreamLoop(): Promise<void> {
+    let backoffMs = 2000;
+
+    while (this.#shouldStream()) {
+      const ctrl = new AbortController();
+      let openedAt = 0;
+
+      this.#streamAbort = ctrl;
+
+      try {
+        const after = await this.#ensureEventCursor();
+
+        if (!this.#shouldStream() || ctrl.signal.aborted) {
+          break;
+        }
+
+        openedAt = Date.now();
+
+        for await (const frame of this.#guild.streamEvents(
+          after,
+          ctrl.signal,
+          () => {
+            this.#streamConnected = true;
+            backoffMs = 2000;
+          },
+        )) {
+          if (!this.#shouldStream() || ctrl.signal.aborted) {
+            break;
+          }
+
+          if (!frame.data) {
+            continue;
+          }
+
+          let parsed: GuildEvent;
+
+          try {
+            parsed = JSON.parse(frame.data) as GuildEvent;
+          } catch {
+            this.#logger.warn("Ignored malformed Guild SSE event", {
+              event: frame.event,
+            });
+
+            continue;
+          }
+
+          await this.#enqueueEventWork(async () => {
+            const currentCursor = this.#parseCursor(
+              await this.#store.cursors.get(EVENT_CURSOR),
+            );
+
+            if (parsed.id <= currentCursor) {
+              return;
+            }
+
+            await this.#processEvent(parsed, this.#getSettings());
+            await this.#store.cursors.set(EVENT_CURSOR, String(parsed.id));
+          });
+        }
+      } catch (error) {
+        if (ctrl.signal.aborted || !this.#shouldStream()) {
+          break;
+        }
+
+        this.#logger.warn("Guild SSE stream disconnected", {
+          error: errorMessage(error),
+          retryInMs: backoffMs,
+        });
+      } finally {
+        this.#streamConnected = false;
+
+        if (this.#streamAbort === ctrl) {
+          this.#streamAbort = null;
+        }
+      }
+
+      if (!this.#shouldStream()) {
+        break;
+      }
+
+      if (openedAt > 0 && Date.now() - openedAt > 60_000) {
+        backoffMs = 2000;
+      }
+
+      await this.#sleep(backoffMs);
+      backoffMs = Math.min(backoffMs * 2, 60_000);
+    }
+  }
+
+  #ensureEventCursor(): Promise<number> {
+    return this.#enqueueEventWork(async () => {
+      const saved = await this.#store.cursors.get(EVENT_CURSOR);
+
+      if (saved !== null) {
+        return this.#parseCursor(saved);
+      }
+
+      const seed = await this.#guild.listEvents(0, 1);
+
+      await this.#store.cursors.set(EVENT_CURSOR, String(seed.latestId));
+
+      return seed.latestId;
+    });
+  }
+
+  #enqueueEventWork<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.#eventQueue.then(fn, fn);
+
+    this.#eventQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    return run;
+  }
+
+  #parseCursor(raw: string | null): number {
+    if (!raw) {
+      return 0;
+    }
+
+    const parsed = Number.parseInt(raw, 10);
+
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  }
+
+  async #processEvent(
+    ev: GuildEvent,
+    settings: RuntimeSettings,
+  ): Promise<boolean> {
+    if (ev.kind !== "member.assigned") {
+      return false;
+    }
+
+    const payload = ev.payload ?? {};
+    const subject =
+      typeof payload.subject === "string" ? payload.subject.trim() : "";
+
+    if (!subject) {
+      return false;
+    }
+
+    const onCreate = payload.onCreate === true;
+
+    if (onCreate && subject === ev.actorSubject) {
+      return false;
+    }
+
+    const role = payload.role === "leader" ? "leader" : "member";
+    const roleLabel = role === "leader" ? "负责人" : "成员";
+    const rawTitle =
+      typeof payload.nodeTitle === "string" ? payload.nodeTitle.trim() : "";
+    const title = rawTitle || (ev.nodeId ? `节点 #${ev.nodeId}` : "公会任务");
+    const url =
+      ev.nodeId && this.#env.guildPublicUrl
+        ? `\n${this.#env.guildPublicUrl}/nodes/${ev.nodeId}`
+        : "";
+    const assignor = await this.#resolveActorName(ev.actorSubject, subject);
+    const text = assignor
+      ? `${assignor} 已将你指定为公会任务的${roleLabel}：${title}${url}`
+      : `你已被指定为公会任务的${roleLabel}：${title}${url}`;
+
+    return this.#notifySubject(subject, text, settings.bot.botQQ);
+  }
+
+  async #resolveActorName(
+    actorSubject: string,
+    targetSubject: string,
+  ): Promise<string> {
+    if (!actorSubject || actorSubject === targetSubject) {
+      return "";
+    }
+
+    try {
+      const actor = await this.#directory.bySubject(actorSubject);
+
+      return actor?.name?.trim() || "";
+    } catch {
+      return "";
+    }
+  }
+
+  #sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+
+      timer.unref();
+    });
   }
 
   async #maybeRunWeeklyReport(settings: RuntimeSettings): Promise<void> {

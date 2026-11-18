@@ -48,7 +48,6 @@ interface ShellStatus {
   botAccount: { user_id: string; nickname: string } | null;
   gatewayHealth: { configured: boolean; reachable: boolean };
   pendingJobs: number;
-  todayCalls: number;
 }
 
 const route = useRoute();

@@ -16,6 +16,7 @@ import type { EnvConfig } from "../config/env.ts";
 import { fromClaims } from "../identity/authz.ts";
 import type { Store } from "../store/index.ts";
 import type { AdminSession } from "../store/sessions.ts";
+import { queryString } from "./http.ts";
 
 const SESSION_COOKIE = "berry_session";
 const PENDING_TTL_MS = 10 * 60 * 1000;
@@ -40,6 +41,12 @@ function safeReturnTo(raw: string | undefined): string {
   }
 
   return raw;
+}
+
+function claimString(claims: Record<string, unknown>, key: string): string {
+  const value = claims[key];
+
+  return typeof value === "string" ? value : "";
 }
 
 function constantTimeEquals(a: string, b: string): boolean {
@@ -146,9 +153,7 @@ export class AdminAuthService {
 
   public async startLogin(event: H3Event): Promise<unknown> {
     const query = getQuery(event);
-    const returnTo = safeReturnTo(
-      typeof query.returnTo === "string" ? query.returnTo : undefined,
-    );
+    const returnTo = safeReturnTo(queryString(query, "returnTo"));
 
     if (this.#env.devAuthBypass) {
       return sendRedirect(event, returnTo, 302);
@@ -194,8 +199,8 @@ export class AdminAuthService {
 
   public async callback(event: H3Event): Promise<unknown> {
     const query = getQuery(event);
-    const code = typeof query.code === "string" ? query.code : "";
-    const state = typeof query.state === "string" ? query.state : "";
+    const code = queryString(query, "code") ?? "";
+    const state = queryString(query, "state") ?? "";
 
     const pending = state ? this.#pending.get(state) : undefined;
 
@@ -239,7 +244,9 @@ export class AdminAuthService {
       });
       const claims = verified.payload as Record<string, unknown>;
 
-      if (claims.nonce !== pending.nonce || typeof claims.sub !== "string") {
+      const sub = claimString(claims, "sub");
+
+      if (claims.nonce !== pending.nonce || !sub) {
         return sendRedirect(event, "/login?error=oidc_failed", 302);
       }
 
@@ -250,14 +257,13 @@ export class AdminAuthService {
       }
 
       const session = await this.#store.sessions.create({
-        subject: claims.sub,
+        subject: sub,
         name:
-          (typeof claims.name === "string" && claims.name) ||
-          (typeof claims.preferred_username === "string" &&
-            claims.preferred_username) ||
-          claims.sub,
-        email: typeof claims.email === "string" ? claims.email : "",
-        avatar: typeof claims.picture === "string" ? claims.picture : "",
+          claimString(claims, "name") ||
+          claimString(claims, "preferred_username") ||
+          sub,
+        email: claimString(claims, "email"),
+        avatar: claimString(claims, "picture"),
         permissions,
       });
 

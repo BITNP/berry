@@ -22,15 +22,20 @@ import type { OneBotWebhookEvent } from "../gateway/webhook.ts";
 import { verifyWebhookSignature } from "../gateway/webhook.ts";
 import type {
   ChatKind,
-  GateAction,
-  GateStage,
   GroupTriggerMode,
-  LogLevel,
   MemoryScope,
   ScheduleSpec,
 } from "../types.ts";
-import { parseChatKey } from "../types.ts";
+import { makeChatKey, parseChatKey } from "../types.ts";
 import { errorMessage } from "../utils/time.ts";
+import {
+  optionalQueryInt,
+  pickEnum,
+  queryInt,
+  queryString,
+  requireParam,
+  requirePositiveIntParam,
+} from "./http.ts";
 
 const MIME_BY_EXT: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -42,14 +47,6 @@ const MIME_BY_EXT: Record<string, string> = {
   ".json": "application/json; charset=utf-8",
   ".woff2": "font/woff2",
 };
-
-function decodeParam(raw: string | undefined): string {
-  if (!raw) {
-    throw createError({ statusCode: 400, message: "Missing route parameter" });
-  }
-
-  return decodeURIComponent(raw);
-}
 
 export function createHttpApp(berry: BerryApp, webDistDir: string) {
   const app = createApp({
@@ -225,10 +222,9 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         gate24h,
         chatCount: chats.length,
         activeChatCount: chats.filter((c) => c.enabled).length,
-        todayCalls: todayUsage.calls,
         todayUsage,
         guildApiConfigured: berry.guild.enabled,
-        guildDatabaseConfigured: berry.guildAutomation.databaseConfigured,
+        guildStreamConnected: berry.guildAutomation.streamConnected,
         keycloakConfigured: berry.directory.enabled,
         mcpServers: berry.mcp.statuses,
         storage: storageSummary,
@@ -260,25 +256,18 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
       const query = getQuery(event);
-      const levelRaw = typeof query.level === "string" ? query.level : "";
-      const level = (["debug", "info", "warn", "error"] as const).includes(
-        levelRaw as LogLevel,
-      )
-        ? (levelRaw as LogLevel)
-        : undefined;
 
       return berry.logs.list({
-        level,
-        scope:
-          typeof query.scope === "string" && query.scope
-            ? query.scope
-            : undefined,
-        search:
-          typeof query.search === "string" && query.search
-            ? query.search
-            : undefined,
-        afterId: query.afterId ? Number(query.afterId) : undefined,
-        limit: query.limit ? Number(query.limit) : 250,
+        level: pickEnum(query.level, [
+          "debug",
+          "info",
+          "warn",
+          "error",
+        ] as const),
+        scope: queryString(query, "scope"),
+        search: queryString(query, "search"),
+        afterId: optionalQueryInt(query, "afterId"),
+        limit: queryInt(query, "limit", 250),
       });
     }),
   );
@@ -298,7 +287,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
       const kind = getRouterParam(event, "kind");
-      const id = decodeParam(getRouterParam(event, "id"));
+      const id = requireParam(event, "id");
 
       if (kind !== "user" && kind !== "group") {
         throw createError({ statusCode: 400, message: "无效的头像类型" });
@@ -317,12 +306,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/assets/:id/raw",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const id = Number(getRouterParam(event, "id"));
-
-      if (!Number.isInteger(id) || id <= 0) {
-        throw createError({ statusCode: 400, message: "无效的附件编号" });
-      }
-
+      const id = requirePositiveIntParam(event, "id", "无效的附件编号");
       const asset = await berry.store.assets.get(id);
 
       if (!asset?.filePath) {
@@ -381,24 +365,16 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       const query = getQuery(event);
 
       return berry.store.gate.list({
-        action:
-          typeof query.action === "string" && query.action
-            ? (query.action as GateAction)
-            : undefined,
-        stage:
-          typeof query.stage === "string" && query.stage
-            ? (query.stage as GateStage)
-            : undefined,
-        chatKey:
-          typeof query.chatKey === "string" && query.chatKey
-            ? query.chatKey
-            : undefined,
-        search:
-          typeof query.search === "string" && query.search
-            ? query.search
-            : undefined,
-        limit: query.limit ? Number(query.limit) : 50,
-        offset: query.offset ? Number(query.offset) : 0,
+        action: pickEnum(query.action, ["reply", "memory", "ignore"] as const),
+        stage: pickEnum(query.stage, [
+          "l0_rule",
+          "l1_classifier",
+          "dry_run",
+        ] as const),
+        chatKey: queryString(query, "chatKey"),
+        search: queryString(query, "search"),
+        limit: queryInt(query, "limit", 50),
+        offset: queryInt(query, "offset", 0),
       });
     }),
   );
@@ -509,7 +485,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/chats/:chatKey",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const chatKey = decodeParam(getRouterParam(event, "chatKey"));
+      const chatKey = requireParam(event, "chatKey");
       const body = await readBody<{
         title?: string;
         enabled?: boolean;
@@ -540,41 +516,23 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
   );
 
   router.get(
-    "/api/admin/chats/:chatKey/conversation",
-    defineEventHandler(async (event) => {
-      await berry.auth.requireAdmin(event);
-
-      return berry.store.conversations.open();
-    }),
-  );
-
-  router.post(
-    "/api/admin/chats/:chatKey/reset",
-    defineEventHandler(async (event) => {
-      await berry.auth.requireAdmin(event);
-      const afterId = await berry.store.messages.maxId();
-
-      return berry.store.conversations.reset(afterId);
-    }),
-  );
-
-  router.get(
     "/api/admin/chats/:chatKey/messages",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const chatKey = decodeParam(getRouterParam(event, "chatKey"));
+      const chatKey = requireParam(event, "chatKey");
       const parsed = parseChatKey(chatKey);
+      const canonicalChatKey = makeChatKey(parsed.kind, parsed.chatId);
       const query = getQuery(event);
       const items = await berry.store.messages.search(chatKey, {
-        query: typeof query.search === "string" ? query.search : undefined,
-        limit: query.limit ? Number(query.limit) : 80,
-        beforeId: query.beforeId ? Number(query.beforeId) : undefined,
+        query: queryString(query, "search"),
+        limit: queryInt(query, "limit", 80),
+        beforeId: optionalQueryInt(query, "beforeId"),
       });
 
       const [assetMap, reactionMap] = await Promise.all([
         berry.store.assets.listForMessages(items.map((m) => m.id)),
         berry.store.reactions.aggregateForMessages(
-          `${parsed.kind}:${parsed.chatId}`,
+          canonicalChatKey,
           items.map((m) => m.onebotMessageId),
         ),
       ]);
@@ -593,7 +551,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/chats/:chatKey/backfill",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const chatKey = decodeParam(getRouterParam(event, "chatKey"));
+      const chatKey = requireParam(event, "chatKey");
       const parsed = parseChatKey(chatKey);
 
       if (parsed.kind !== "group") {
@@ -621,7 +579,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/chats/:chatKey/digest",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const chatKey = decodeParam(getRouterParam(event, "chatKey"));
+      const chatKey = requireParam(event, "chatKey");
       const parsed = parseChatKey(chatKey);
 
       if (parsed.kind !== "group") {
@@ -646,8 +604,9 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/chats/:chatKey/inject",
     defineEventHandler(async (event) => {
       const session = await berry.auth.requireAdmin(event);
-      const chatKey = decodeParam(getRouterParam(event, "chatKey"));
+      const chatKey = requireParam(event, "chatKey");
       const parsed = parseChatKey(chatKey);
+      const canonicalChatKey = makeChatKey(parsed.kind, parsed.chatId);
       const body = await readBody<{ content?: string }>(event);
 
       if (!body?.content?.trim()) {
@@ -657,10 +616,10 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       await berry.store.jobs.enqueue(
         "invoke",
         `admin:${chatKey}:${Date.now()}`,
-        `${parsed.kind}:${parsed.chatId}`,
+        canonicalChatKey,
         {
           source: "admin_inject",
-          chatKey: `${parsed.kind}:${parsed.chatId}`,
+          chatKey: canonicalChatKey,
           kind: parsed.kind,
           chatId: parsed.chatId,
           triggerMessageIds: [],
@@ -679,20 +638,11 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
       const query = getQuery(event);
-      const scope =
-        query.scope === "global" ||
-        query.scope === "chat" ||
-        query.scope === "user"
-          ? query.scope
-          : undefined;
 
       return {
         items: await berry.store.memories.list({
-          scope,
-          ownerId:
-            typeof query.ownerId === "string" && query.ownerId
-              ? query.ownerId
-              : undefined,
+          scope: pickEnum(query.scope, ["global", "chat", "user"] as const),
+          ownerId: queryString(query, "ownerId"),
         }),
       };
     }),
@@ -733,12 +683,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
       const query = getQuery(event);
-      const scope =
-        query.scope === "global" ||
-        query.scope === "chat" ||
-        query.scope === "user"
-          ? query.scope
-          : null;
+      const scope = pickEnum(query.scope, ["global", "chat", "user"] as const);
 
       if (!scope) {
         throw createError({
@@ -750,8 +695,8 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       return {
         deleted: await berry.store.memories.remove(
           scope,
-          scope === "global" ? "global" : String(query.ownerId ?? ""),
-          String(query.key ?? ""),
+          scope === "global" ? "global" : (queryString(query, "ownerId") ?? ""),
+          queryString(query, "key") ?? "",
         ),
       };
     }),
@@ -764,7 +709,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
 
       return {
         apiConfigured: berry.guild.enabled,
-        databaseConfigured: berry.guildAutomation.databaseConfigured,
+        streamConnected: berry.guildAutomation.streamConnected,
         publicUrl: berry.env.guildPublicUrl,
         cursors: await berry.store.cursors.list(),
       };
@@ -810,8 +755,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/identity/lookup",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const query = getQuery(event);
-      const q = typeof query.q === "string" ? query.q.trim() : "";
+      const q = queryString(getQuery(event), "q") ?? "";
 
       if (!berry.directory.enabled) {
         return { enabled: false, items: [] };
@@ -854,7 +798,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/schedules/:id",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const id = decodeParam(getRouterParam(event, "id"));
+      const id = requireParam(event, "id");
       const body = await readBody<Record<string, unknown>>(event);
       const updated = await berry.store.schedules.update(
         id,
@@ -874,7 +818,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/schedules/:id",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const id = decodeParam(getRouterParam(event, "id"));
+      const id = requireParam(event, "id");
 
       return { deleted: await berry.store.schedules.remove(id) };
     }),
@@ -884,7 +828,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/schedules/:id/run",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const id = decodeParam(getRouterParam(event, "id"));
+      const id = requireParam(event, "id");
       const ok = await berry.scheduler.triggerScheduleNow(id);
 
       if (!ok) {
@@ -909,8 +853,9 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
       const query = getQuery(event);
-      const scope = query.scope === "knowledge" ? "knowledge" : "notebook";
-      const path = typeof query.path === "string" ? query.path : "";
+      const scope =
+        pickEnum(query.scope, ["knowledge", "notebook"] as const) ?? "notebook";
+      const path = queryString(query, "path") ?? "";
 
       return {
         scope,
@@ -934,9 +879,9 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/docs/content",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const query = getQuery(event);
+      const path = queryString(getQuery(event), "path") ?? "";
 
-      return berry.knowledge.deleteNotebook(String(query.path ?? ""));
+      return berry.knowledge.deleteNotebook(path);
     }),
   );
 
@@ -1000,7 +945,6 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       );
 
       return {
-        todayCalls: todayUsage.calls,
         todayUsage,
         buckets: await berry.store.usage.dailySummary(30),
       };
@@ -1034,7 +978,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/jobs/:id/retry",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const id = Number(getRouterParam(event, "id"));
+      const id = requirePositiveIntParam(event, "id", "无效的任务编号");
       const ok = await berry.store.jobs.retry(id);
 
       if (ok) {
@@ -1049,7 +993,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/jobs/:id/cancel",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const id = Number(getRouterParam(event, "id"));
+      const id = requirePositiveIntParam(event, "id", "无效的任务编号");
 
       return { cancelled: await berry.store.jobs.cancel(id) };
     }),

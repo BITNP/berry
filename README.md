@@ -13,16 +13,16 @@ docker compose up -d --build
 
 主要环境变量：
 
-| 变量                                                                              | 说明                                                                                                       |
-| --------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `BERRY_PUBLIC_URL`                                                                | 对外访问地址，例如 `https://berry.example.com`                                                             |
-| `BERRY_WEBHOOK_TOKEN`                                                             | 入站 `POST /api/webhooks/onebot` 鉴权密钥（支持 Bearer 或 `X-Signature`）                                  |
-| `BERRY_GATEWAY_URL` / `BERRY_GATEWAY_ACCOUNT` / `BERRY_GATEWAY_TOKEN`             | `message-gateway` 地址、账号标识及调用令牌                                                                 |
-| `BERRY_BOT_QQ`                                                                    | 机器人 QQ 号                                                                                               |
-| `BERRY_MAIN_*` / `BERRY_GATE_*`                                                   | 主模型及门控小模型的初始配置（首次启动写入 SQLite，后续可在管理台调整）                                    |
-| `BERRY_OIDC_ISSUER` / `BERRY_OIDC_CLIENT_ID` / `BERRY_OIDC_CLIENT_SECRET`         | 管理台 Keycloak OIDC 登录配置（回调 `{BERRY_PUBLIC_URL}/api/auth/callback`，需 `permission-system-admin`） |
-| `BERRY_KEYCLOAK_ADMIN_URL` / `BERRY_KEYCLOAK_CLIENT_*`                            | Keycloak Admin API，用于 QQ 号及成员身份双向查询                                                           |
-| `BERRY_GUILD_API_URL` / `BERRY_GUILD_INTERNAL_TOKEN` / `BERRY_GUILD_DATABASE_URL` | `guild-go` 内部接口及只读库连接（用于节点协作、到期提醒及周报）                                            |
+| 变量                                                                      | 说明                                                                                                       |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `BERRY_PUBLIC_URL`                                                        | 对外访问地址，例如 `https://berry.example.com`                                                             |
+| `BERRY_WEBHOOK_TOKEN`                                                     | 入站 `POST /api/webhooks/onebot` 鉴权密钥（支持 Bearer 或 `X-Signature`）                                  |
+| `BERRY_GATEWAY_URL` / `BERRY_GATEWAY_ACCOUNT` / `BERRY_GATEWAY_TOKEN`     | `message-gateway` 地址、账号标识及调用令牌                                                                 |
+| `BERRY_BOT_QQ`                                                            | 机器人 QQ 号                                                                                               |
+| `BERRY_MAIN_*` / `BERRY_GATE_*`                                           | 主模型及门控小模型的初始配置（首次启动写入 SQLite，后续可在管理台调整）                                    |
+| `BERRY_OIDC_ISSUER` / `BERRY_OIDC_CLIENT_ID` / `BERRY_OIDC_CLIENT_SECRET` | 管理台 Keycloak OIDC 登录配置（回调 `{BERRY_PUBLIC_URL}/api/auth/callback`，需 `permission-system-admin`） |
+| `BERRY_KEYCLOAK_ADMIN_URL` / `BERRY_KEYCLOAK_CLIENT_*`                    | Keycloak Admin API，用于 QQ 号及成员身份双向查询                                                           |
+| `BERRY_GUILD_API_URL` / `BERRY_GUILD_INTERNAL_TOKEN`                      | `guild-go` 内部服务接口（用于节点协作、SSE 事件流、到期提醒及周报）                                        |
 
 端口默认绑定 `127.0.0.1:3220`，生产环境通过反向代理对外提供 HTTPS。运行数据（SQLite、媒体缓存、知识库 `knowledge/`、记事本 `notebooks/`）保存在 `data/` 目录。
 

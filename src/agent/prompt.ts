@@ -37,7 +37,7 @@ export function buildStaticSystemPrompt(options: {
     "- delegate_subagent(kind, task): 隔离执行具体任务并返回 brief：",
     "  * chat_analyst: 列出已登记群聊、跨群搜索或分页读取聊天窗口（含图片视觉结论、语音转写、合并转发详情、表情回应）、按需触发识图（inspect_media）、查询 QQ 群成员及好友名单。",
     options.guildEnabled
-      ? "  * guild_operator: 解析网协 Keycloak 成员身份，搜索/查看/创建/更新公会节点及发表进展评论。"
+      ? "  * guild_operator: 解析网协 Keycloak 成员身份，搜索/查看/创建/更新/移动公会节点及发表进展评论。"
       : "  * guild_operator: 当前未启用公会内部服务接口。",
     `  * workspace_operator: 检索只读知识库、读写记事本（notebooks/）及调用 MCP 工具。${mcpNote}`,
     "- memory_manage: 读写 global（全局共识）、chat（会话级）或 user（个人偏好）长期记忆。",

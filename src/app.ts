@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 import { toNodeListener } from "h3";
 
+import type { AgentServices } from "./agent/loop.ts";
 import { BerryAgent } from "./agent/runner.ts";
 import type { EnvConfig } from "./config/env.ts";
 import type { RuntimeSettings } from "./config/settings.ts";
@@ -129,8 +130,7 @@ export class BerryApp {
     ]);
 
     const media = new MediaProcessor(store, gateway, getSettings);
-
-    const agent = new BerryAgent({
+    const services: AgentServices = {
       store,
       gateway,
       media,
@@ -139,7 +139,9 @@ export class BerryApp {
       guild,
       mcp,
       getSettings,
-    });
+    };
+
+    const agent = new BerryAgent(services);
 
     let workerRef: JobWorker;
 
@@ -152,19 +154,10 @@ export class BerryApp {
       () => workerRef.wake(),
     );
     const webhook = new OneBotWebhookHandler(store, gate, media, getSettings);
-    const scheduler = new ScheduleRunner({
-      store,
-      gateway,
-      media,
-      knowledge,
-      directory,
-      guild,
-      mcp,
-      getSettings,
-      wake: () => workerRef.wake(),
-    });
+    const scheduler = new ScheduleRunner(services, () => workerRef.wake());
     const guildAutomation = new GuildAutomationRunner(
       env,
+      guild,
       store,
       directory,
       gateway,
@@ -205,6 +198,7 @@ export class BerryApp {
       activeSettings = saved;
       instance.settings = saved;
       await mcp.sync(saved.mcpServers);
+      guildAutomation.syncState();
 
       return saved;
     };

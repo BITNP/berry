@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import OpenAI from "openai";
 
+import { completeChat } from "../agent/llm.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
 import type { MessageGatewayClient } from "../gateway/client.ts";
 import type { ExtractedAttachment } from "../gateway/segments.ts";
@@ -432,41 +433,32 @@ export class MediaProcessor {
       return "图片已保存（未配置视觉模型密钥，跳过识图）";
     }
 
-    const started = performance.now();
-    const client = new OpenAI({
+    const dataUrl = `data:${mimeType};base64,${bytes.toString("base64")}`;
+    const completion = await completeChat({
       apiKey,
       baseURL,
-      timeout: settings.mainModel.timeoutMs,
+      model,
+      timeoutMs: settings.mainModel.timeoutMs,
       maxRetries: 1,
-    });
-    const dataUrl = `data:${mimeType};base64,${bytes.toString("base64")}`;
-    const completion = await client.chat.completions.create({
-      model,
-      temperature: 0.2,
-      max_tokens: 400,
-      messages: [
-        {
-          role: "system",
-          content:
-            "用简洁中文概括图片主要内容，并尽量完整提取图中可见文字、报错信息、代码或界面关键字段。",
-        },
-        {
-          role: "user",
-          content: [{ type: "image_url", image_url: { url: dataUrl } }],
-        },
-      ],
-    });
-
-    await this.#store.usage.record({
-      purpose: "vision",
-      model,
-      chatKey,
-      inputTokens: completion.usage?.prompt_tokens ?? 0,
-      cachedInputTokens:
-        completion.usage?.prompt_tokens_details?.cached_tokens ?? 0,
-      outputTokens: completion.usage?.completion_tokens ?? 0,
-      durationMs: Math.round(performance.now() - started),
+      store: this.#store,
       timeZone: settings.bot.timezone,
+      purpose: "vision",
+      chatKey,
+      params: {
+        temperature: 0.2,
+        max_tokens: 400,
+        messages: [
+          {
+            role: "system",
+            content:
+              "用简洁中文概括图片主要内容，并尽量完整提取图中可见文字、报错信息、代码或界面关键字段。",
+          },
+          {
+            role: "user",
+            content: [{ type: "image_url", image_url: { url: dataUrl } }],
+          },
+        ],
+      },
     });
 
     return completion.choices[0]?.message.content?.trim() || "无法识别图片内容";

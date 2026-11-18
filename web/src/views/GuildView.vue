@@ -31,7 +31,7 @@ interface CursorRow {
 
 interface GuildStatus {
   apiConfigured: boolean;
-  databaseConfigured: boolean;
+  streamConnected: boolean;
   publicUrl: string;
   cursors: CursorRow[];
 }
@@ -42,7 +42,12 @@ interface GuildAuditRow {
   qqUserId: string;
   actorSubject: string;
   actorName: string;
-  action: "create_node" | "update_node" | "replace_members" | "create_comment";
+  action:
+    | "create_node"
+    | "update_node"
+    | "move_node"
+    | "replace_members"
+    | "create_comment";
   nodeId: number | null;
   targetTitle: string;
   requestJson: string;
@@ -84,6 +89,7 @@ const members = ref<DirectoryUserRow[]>([]);
 const actionLabels: Record<GuildAuditRow["action"], string> = {
   create_node: "新建节点",
   update_node: "更新节点",
+  move_node: "移动节点",
   replace_members: "调整人员",
   create_comment: "添加评论",
 };
@@ -356,9 +362,9 @@ onMounted(() => {
         </span>
       </div>
       <div class="metric-cell">
-        <span class="metric-label">只读巡检库（PostgreSQL）</span>
+        <span class="metric-label">实时事件流（SSE）</span>
         <span class="metric-value">
-          {{ status.databaseConfigured ? "已连接" : "未配置" }}
+          {{ status.streamConnected ? "已连接" : "未连接" }}
         </span>
       </div>
       <div class="metric-cell">

@@ -21,7 +21,6 @@ export interface EnvConfig {
   keycloakQqAttr: string;
   guildApiUrl: string;
   guildInternalToken: string;
-  guildDatabaseUrl: string;
   guildPublicUrl: string;
   botQQ: string;
   mainBaseUrl: string;
@@ -112,7 +111,6 @@ export function loadEnvConfig(
     keycloakQqAttr: readEnv(env, "BERRY_KEYCLOAK_QQ_ATTR", "qq_number"),
     guildApiUrl: readEnv(env, "BERRY_GUILD_API_URL").replace(/\/+$/, ""),
     guildInternalToken: readEnv(env, "BERRY_GUILD_INTERNAL_TOKEN"),
-    guildDatabaseUrl: readEnv(env, "BERRY_GUILD_DATABASE_URL"),
     guildPublicUrl: readEnv(env, "BERRY_GUILD_PUBLIC_URL").replace(/\/+$/, ""),
     botQQ: readEnv(env, "BERRY_BOT_QQ"),
     mainBaseUrl: readEnv(

@@ -1,12 +1,33 @@
-import { jsonrepair } from "jsonrepair";
-import OpenAI from "openai";
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import type {
+  ChatCompletionMessageParam,
+  ChatCompletionTool,
+} from "openai/resources/chat/completions";
+import type { Static, TObject, TSchema } from "typebox";
+import * as Value from "typebox/value";
 
 import type { RuntimeSettings } from "../config/settings.ts";
+import type { MessageGatewayClient } from "../gateway/client.ts";
+import type { GuildInternalClient } from "../guild/client.ts";
+import type { IdentityDirectory } from "../identity/keycloak.ts";
+import type { KnowledgeBase } from "../knowledge/files.ts";
+import type { McpHub } from "../mcp/hub.ts";
+import type { MediaProcessor } from "../media/processor.ts";
 import type { Store } from "../store/index.ts";
-import type { ToolCallRecord, TurnMessage } from "../types.ts";
+import type { TurnMessage } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
+import { completeChat, parseModelJson, validateModelJson } from "./llm.ts";
+
+export interface AgentServices {
+  store: Store;
+  gateway: MessageGatewayClient;
+  media: MediaProcessor;
+  knowledge: KnowledgeBase;
+  directory: IdentityDirectory;
+  guild: GuildInternalClient;
+  mcp: McpHub;
+  getSettings: () => RuntimeSettings;
+}
 
 export interface AgentTool {
   name: string;
@@ -16,6 +37,32 @@ export interface AgentTool {
   execute: (args: Record<string, unknown>) => Promise<unknown>;
 }
 
+export const defineTool = <S extends TObject>(spec: {
+  name: string;
+  description: string;
+  parameters: S;
+  mutating?: boolean;
+  execute: (args: Static<S>) => Promise<unknown>;
+}): AgentTool => ({
+  name: spec.name,
+  description: spec.description,
+  parameters: spec.parameters as Record<string, unknown>,
+  mutating: spec.mutating,
+  execute: (rawArgs) => {
+    const candidate = Value.Default(spec.parameters, structuredClone(rawArgs));
+
+    if (!Value.Check(spec.parameters, candidate)) {
+      const details = [...Value.Errors(spec.parameters, candidate)]
+        .map((err) => `${err.instancePath || "/"} ${err.message}`)
+        .join("; ");
+
+      throw new Error(`Invalid tool arguments for ${spec.name}: ${details}`);
+    }
+
+    return spec.execute(candidate);
+  },
+});
+
 export interface ToolLoopResult<T> {
   text: string;
   structured: T;
@@ -23,27 +70,7 @@ export interface ToolLoopResult<T> {
   mutated: boolean;
 }
 
-function toOpenAIMessage(msg: TurnMessage): ChatCompletionMessageParam {
-  if (msg.role === "user") {
-    return { role: "user", content: msg.content };
-  }
-
-  if (msg.role === "assistant") {
-    return {
-      role: "assistant",
-      content: msg.content,
-      ...(msg.tool_calls?.length ? { tool_calls: msg.tool_calls } : {}),
-    };
-  }
-
-  return {
-    role: "tool",
-    tool_call_id: msg.tool_call_id,
-    content: msg.content,
-  };
-}
-
-export async function runChatToolLoop<T>(options: {
+export async function runChatToolLoop<S extends TSchema>(options: {
   purpose: "dialog" | "subagent" | "memory_update" | "compaction";
   chatKey: string | null;
   settings: RuntimeSettings;
@@ -53,12 +80,10 @@ export async function runChatToolLoop<T>(options: {
   userContent: string;
   tools: AgentTool[];
   maxRounds: number;
-  validateFinal: (
-    text: string,
-  ) => { ok: true; value: T } | { ok: false; issue: string };
+  outputSchema?: S;
   maxTokens?: number;
   temperature?: number;
-}): Promise<ToolLoopResult<T>> {
+}): Promise<ToolLoopResult<Static<S>>> {
   const logger = new Logger(`llm:${options.purpose}`);
   const cfg = options.settings.mainModel;
 
@@ -66,16 +91,9 @@ export async function runChatToolLoop<T>(options: {
     throw new Error("主模型未配置 API Key 或模型名称");
   }
 
-  const client = new OpenAI({
-    apiKey: cfg.apiKey,
-    baseURL: cfg.baseURL,
-    timeout: cfg.timeoutMs,
-    maxRetries: 2,
-  });
-
   const toolMap = new Map(options.tools.map((tool) => [tool.name, tool]));
-  const openAITools = options.tools.map((tool) => ({
-    type: "function" as const,
+  const openAITools: ChatCompletionTool[] = options.tools.map((tool) => ({
+    type: "function",
     function: {
       name: tool.name,
       description: tool.description,
@@ -83,15 +101,10 @@ export async function runChatToolLoop<T>(options: {
     },
   }));
 
-  const userMsg: TurnMessage = {
-    role: "user",
-    content: options.userContent,
-    timestamp: Date.now(),
-  };
   const messages: ChatCompletionMessageParam[] = [
     { role: "system", content: options.systemPrompt },
-    ...options.history.map(toOpenAIMessage),
-    toOpenAIMessage(userMsg),
+    ...options.history,
+    { role: "user", content: options.userContent },
   ];
 
   const turnMessages: TurnMessage[] = [];
@@ -100,48 +113,35 @@ export async function runChatToolLoop<T>(options: {
   let prevLoggedLen = 0;
 
   for (let round = 0; round < options.maxRounds; round++) {
-    // Log only newly appended messages since the previous round.
-    const delta = messages.slice(prevLoggedLen);
+    const deltaCount = messages.length - prevLoggedLen;
 
     logger.debug("LLM request delta", {
       chatKey: options.chatKey,
       round: round + 1,
       totalMessages: messages.length,
-      deltaCount: delta.length,
+      deltaCount,
     });
     prevLoggedLen = messages.length;
 
-    const started = performance.now();
-    const requestParams: Record<string, unknown> = {
+    const completion = await completeChat({
+      apiKey: cfg.apiKey,
+      baseURL: cfg.baseURL,
       model: cfg.model,
-      messages,
-      temperature: options.temperature ?? cfg.temperature,
-      max_tokens: options.maxTokens ?? cfg.maxOutputTokens,
-      ...(openAITools.length > 0 ? { tools: openAITools } : {}),
-      ...(cfg.thinkingEffort === "none"
-        ? {}
-        : { reasoning_effort: cfg.thinkingEffort }),
-    };
-
-    const response = await client.chat.completions.create(
-      requestParams as unknown as Parameters<
-        typeof client.chat.completions.create
-      >[0],
-    );
-
-    const completion = response as OpenAI.Chat.Completions.ChatCompletion;
-    const durationMs = Math.round(performance.now() - started);
-    const usage = completion.usage;
-
-    await options.store.usage.record({
-      purpose: options.purpose,
-      model: cfg.model,
-      chatKey: options.chatKey,
-      inputTokens: usage?.prompt_tokens ?? 0,
-      cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
-      outputTokens: usage?.completion_tokens ?? 0,
-      durationMs,
+      timeoutMs: cfg.timeoutMs,
+      maxRetries: 2,
+      store: options.store,
       timeZone: options.settings.bot.timezone,
+      purpose: options.purpose,
+      chatKey: options.chatKey,
+      params: {
+        messages,
+        temperature: options.temperature ?? cfg.temperature,
+        max_tokens: options.maxTokens ?? cfg.maxOutputTokens,
+        ...(openAITools.length > 0 ? { tools: openAITools } : {}),
+        ...(cfg.thinkingEffort === "none"
+          ? {}
+          : { reasoning_effort: cfg.thinkingEffort }),
+      },
     });
 
     const choice = completion.choices[0];
@@ -151,38 +151,27 @@ export async function runChatToolLoop<T>(options: {
     }
 
     const assistantText = choice.message.content ?? "";
-    const rawToolCalls = choice.message.tool_calls ?? [];
+    const functionCalls = (choice.message.tool_calls ?? []).filter(
+      (call) => call.type === "function",
+    );
 
-    if (rawToolCalls.length > 0) {
-      const normalizedCalls: ToolCallRecord[] = rawToolCalls
-        .filter((call) => call.type === "function")
-        .map((call) => ({
-          id: call.id,
-          type: "function" as const,
-          function: {
-            name: call.function.name,
-            arguments: call.function.arguments || "{}",
-          },
-        }));
-
+    if (functionCalls.length > 0) {
       const assistantTurn: TurnMessage = {
         role: "assistant",
         content: assistantText || null,
-        tool_calls: normalizedCalls,
-        timestamp: Date.now(),
+        tool_calls: functionCalls,
       };
 
-      messages.push(toOpenAIMessage(assistantTurn));
+      messages.push(assistantTurn);
       turnMessages.push(assistantTurn);
 
-      for (const call of normalizedCalls) {
+      for (const call of functionCalls) {
         const tool = toolMap.get(call.function.name);
         let resultPayload: unknown;
 
         if (tool) {
           try {
             const parsedArgs = parseToolArguments(call.function.arguments);
-
             const result = await tool.execute(parsedArgs);
 
             if (
@@ -212,28 +201,22 @@ export async function runChatToolLoop<T>(options: {
         const toolTurn: TurnMessage = {
           role: "tool",
           tool_call_id: call.id,
-          name: call.function.name,
           content: JSON.stringify(resultPayload),
-          timestamp: Date.now(),
         };
 
-        messages.push(toOpenAIMessage(toolTurn));
+        messages.push(toolTurn);
         turnMessages.push(toolTurn);
       }
 
       continue;
     }
 
-    const validation = options.validateFinal(assistantText);
+    const validation = options.outputSchema
+      ? validateModelJson(options.outputSchema, assistantText)
+      : { ok: true as const, value: undefined as Static<S> };
 
     if (validation.ok) {
-      const finalAssistant: TurnMessage = {
-        role: "assistant",
-        content: assistantText,
-        timestamp: Date.now(),
-      };
-
-      turnMessages.push(finalAssistant);
+      turnMessages.push({ role: "assistant", content: assistantText });
 
       return {
         text: assistantText,
@@ -248,22 +231,13 @@ export async function runChatToolLoop<T>(options: {
     }
 
     corrections++;
-    const invalidAssistant: TurnMessage = {
-      role: "assistant",
-      content: assistantText,
-      timestamp: Date.now(),
-    };
-    const retryPrompt: TurnMessage = {
-      role: "user",
-      content: `上一次输出未通过格式校验（第 ${corrections}/2 次纠正）：${validation.issue}。请只输出符合协议的纯 JSON 对象，不要附加额外说明或代码围栏。`,
-      timestamp: Date.now(),
-    };
-
     messages.push(
-      toOpenAIMessage(invalidAssistant),
-      toOpenAIMessage(retryPrompt),
+      { role: "assistant", content: assistantText },
+      {
+        role: "user",
+        content: `上一次输出未通过格式校验（第 ${corrections}/2 次纠正）：${validation.issue}。请只输出符合协议的纯 JSON 对象，不要附加额外说明或代码围栏。`,
+      },
     );
-    turnMessages.push(invalidAssistant, retryPrompt);
   }
 
   throw new Error(`工具调用轮次超过上限（${options.maxRounds}）`);
@@ -274,13 +248,7 @@ function parseToolArguments(raw: string): Record<string, unknown> {
     return {};
   }
 
-  let parsed: unknown;
-
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    parsed = JSON.parse(jsonrepair(raw));
-  }
+  const parsed = parseModelJson(raw);
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Tool arguments must be a JSON object");

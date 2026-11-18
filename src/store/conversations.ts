@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { Selectable } from "kysely";
+import type { ChatCompletionMessageFunctionToolCall } from "openai/resources/chat/completions";
 
 import type {
   ConversationRecord,
@@ -9,7 +10,54 @@ import type {
 } from "../types.ts";
 import { GLOBAL_CONVERSATION_KEY } from "../types.ts";
 import type { BerryDatabase } from "./database.ts";
-import type { BerryTables } from "./schema.ts";
+import type { BerryDb, BerryTables } from "./schema.ts";
+
+function decodeTurnMessages(rawJson: string): TurnMessage[] {
+  const raw = JSON.parse(rawJson) as unknown[];
+  const out: TurnMessage[] = [];
+
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+
+    const item = entry as Record<string, unknown>;
+
+    switch (item.role) {
+      case "user": {
+        out.push({ role: "user", content: String(item.content ?? "") });
+
+        break;
+      }
+
+      case "assistant": {
+        const toolCalls = Array.isArray(item.tool_calls)
+          ? (item.tool_calls as ChatCompletionMessageFunctionToolCall[])
+          : undefined;
+
+        out.push({
+          role: "assistant",
+          content: typeof item.content === "string" ? item.content : null,
+          ...(toolCalls?.length ? { tool_calls: toolCalls } : {}),
+        });
+
+        break;
+      }
+
+      case "tool": {
+        out.push({
+          role: "tool",
+          tool_call_id: String(item.tool_call_id ?? ""),
+          content: String(item.content ?? ""),
+        });
+
+        break;
+      }
+    }
+  }
+
+  return out;
+}
 
 const decodeConversation = (
   row: Selectable<BerryTables["conversations"]>,
@@ -17,7 +65,7 @@ const decodeConversation = (
   chatKey: row.chat_key,
   sessionId: row.session_id,
   summary: row.summary,
-  messages: JSON.parse(row.messages_json) as TurnMessage[],
+  messages: decodeTurnMessages(row.messages_json),
   pendingResults: JSON.parse(row.pending_results_json) as OutputResult[],
   afterMessageId: row.after_message_id,
   updatedAt: row.updated_at,
@@ -34,19 +82,7 @@ export class ConversationsStore {
     const now = Date.now();
 
     return this.#database.writeTx(async (trx) => {
-      await trx
-        .insertInto("conversations")
-        .values({
-          chat_key: GLOBAL_CONVERSATION_KEY,
-          session_id: randomUUID(),
-          summary: "",
-          messages_json: "[]",
-          pending_results_json: "[]",
-          after_message_id: 0,
-          updated_at: now,
-        })
-        .onConflict((oc) => oc.column("chat_key").doNothing())
-        .execute();
+      await this.#ensureRow(trx, now);
 
       const row = await trx
         .selectFrom("conversations")
@@ -72,19 +108,7 @@ export class ConversationsStore {
     const now = Date.now();
 
     await this.#database.writeTx(async (trx) => {
-      await trx
-        .insertInto("conversations")
-        .values({
-          chat_key: GLOBAL_CONVERSATION_KEY,
-          session_id: randomUUID(),
-          summary: "",
-          messages_json: "[]",
-          pending_results_json: "[]",
-          after_message_id: 0,
-          updated_at: now,
-        })
-        .onConflict((oc) => oc.column("chat_key").doNothing())
-        .execute();
+      await this.#ensureRow(trx, now);
 
       const row = await trx
         .selectFrom("conversations")
@@ -161,7 +185,7 @@ export class ConversationsStore {
       }
 
       const nextMessages = [
-        ...(JSON.parse(row.messages_json) as TurnMessage[]),
+        ...decodeTurnMessages(row.messages_json),
         ...turnMessages,
       ];
 
@@ -200,7 +224,7 @@ export class ConversationsStore {
         return false;
       }
 
-      const current = JSON.parse(row.messages_json) as TurnMessage[];
+      const current = decodeTurnMessages(row.messages_json);
 
       if (consumedCount <= 0 || consumedCount > current.length) {
         return false;
@@ -246,5 +270,21 @@ export class ConversationsStore {
 
       return decodeConversation(row);
     });
+  }
+
+  async #ensureRow(trx: BerryDb, now: number): Promise<void> {
+    await trx
+      .insertInto("conversations")
+      .values({
+        chat_key: GLOBAL_CONVERSATION_KEY,
+        session_id: randomUUID(),
+        summary: "",
+        messages_json: "[]",
+        pending_results_json: "[]",
+        after_message_id: 0,
+        updated_at: now,
+      })
+      .onConflict((oc) => oc.column("chat_key").doNothing())
+      .execute();
   }
 }

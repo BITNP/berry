@@ -71,10 +71,9 @@ export class KnowledgeBase {
     const text = await readFile(absPath, "utf8");
     const lines = text.split("\n");
     const start = Math.max(1, startLine);
-    const end = Math.min(lines.length, Math.max(start, endLine, start + 399));
-    const clampedEnd = Math.min(end, start + 399, lines.length);
+    const end = Math.min(lines.length, Math.max(start, endLine), start + 399);
     const slice = lines
-      .slice(start - 1, clampedEnd)
+      .slice(start - 1, end)
       .map((line, idx) => `${start + idx}: ${line}`)
       .join("\n");
 
@@ -82,7 +81,7 @@ export class KnowledgeBase {
       scope,
       path: relPath,
       startLine: start,
-      endLine: clampedEnd,
+      endLine: end,
       totalLines: lines.length,
       content: slice,
     };

@@ -1,8 +1,6 @@
-import { jsonrepair } from "jsonrepair";
-import OpenAI from "openai";
 import { Type } from "typebox";
-import * as Value from "typebox/value";
 
+import { completeChat, validateModelJson } from "../agent/llm.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
 import type { Store } from "../store/index.ts";
 import type { ChatConfig, GateAction, MessageRecord } from "../types.ts";
@@ -133,41 +131,36 @@ export class SmallModelClassifier {
     };
 
     try {
-      const client = new OpenAI({
+      const response = await completeChat({
         apiKey,
         baseURL,
-        timeout: gateCfg.timeoutMs,
-        maxRetries: 1,
-      });
-
-      const response = await client.chat.completions.create({
         model: modelName,
-        temperature: 0,
-        max_tokens: 800,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: GATE_SYSTEM_PROMPT },
-          { role: "user", content: JSON.stringify(inputPayload) },
-        ],
+        timeoutMs: gateCfg.timeoutMs,
+        maxRetries: 1,
+        store: this.#store,
+        timeZone: settings.bot.timezone,
+        purpose: "gate",
+        chatKey: chat.chatKey,
+        params: {
+          temperature: 0,
+          max_tokens: 800,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: GATE_SYSTEM_PROMPT },
+            { role: "user", content: JSON.stringify(inputPayload) },
+          ],
+        },
       });
 
       const durationMs = Math.round(performance.now() - startedAt);
-      const usage = response.usage;
-
-      await this.#store.usage.record({
-        purpose: "gate",
-        model: modelName,
-        chatKey: chat.chatKey,
-        inputTokens: usage?.prompt_tokens ?? 0,
-        cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
-        outputTokens: usage?.completion_tokens ?? 0,
-        durationMs,
-        timeZone: settings.bot.timezone,
-      });
-
       const content = response.choices[0]?.message?.content ?? "{}";
-      const parsed = this.#parseDecisions(content);
-      const byId = new Map(parsed.decisions.map((d) => [d.messageId, d]));
+      const parsed = validateModelJson(decisionBatchSchema, content);
+
+      if (!parsed.ok) {
+        throw new Error(`Invalid gate JSON shape: ${parsed.issue}`);
+      }
+
+      const byId = new Map(parsed.value.decisions.map((d) => [d.messageId, d]));
 
       const results: CandidateClassification[] = candidates.map((candidate) => {
         const item = byId.get(candidate.id);
@@ -300,25 +293,5 @@ export class SmallModelClassifier {
     });
 
     return { result, model, durationMs };
-  }
-
-  #parseDecisions(raw: string): { decisions: CandidateClassification[] } {
-    let parsed: unknown;
-
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      parsed = JSON.parse(jsonrepair(raw));
-    }
-
-    if (!Value.Check(decisionBatchSchema, parsed)) {
-      const errs = [...Value.Errors(decisionBatchSchema, parsed)]
-        .map((err) => `${err.instancePath || "/"} ${err.message}`)
-        .join("; ");
-
-      throw new Error(`Invalid gate JSON shape: ${errs}`);
-    }
-
-    return parsed;
   }
 }
