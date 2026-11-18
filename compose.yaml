@@ -1,0 +1,14 @@
+services:
+  berry:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      BERRY_HOST: 0.0.0.0
+      BERRY_PORT: 3220
+      BERRY_DATA_DIR: /app/data
+    ports:
+      - "127.0.0.1:3220:3220"
+    volumes:
+      - ./data:/app/data

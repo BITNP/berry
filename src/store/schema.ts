@@ -1,0 +1,476 @@
+import type { Generated, Kysely } from "kysely";
+
+export interface BerryTables {
+  settings: {
+    id: number;
+    data_json: string;
+    updated_at: number;
+  };
+  chats: {
+    chat_key: string;
+    kind: string;
+    chat_id: string;
+    title: string;
+    enabled: number;
+    trigger_mode: string;
+    created_at: number;
+    updated_at: number;
+  };
+  messages: {
+    id: Generated<number>;
+    chat_key: string;
+    kind: string;
+    chat_id: string;
+    onebot_message_id: string;
+    user_id: string;
+    sender_name: string;
+    text: string;
+    segments_json: string;
+    reply_to_message_id: string | null;
+    is_bot: number;
+    mentioned_bot: number;
+    quoted_bot: number;
+    recalled_at: number | null;
+    sent_at: number;
+    received_at: number;
+  };
+  gate_decisions: {
+    id: Generated<number>;
+    chat_key: string;
+    message_id: number | null;
+    action: string;
+    stage: string;
+    confidence: number;
+    reason: string;
+    model: string;
+    duration_ms: number;
+    created_at: number;
+  };
+  conversations: {
+    chat_key: string;
+    session_id: string;
+    summary: string;
+    messages_json: string;
+    pending_results_json: string;
+    after_message_id: number;
+    updated_at: number;
+  };
+  memories: {
+    id: Generated<number>;
+    scope: string;
+    owner_id: string;
+    key: string;
+    summary: string;
+    content: string;
+    source_message_id: number | null;
+    updated_at: number;
+  };
+  jobs: {
+    id: Generated<number>;
+    kind: string;
+    dedupe_key: string;
+    chat_key: string;
+    payload_json: string;
+    state: string;
+    attempts: number;
+    run_after: number;
+    last_error: string | null;
+    created_at: number;
+    updated_at: number;
+  };
+  deliveries: {
+    id: Generated<number>;
+    chat_key: string;
+    kind: string;
+    payload_json: string;
+    gateway_delivery_id: string | null;
+    status: string;
+    attempts: number;
+    error: string | null;
+    onebot_message_id: string | null;
+    created_at: number;
+    updated_at: number;
+  };
+  schedules: {
+    id: string;
+    title: string;
+    chat_key: string;
+    kind: string;
+    chat_id: string;
+    content: string;
+    schedule_json: string;
+    enabled: number;
+    next_run_at: number | null;
+    last_run_at: number | null;
+    created_at: number;
+    updated_at: number;
+  };
+  cursors: {
+    name: string;
+    value: string;
+    updated_at: number;
+  };
+  guild_audit_logs: {
+    id: Generated<number>;
+    chat_key: string;
+    qq_user_id: string;
+    actor_subject: string;
+    actor_name: string;
+    action: string;
+    node_id: number | null;
+    target_title: string;
+    request_json: string;
+    response_json: string;
+    error: string | null;
+    created_at: number;
+  };
+  llm_usage: {
+    id: Generated<number>;
+    day: string;
+    purpose: string;
+    model: string;
+    chat_key: string | null;
+    input_tokens: number;
+    cached_input_tokens: number;
+    output_tokens: number;
+    duration_ms: number;
+    created_at: number;
+  };
+  admin_sessions: {
+    id: string;
+    subject: string;
+    name: string;
+    email: string;
+    avatar: string;
+    permissions_json: string;
+    csrf_token: string;
+    expires_at: number;
+    created_at: number;
+  };
+  message_assets: {
+    id: Generated<number>;
+    message_id: number;
+    chat_key: string;
+    kind: string;
+    raw_url: string;
+    file_path: string | null;
+    mime_type: string;
+    sha256: string;
+    transcript: string | null;
+    status: string;
+    error: string | null;
+    updated_at: number;
+  };
+  message_reactions: {
+    chat_key: string;
+    onebot_message_id: string;
+    emoji_id: string;
+    emoji_name: string;
+    user_id: string;
+    updated_at: number;
+  };
+}
+
+export type BerryDb = Kysely<BerryTables>;
+
+export async function createBerryTables(db: BerryDb): Promise<void> {
+  await db.schema
+    .createTable("settings")
+    .ifNotExists()
+    .addColumn("id", "integer", (c) => c.primaryKey())
+    .addColumn("data_json", "text", (c) => c.notNull())
+    .addColumn("updated_at", "integer", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createTable("chats")
+    .ifNotExists()
+    .addColumn("chat_key", "text", (c) => c.primaryKey())
+    .addColumn("kind", "text", (c) => c.notNull())
+    .addColumn("chat_id", "text", (c) => c.notNull())
+    .addColumn("title", "text", (c) => c.notNull().defaultTo(""))
+    .addColumn("enabled", "integer", (c) => c.notNull().defaultTo(1))
+    .addColumn("trigger_mode", "text", (c) =>
+      c.notNull().defaultTo("mention_only"),
+    )
+    .addColumn("created_at", "integer", (c) => c.notNull())
+    .addColumn("updated_at", "integer", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createTable("messages")
+    .ifNotExists()
+    .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+    .addColumn("chat_key", "text", (c) => c.notNull())
+    .addColumn("kind", "text", (c) => c.notNull())
+    .addColumn("chat_id", "text", (c) => c.notNull())
+    .addColumn("onebot_message_id", "text", (c) => c.notNull())
+    .addColumn("user_id", "text", (c) => c.notNull())
+    .addColumn("sender_name", "text", (c) => c.notNull())
+    .addColumn("text", "text", (c) => c.notNull())
+    .addColumn("segments_json", "text", (c) => c.notNull())
+    .addColumn("reply_to_message_id", "text")
+    .addColumn("is_bot", "integer", (c) => c.notNull().defaultTo(0))
+    .addColumn("mentioned_bot", "integer", (c) => c.notNull().defaultTo(0))
+    .addColumn("quoted_bot", "integer", (c) => c.notNull().defaultTo(0))
+    .addColumn("recalled_at", "integer")
+    .addColumn("sent_at", "integer", (c) => c.notNull())
+    .addColumn("received_at", "integer", (c) => c.notNull())
+    .addUniqueConstraint("uq_messages_chat_onebot", [
+      "chat_key",
+      "onebot_message_id",
+    ])
+    .execute();
+
+  await db.schema
+    .createIndex("idx_messages_chat_id")
+    .ifNotExists()
+    .on("messages")
+    .columns(["chat_key", "id"])
+    .execute();
+
+  await db.schema
+    .createIndex("idx_messages_chat_sent")
+    .ifNotExists()
+    .on("messages")
+    .columns(["chat_key", "sent_at"])
+    .execute();
+
+  await db.schema
+    .createTable("gate_decisions")
+    .ifNotExists()
+    .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+    .addColumn("chat_key", "text", (c) => c.notNull())
+    .addColumn("message_id", "integer")
+    .addColumn("action", "text", (c) => c.notNull())
+    .addColumn("stage", "text", (c) => c.notNull())
+    .addColumn("confidence", "real", (c) => c.notNull())
+    .addColumn("reason", "text", (c) => c.notNull())
+    .addColumn("model", "text", (c) => c.notNull())
+    .addColumn("duration_ms", "integer", (c) => c.notNull())
+    .addColumn("created_at", "integer", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createIndex("idx_gate_created")
+    .ifNotExists()
+    .on("gate_decisions")
+    .columns(["created_at"])
+    .execute();
+
+  await db.schema
+    .createIndex("idx_gate_action_created")
+    .ifNotExists()
+    .on("gate_decisions")
+    .columns(["action", "created_at"])
+    .execute();
+
+  await db.schema
+    .createIndex("idx_gate_chat_created")
+    .ifNotExists()
+    .on("gate_decisions")
+    .columns(["chat_key", "created_at"])
+    .execute();
+
+  await db.schema
+    .createTable("conversations")
+    .ifNotExists()
+    .addColumn("chat_key", "text", (c) => c.primaryKey())
+    .addColumn("session_id", "text", (c) => c.notNull())
+    .addColumn("summary", "text", (c) => c.notNull())
+    .addColumn("messages_json", "text", (c) => c.notNull())
+    .addColumn("pending_results_json", "text", (c) => c.notNull())
+    .addColumn("after_message_id", "integer", (c) => c.notNull().defaultTo(0))
+    .addColumn("updated_at", "integer", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createTable("memories")
+    .ifNotExists()
+    .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+    .addColumn("scope", "text", (c) => c.notNull())
+    .addColumn("owner_id", "text", (c) => c.notNull())
+    .addColumn("key", "text", (c) => c.notNull())
+    .addColumn("summary", "text", (c) => c.notNull())
+    .addColumn("content", "text", (c) => c.notNull())
+    .addColumn("source_message_id", "integer")
+    .addColumn("updated_at", "integer", (c) => c.notNull())
+    .addUniqueConstraint("uq_memories_scope_owner_key", [
+      "scope",
+      "owner_id",
+      "key",
+    ])
+    .execute();
+
+  await db.schema
+    .createTable("jobs")
+    .ifNotExists()
+    .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+    .addColumn("kind", "text", (c) => c.notNull())
+    .addColumn("dedupe_key", "text", (c) => c.notNull().unique())
+    .addColumn("chat_key", "text", (c) => c.notNull())
+    .addColumn("payload_json", "text", (c) => c.notNull())
+    .addColumn("state", "text", (c) => c.notNull().defaultTo("pending"))
+    .addColumn("attempts", "integer", (c) => c.notNull().defaultTo(0))
+    .addColumn("run_after", "integer", (c) => c.notNull())
+    .addColumn("last_error", "text")
+    .addColumn("created_at", "integer", (c) => c.notNull())
+    .addColumn("updated_at", "integer", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createIndex("idx_jobs_state_run")
+    .ifNotExists()
+    .on("jobs")
+    .columns(["state", "run_after"])
+    .execute();
+
+  await db.schema
+    .createTable("deliveries")
+    .ifNotExists()
+    .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+    .addColumn("chat_key", "text", (c) => c.notNull())
+    .addColumn("kind", "text", (c) => c.notNull())
+    .addColumn("payload_json", "text", (c) => c.notNull())
+    .addColumn("gateway_delivery_id", "text")
+    .addColumn("status", "text", (c) => c.notNull())
+    .addColumn("attempts", "integer", (c) => c.notNull().defaultTo(0))
+    .addColumn("error", "text")
+    .addColumn("onebot_message_id", "text")
+    .addColumn("created_at", "integer", (c) => c.notNull())
+    .addColumn("updated_at", "integer", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createIndex("idx_deliveries_created")
+    .ifNotExists()
+    .on("deliveries")
+    .columns(["created_at"])
+    .execute();
+
+  await db.schema
+    .createTable("schedules")
+    .ifNotExists()
+    .addColumn("id", "text", (c) => c.primaryKey())
+    .addColumn("title", "text", (c) => c.notNull())
+    .addColumn("chat_key", "text", (c) => c.notNull())
+    .addColumn("kind", "text", (c) => c.notNull())
+    .addColumn("chat_id", "text", (c) => c.notNull())
+    .addColumn("content", "text", (c) => c.notNull())
+    .addColumn("schedule_json", "text", (c) => c.notNull())
+    .addColumn("enabled", "integer", (c) => c.notNull().defaultTo(1))
+    .addColumn("next_run_at", "integer")
+    .addColumn("last_run_at", "integer")
+    .addColumn("created_at", "integer", (c) => c.notNull())
+    .addColumn("updated_at", "integer", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createTable("cursors")
+    .ifNotExists()
+    .addColumn("name", "text", (c) => c.primaryKey())
+    .addColumn("value", "text", (c) => c.notNull())
+    .addColumn("updated_at", "integer", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createTable("guild_audit_logs")
+    .ifNotExists()
+    .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+    .addColumn("chat_key", "text", (c) => c.notNull())
+    .addColumn("qq_user_id", "text", (c) => c.notNull())
+    .addColumn("actor_subject", "text", (c) => c.notNull())
+    .addColumn("actor_name", "text", (c) => c.notNull())
+    .addColumn("action", "text", (c) => c.notNull())
+    .addColumn("node_id", "integer")
+    .addColumn("target_title", "text", (c) => c.notNull())
+    .addColumn("request_json", "text", (c) => c.notNull())
+    .addColumn("response_json", "text", (c) => c.notNull())
+    .addColumn("error", "text")
+    .addColumn("created_at", "integer", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createTable("llm_usage")
+    .ifNotExists()
+    .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+    .addColumn("day", "text", (c) => c.notNull())
+    .addColumn("purpose", "text", (c) => c.notNull())
+    .addColumn("model", "text", (c) => c.notNull())
+    .addColumn("chat_key", "text")
+    .addColumn("input_tokens", "integer", (c) => c.notNull())
+    .addColumn("cached_input_tokens", "integer", (c) => c.notNull())
+    .addColumn("output_tokens", "integer", (c) => c.notNull())
+    .addColumn("duration_ms", "integer", (c) => c.notNull())
+    .addColumn("created_at", "integer", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createIndex("idx_usage_day_purpose")
+    .ifNotExists()
+    .on("llm_usage")
+    .columns(["day", "purpose"])
+    .execute();
+
+  await db.schema
+    .createTable("admin_sessions")
+    .ifNotExists()
+    .addColumn("id", "text", (c) => c.primaryKey())
+    .addColumn("subject", "text", (c) => c.notNull())
+    .addColumn("name", "text", (c) => c.notNull())
+    .addColumn("email", "text", (c) => c.notNull())
+    .addColumn("avatar", "text", (c) => c.notNull())
+    .addColumn("permissions_json", "text", (c) => c.notNull())
+    .addColumn("csrf_token", "text", (c) => c.notNull())
+    .addColumn("expires_at", "integer", (c) => c.notNull())
+    .addColumn("created_at", "integer", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createTable("message_assets")
+    .ifNotExists()
+    .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+    .addColumn("message_id", "integer", (c) => c.notNull())
+    .addColumn("chat_key", "text", (c) => c.notNull())
+    .addColumn("kind", "text", (c) => c.notNull())
+    .addColumn("raw_url", "text", (c) => c.notNull())
+    .addColumn("file_path", "text")
+    .addColumn("mime_type", "text", (c) => c.notNull().defaultTo(""))
+    .addColumn("sha256", "text", (c) => c.notNull().defaultTo(""))
+    .addColumn("transcript", "text")
+    .addColumn("status", "text", (c) => c.notNull().defaultTo("pending"))
+    .addColumn("error", "text")
+    .addColumn("updated_at", "integer", (c) => c.notNull())
+    .execute();
+
+  await db.schema
+    .createIndex("idx_message_assets_message")
+    .ifNotExists()
+    .on("message_assets")
+    .columns(["message_id"])
+    .execute();
+
+  await db.schema
+    .createIndex("idx_message_assets_sha256")
+    .ifNotExists()
+    .on("message_assets")
+    .columns(["sha256"])
+    .execute();
+
+  await db.schema
+    .createTable("message_reactions")
+    .ifNotExists()
+    .addColumn("chat_key", "text", (c) => c.notNull())
+    .addColumn("onebot_message_id", "text", (c) => c.notNull())
+    .addColumn("emoji_id", "text", (c) => c.notNull())
+    .addColumn("emoji_name", "text", (c) => c.notNull())
+    .addColumn("user_id", "text", (c) => c.notNull())
+    .addColumn("updated_at", "integer", (c) => c.notNull())
+    .addPrimaryKeyConstraint("pk_message_reactions", [
+      "chat_key",
+      "onebot_message_id",
+      "emoji_id",
+      "user_id",
+    ])
+    .execute();
+}

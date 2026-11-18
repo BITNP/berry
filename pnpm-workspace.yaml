@@ -1,0 +1,7 @@
+minimumReleaseAge: 0
+shellEmulator: true
+
+allowBuilds:
+  esbuild: true
+  protobufjs: false
+  unrs-resolver: false

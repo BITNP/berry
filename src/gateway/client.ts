@@ -1,0 +1,595 @@
+import type { EnvConfig } from "../config/env.ts";
+import type { Store } from "../store/index.ts";
+import type {
+  ChatKey,
+  DeliveryRecord,
+  OneBotSegment,
+  OutputUnit,
+} from "../types.ts";
+import { parseChatKey } from "../types.ts";
+import { Logger } from "../utils/logger.ts";
+import { errorMessage } from "../utils/time.ts";
+
+interface GatewayEnvelope<T = unknown> {
+  status?: string;
+  retcode?: number;
+  data?: T;
+  message?: string;
+}
+
+interface GatewayStatusResponse {
+  id: string;
+  status: "queued" | "retrying" | "sent" | "failed";
+  attempts?: number;
+  error?: string;
+  reason?: string;
+  retry_in_ms?: number;
+  receipt?: {
+    message_id: string;
+    sent_at?: string;
+  };
+}
+
+export interface GroupInfo {
+  group_id: number;
+  group_name: string;
+  member_count?: number;
+}
+
+export class MessageGatewayClient {
+  #baseUrl: string;
+  #account: string;
+  #token: string;
+  #store: Store;
+  #logger = new Logger("gateway");
+  #pendingTracks = new Set<Promise<void>>();
+  #closed = false;
+  #pollDelaysMs: number[];
+
+  constructor(
+    env: Pick<EnvConfig, "gatewayUrl" | "gatewayAccount" | "gatewayToken">,
+    store: Store,
+    pollDelaysMs = [350, 700, 1200, 2000, 3000, 4000, 5000, 5000],
+  ) {
+    this.#baseUrl = env.gatewayUrl.replace(/\/+$/, "");
+    this.#account = env.gatewayAccount || "qq";
+    this.#token = env.gatewayToken;
+    this.#store = store;
+    this.#pollDelaysMs = pollDelaysMs;
+  }
+
+  public get configured(): boolean {
+    return Boolean(this.#baseUrl && this.#account && this.#token);
+  }
+
+  public async checkHealth(): Promise<{
+    configured: boolean;
+    reachable: boolean;
+    error?: string;
+  }> {
+    if (!this.configured) {
+      return { configured: false, reachable: false, error: "网关未配置" };
+    }
+
+    try {
+      const res = await fetch(`${this.#baseUrl}/healthz`, {
+        signal: AbortSignal.timeout(4000),
+      });
+
+      if (!res.ok) {
+        return {
+          configured: true,
+          reachable: false,
+          error: `HTTP ${res.status}`,
+        };
+      }
+
+      return { configured: true, reachable: true };
+    } catch (error) {
+      return {
+        configured: true,
+        reachable: false,
+        error: errorMessage(error),
+      };
+    }
+  }
+
+  public async callAction<T = unknown>(
+    action: string,
+    params: Record<string, unknown> = {},
+  ): Promise<{ httpStatus: number; body: GatewayEnvelope<T> }> {
+    if (!this.configured) {
+      throw new Error("message-gateway is not configured");
+    }
+
+    const url = `${this.#baseUrl}/api/v1/accounts/${encodeURIComponent(this.#account)}/${action}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${this.#token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(params),
+      signal: AbortSignal.timeout(30_000),
+    });
+
+    const body = (await res.json().catch(() => ({}))) as GatewayEnvelope<T>;
+
+    if (res.status >= 400) {
+      throw new Error(
+        `Gateway ${action} failed (HTTP ${res.status}): ${body.message ?? res.statusText}`,
+      );
+    }
+
+    return { httpStatus: res.status, body };
+  }
+
+  public async getLoginInfo(): Promise<{
+    user_id: number;
+    nickname: string;
+  } | null> {
+    if (!this.configured) {
+      return null;
+    }
+
+    const { body } = await this.callAction<{
+      user_id: number;
+      nickname: string;
+    }>("get_login_info");
+
+    return body.data ?? null;
+  }
+
+  public async getGroupList(): Promise<GroupInfo[]> {
+    if (!this.configured) {
+      return [];
+    }
+
+    const { body } = await this.callAction<GroupInfo[]>("get_group_list");
+
+    return Array.isArray(body.data) ? body.data : [];
+  }
+
+  public async getGroupMemberList(
+    groupId: string,
+  ): Promise<
+    { user_id: number; nickname: string; card?: string; role?: string }[]
+  > {
+    if (!this.configured) {
+      return [];
+    }
+
+    const { body } = await this.callAction<
+      { user_id: number; nickname: string; card?: string; role?: string }[]
+    >("get_group_member_list", { group_id: Number(groupId) });
+
+    return Array.isArray(body.data) ? body.data : [];
+  }
+
+  public async getFriendList(): Promise<
+    { user_id: number; nickname: string; remark?: string }[]
+  > {
+    if (!this.configured) {
+      return [];
+    }
+
+    const { body } =
+      await this.callAction<
+        { user_id: number; nickname: string; remark?: string }[]
+      >("get_friend_list");
+
+    return Array.isArray(body.data) ? body.data : [];
+  }
+
+  public async getForwardMsg(forwardId: string): Promise<unknown[]> {
+    if (!this.configured) {
+      return [];
+    }
+
+    const { body } = await this.callAction<
+      { messages?: unknown[] } | unknown[]
+    >("get_forward_msg", { id: forwardId, message_id: forwardId });
+    const data = body.data;
+
+    if (Array.isArray(data)) {
+      return data;
+    }
+
+    if (data && typeof data === "object" && Array.isArray(data.messages)) {
+      return data.messages;
+    }
+
+    return [];
+  }
+
+  public async getGroupMsgHistory(
+    groupId: string,
+    count = 40,
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.configured) {
+      return [];
+    }
+
+    const { body } = await this.callAction<{
+      messages?: Record<string, unknown>[];
+    }>("get_group_msg_history", {
+      group_id: Number(groupId),
+      count: Math.min(200, Math.max(1, count)),
+    });
+
+    return Array.isArray(body.data?.messages) ? body.data.messages : [];
+  }
+
+  public async dispatchUnit(
+    chatKey: ChatKey,
+    unit: OutputUnit,
+    botQQ: string,
+  ): Promise<DeliveryRecord> {
+    const delivery = await this.#store.deliveries.create(chatKey, unit);
+    const { kind, chatId } = parseChatKey(chatKey);
+
+    try {
+      if (!this.configured) {
+        throw new Error("message-gateway 未配置，无法投递消息");
+      }
+
+      if (unit.kind === "qq_reaction") {
+        await this.callAction("set_msg_emoji_like", {
+          message_id: Number.isFinite(Number(unit.messageId))
+            ? Number(unit.messageId)
+            : unit.messageId,
+          emoji_id: String(unit.emojiId),
+          set: true,
+        });
+
+        return (
+          (await this.#store.deliveries.updateStatus(delivery.id, {
+            status: "sent",
+            onebotMessageId: unit.messageId,
+          })) ?? delivery
+        );
+      }
+
+      if (unit.kind === "qq_forward") {
+        await this.#dispatchForward(
+          delivery,
+          chatKey,
+          kind,
+          chatId,
+          unit,
+          botQQ,
+        );
+
+        return (await this.#store.deliveries.list(1))[0] ?? delivery;
+      }
+
+      const segments: OneBotSegment[] = [
+        ...(unit.quoteMessageId
+          ? [{ type: "reply", data: { id: unit.quoteMessageId } }]
+          : []),
+        { type: "text", data: { text: unit.text } },
+      ];
+      const action =
+        kind === "group" ? "send_group_msg_async" : "send_private_msg_async";
+      const params =
+        kind === "group"
+          ? { group_id: Number(chatId), message: segments }
+          : { user_id: Number(chatId), message: segments };
+
+      const { body } = await this.callAction<{
+        delivery_id?: string;
+        message_id?: string | number;
+      }>(action, params);
+
+      const gatewayDeliveryId = body.data?.delivery_id ?? null;
+
+      if (gatewayDeliveryId) {
+        const updated = await this.#store.deliveries.updateStatus(delivery.id, {
+          status: "queued",
+          gatewayDeliveryId,
+        });
+
+        this.#spawnTracker(
+          delivery.id,
+          chatKey,
+          gatewayDeliveryId,
+          unit.text,
+          segments,
+          unit.quoteMessageId ?? null,
+          botQQ,
+        );
+
+        return updated ?? delivery;
+      }
+
+      const msgId = body.data?.message_id
+        ? String(body.data.message_id)
+        : `sent-${delivery.id}`;
+
+      return await this.#markSent(
+        delivery.id,
+        chatKey,
+        msgId,
+        unit.text,
+        segments,
+        unit.quoteMessageId ?? null,
+        botQQ,
+      );
+    } catch (error) {
+      const detail = errorMessage(error);
+
+      await this.#store.deliveries.updateStatus(delivery.id, {
+        status: "failed",
+        error: detail,
+      });
+      await this.#store.conversations.pushOutputResult({
+        module: "qq_gateway",
+        status: "error",
+        detail: `[${chatKey}] ${detail}`,
+        createdAt: Date.now(),
+      });
+      this.#logger.warn("Delivery failed", {
+        deliveryId: delivery.id,
+        chatKey,
+        error: detail,
+      });
+
+      return delivery;
+    }
+  }
+
+  async #dispatchForward(
+    delivery: DeliveryRecord,
+    chatKey: ChatKey,
+    kind: "group" | "private",
+    chatId: string,
+    unit: Extract<OutputUnit, { kind: "qq_forward" }>,
+    botQQ: string,
+  ): Promise<void> {
+    if (kind === "private") {
+      const joined = `${unit.title}\n\n${unit.items.map((item) => item.text).join("\n\n")}`;
+      const segments: OneBotSegment[] = [
+        { type: "text", data: { text: joined } },
+      ];
+      const { body } = await this.callAction<{
+        delivery_id?: string;
+        message_id?: string | number;
+      }>("send_private_msg_async", {
+        user_id: Number(chatId),
+        message: segments,
+      });
+
+      if (body.data?.delivery_id) {
+        await this.#store.deliveries.updateStatus(delivery.id, {
+          status: "queued",
+          gatewayDeliveryId: body.data.delivery_id,
+        });
+        this.#spawnTracker(
+          delivery.id,
+          chatKey,
+          body.data.delivery_id,
+          joined,
+          segments,
+          null,
+          botQQ,
+        );
+
+        return;
+      }
+
+      await this.#markSent(
+        delivery.id,
+        chatKey,
+        String(body.data?.message_id ?? `fwd-${delivery.id}`),
+        joined,
+        segments,
+        null,
+        botQQ,
+      );
+
+      return;
+    }
+
+    const nodes = unit.items.map((item) => ({
+      type: "node",
+      data: {
+        user_id: botQQ || "0",
+        nickname: "树莓娘",
+        content: [{ type: "text", data: { text: item.text } }],
+      },
+    }));
+
+    const { body } = await this.callAction<{ message_id?: string | number }>(
+      "send_group_forward_msg",
+      {
+        group_id: Number(chatId),
+        messages: nodes,
+        source: unit.title,
+        summary: `查看 ${unit.items.length} 条内容`,
+        prompt: `[${unit.title}]`,
+      },
+    );
+
+    const summaryText = `[${unit.title}]\n${unit.items.map((item) => item.text).join("\n")}`;
+
+    await this.#markSent(
+      delivery.id,
+      chatKey,
+      String(body.data?.message_id ?? `fwd-${delivery.id}`),
+      summaryText,
+      [],
+      null,
+      botQQ,
+    );
+  }
+
+  #spawnTracker(
+    deliveryId: number,
+    chatKey: ChatKey,
+    gatewayDeliveryId: string,
+    text: string,
+    segments: OneBotSegment[],
+    replyToMessageId: string | null,
+    botQQ: string,
+  ): void {
+    const task = this.#trackDelivery(
+      deliveryId,
+      chatKey,
+      gatewayDeliveryId,
+      text,
+      segments,
+      replyToMessageId,
+      botQQ,
+    )
+      .catch((error) => {
+        this.#logger.warn("Delivery status tracking failed", {
+          deliveryId,
+          gatewayDeliveryId,
+          error: errorMessage(error),
+        });
+      })
+      .finally(() => {
+        this.#pendingTracks.delete(task);
+      });
+
+    this.#pendingTracks.add(task);
+  }
+
+  async #trackDelivery(
+    deliveryId: number,
+    chatKey: ChatKey,
+    gatewayDeliveryId: string,
+    text: string,
+    segments: OneBotSegment[],
+    replyToMessageId: string | null,
+    botQQ: string,
+  ): Promise<void> {
+    const url = `${this.#baseUrl}/api/v1/accounts/${encodeURIComponent(this.#account)}/message-status/${encodeURIComponent(gatewayDeliveryId)}`;
+
+    for (const delayMs of this.#pollDelaysMs) {
+      if (this.#closed) {
+        return;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (this.#closed) {
+        return;
+      }
+
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${this.#token}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (res.status === 404) {
+        await this.#markFailed(
+          deliveryId,
+          chatKey,
+          "Gateway delivery status not found (evicted or restarted)",
+        );
+
+        return;
+      }
+
+      if (!res.ok) {
+        continue;
+      }
+
+      const state = (await res.json()) as GatewayStatusResponse;
+
+      if (state.status === "sent") {
+        await this.#markSent(
+          deliveryId,
+          chatKey,
+          state.receipt?.message_id ?? `gw-${gatewayDeliveryId}`,
+          text,
+          segments,
+          replyToMessageId,
+          botQQ,
+        );
+
+        return;
+      }
+
+      if (state.status === "failed") {
+        await this.#markFailed(
+          deliveryId,
+          chatKey,
+          state.error || state.reason || "gateway delivery failed",
+        );
+
+        return;
+      }
+
+      await this.#store.deliveries.updateStatus(deliveryId, {
+        status: state.status,
+        ...(state.attempts === undefined ? {} : { attempts: state.attempts }),
+        ...(state.error ? { error: state.error } : {}),
+      });
+    }
+  }
+
+  async #markSent(
+    deliveryId: number,
+    chatKey: ChatKey,
+    onebotMessageId: string,
+    text: string,
+    segments: OneBotSegment[],
+    replyToMessageId: string | null,
+    botQQ: string,
+  ): Promise<DeliveryRecord> {
+    const updated = await this.#store.deliveries.updateStatus(deliveryId, {
+      status: "sent",
+      onebotMessageId,
+    });
+    const { kind, chatId } = parseChatKey(chatKey);
+
+    await this.#store.messages.capture({
+      kind,
+      chatId,
+      onebotMessageId,
+      userId: botQQ || "bot",
+      senderName: "树莓娘",
+      text,
+      segments,
+      replyToMessageId,
+      isBot: true,
+      mentionedBot: false,
+      sentAt: Date.now(),
+    });
+    await this.#store.conversations.pushOutputResult({
+      module: "qq_gateway",
+      status: "ok",
+      detail: "sent",
+      createdAt: Date.now(),
+    });
+
+    return updated!;
+  }
+
+  async #markFailed(
+    deliveryId: number,
+    chatKey: ChatKey,
+    detail: string,
+  ): Promise<void> {
+    await this.#store.deliveries.updateStatus(deliveryId, {
+      status: "failed",
+      error: detail,
+    });
+    await this.#store.conversations.pushOutputResult({
+      module: "qq_gateway",
+      status: "error",
+      detail: `[${chatKey}] ${detail}`,
+      createdAt: Date.now(),
+    });
+  }
+
+  public async waitForPendingTracks(): Promise<void> {
+    await Promise.all(this.#pendingTracks);
+  }
+
+  public async close(): Promise<void> {
+    this.#closed = true;
+    await this.waitForPendingTracks();
+  }
+}

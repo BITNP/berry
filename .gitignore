@@ -1,0 +1,10 @@
+node_modules/
+dist/
+data/
+.env
+.env.local
+.devenv*
+.direnv/
+devenv.local.nix
+*.tsbuildinfo
+*.log
