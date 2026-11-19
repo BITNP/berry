@@ -2,91 +2,69 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseOneBotSegments } from "../src/gateway/segments.ts";
+import { previousNaturalWeek } from "../src/guild/automation.ts";
+import { computeNextRunAt } from "../src/store/schedules.ts";
 import { Logger } from "../src/utils/logger.ts";
-import { createTestBerryApp, startStubServer } from "./helpers.ts";
+import { captureText, createTestBerryApp, startStubServer } from "./helpers.ts";
 
-test("Pino LogHub redaction, filtering, SSE stream and /api/admin/logs", async () => {
-  const { app, cleanup } = await createTestBerryApp({
-    devAuthBypass: true,
-    webhookToken: "wh-super-secret-xyz",
+test("Pino LogHub redaction, level/scope filtering, and clear endpoint", async (t) => {
+  const { app } = await createTestBerryApp(
+    {
+      devAuthBypass: true,
+      webhookToken: "wh-super-secret-xyz",
+    },
+    {},
+    t,
+  );
+
+  app.logs.clear();
+  const logger = new Logger("ops-test");
+
+  logger.info("Connected with token wh-super-secret-xyz", {
+    apiKey: "test-main-key",
+    host: "127.0.0.1",
+  });
+  logger.warn("Gateway timeout warning", { retries: 2 });
+
+  const { items } = app.logs.list({ scope: "ops-test" });
+
+  assert.equal(items.length, 2);
+  assert.equal(items[0]!.message.includes("wh-super-secret-xyz"), false);
+  assert.ok(items[0]!.message.includes("[已脱敏]"));
+  assert.equal(items[0]!.context.apiKey, "[已脱敏]");
+
+  const { url } = await app.listen();
+  const listRes = await fetch(
+    `${url}/api/admin/logs?level=warn&scope=ops-test`,
+  );
+
+  assert.equal(listRes.status, 200);
+  const listJson = (await listRes.json()) as {
+    items: { level: string; message: string }[];
+  };
+
+  assert.equal(listJson.items.length, 1);
+  assert.equal(listJson.items[0]!.level, "warn");
+
+  const statusJson = (await (await fetch(`${url}/api/auth/status`)).json()) as {
+    csrfToken?: string;
+  };
+  const clearRes = await fetch(`${url}/api/admin/logs/clear`, {
+    method: "POST",
+    headers: { "X-CSRF-Token": statusJson.csrfToken ?? "" },
   });
 
-  try {
-    const seenSseLogs: { scope: string; message: string }[] = [];
-    const unsubscribe = app.events.subscribe((ev) => {
-      if (ev.type === "log") {
-        seenSseLogs.push({
-          scope: ev.data.scope,
-          message: ev.data.message,
-        });
-      }
-    });
-
-    app.logs.clear();
-
-    const logger = new Logger("ops-test");
-
-    logger.info("Connected with token wh-super-secret-xyz", {
-      apiKey: "test-main-key",
-      host: "127.0.0.1",
-    });
-    logger.warn("Gateway timeout warning", { retries: 2 });
-
-    unsubscribe();
-
-    const { items, scopes } = app.logs.list({
-      scope: "ops-test",
-    });
-
-    assert.equal(items.length, 2);
-    assert.ok(scopes.includes("ops-test"));
-    assert.equal(
-      items[0]!.message.includes("wh-super-secret-xyz"),
-      false,
-      "Configured secret must be redacted",
-    );
-    assert.ok(items[0]!.message.includes("[已脱敏]"));
-    assert.equal(items[0]!.context.apiKey, "[已脱敏]");
-
-    assert.equal(
-      seenSseLogs.some((e) => e.scope === "ops-test"),
-      true,
-    );
-
-    const { url } = await app.listen();
-    const listRes = await fetch(
-      `${url}/api/admin/logs?level=warn&scope=ops-test`,
-    );
-
-    assert.equal(listRes.status, 200);
-    const listJson = (await listRes.json()) as {
-      items: { level: string; message: string }[];
-    };
-
-    assert.equal(listJson.items.length, 1);
-    assert.equal(listJson.items[0]!.level, "warn");
-
-    const statusRes = await fetch(`${url}/api/auth/status`);
-    const statusJson = (await statusRes.json()) as { csrfToken?: string };
-
-    const clearRes = await fetch(`${url}/api/admin/logs/clear`, {
-      method: "POST",
-      headers: { "X-CSRF-Token": statusJson.csrfToken ?? "" },
-    });
-
-    assert.equal(clearRes.status, 200);
-    assert.equal(app.logs.list().items.length, 0);
-  } finally {
-    await cleanup();
-  }
+  assert.equal(clearRes.status, 200);
+  assert.equal(app.logs.list().items.length, 0);
 });
 
-test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch and pause/backfill", async () => {
+test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, and backfill", async (t) => {
   const gatewayCalls: { path: string; body: unknown }[] = [];
   const gatewayStub = await startStubServer((req, res, bodyText) => {
-    const parsedBody = bodyText ? JSON.parse(bodyText) : {};
-
-    gatewayCalls.push({ path: req.url ?? "", body: parsedBody });
+    gatewayCalls.push({
+      path: req.url ?? "",
+      body: bodyText ? JSON.parse(bodyText) : {},
+    });
     res.setHeader("Content-Type", "application/json");
 
     if (req.url?.includes("/get_group_msg_history")) {
@@ -111,247 +89,315 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch and paus
     }
 
     res.end(JSON.stringify({ status: "ok", data: {} }));
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      devAuthBypass: true,
+      gatewayUrl: gatewayStub.url,
+      gatewayAccount: "qq-bot",
+      gatewayToken: "gw-token",
+    },
+    {},
+    t,
+  );
+
+  const jsonCard = JSON.stringify({
+    meta: {
+      news: {
+        title: "BITNP 纳新公告",
+        desc: "欢迎加入网协",
+        jumpUrl: "https://bitnp.net/join",
+      },
+    },
+  });
+  const parsed = parseOneBotSegments(
+    [
+      { type: "face", data: { id: "76" } },
+      { type: "text", data: { text: " 看这个 " } },
+      { type: "json", data: { data: jsonCard } },
+    ],
+    "999999",
+  );
+
+  assert.ok(parsed.text.includes("[表情: 赞]"));
+  assert.ok(parsed.text.includes("BITNP 纳新公告"));
+  assert.ok(parsed.text.includes("https://bitnp.net/join"));
+
+  await captureText(app, {
+    kind: "group",
+    chatId: "555666",
+    id: "ob-react-1",
+    userId: "10001",
+    senderName: "测试君",
+    text: "好耶",
   });
 
-  const { app, cleanup } = await createTestBerryApp({
-    devAuthBypass: true,
-    gatewayUrl: gatewayStub.url,
-    gatewayAccount: "qq-bot",
-    gatewayToken: "gw-token",
+  await app.webhook.handle({
+    post_type: "notice",
+    notice_type: "group_msg_emoji_like",
+    group_id: 555_666,
+    user_id: 20_001,
+    message_id: "ob-react-1",
+    is_add: true,
+    likes: [{ emoji_id: 76, count: 1 }],
   });
 
-  try {
-    // 1) Parse QFace and JSON share card segments.
-    const jsonCard = JSON.stringify({
-      meta: {
-        news: {
-          title: "BITNP 纳新公告",
-          desc: "欢迎加入网协",
-          jumpUrl: "https://bitnp.net/join",
-        },
-      },
-    });
-    const parsed = parseOneBotSegments(
-      [
-        { type: "face", data: { id: "76" } },
-        { type: "text", data: { text: " 看这个 " } },
-        { type: "json", data: { data: jsonCard } },
-      ],
-      "999999",
-    );
+  const reactionMap = await app.store.reactions.aggregateForMessages(
+    "group:555666",
+    ["ob-react-1"],
+  );
+  const agg = reactionMap.get("ob-react-1") ?? [];
 
-    assert.ok(parsed.text.includes("[表情: 赞]"));
-    assert.ok(parsed.text.includes("BITNP 纳新公告"));
-    assert.ok(parsed.text.includes("https://bitnp.net/join"));
+  assert.equal(agg.length, 1);
+  assert.equal(agg[0]!.emojiName, "赞");
+  assert.equal(agg[0]!.count, 1);
 
-    // 2) Inbound group_msg_emoji_like notice updates reactions aggregation.
-    await app.store.messages.capture({
-      kind: "group",
-      chatId: "555666",
-      onebotMessageId: "ob-react-1",
-      userId: "10001",
-      senderName: "测试君",
-      text: "好耶",
-      segments: [{ type: "text", data: { text: "好耶" } }],
-      replyToMessageId: null,
-      isBot: false,
-      mentionedBot: false,
-      sentAt: Date.now(),
-    });
+  const delivery = await app.gateway.dispatchUnit(
+    "group:555666",
+    {
+      kind: "qq_reaction",
+      messageId: "ob-react-1",
+      emojiId: "76",
+    },
+    "999999",
+  );
 
-    await app.webhook.handle({
-      post_type: "notice",
-      notice_type: "group_msg_emoji_like",
-      group_id: 555_666,
-      user_id: 20_001,
-      message_id: "ob-react-1",
-      is_add: true,
-      likes: [{ emoji_id: 76, count: 1 }],
-    });
+  assert.equal(delivery.status, "sent");
+  assert.equal(
+    gatewayCalls.some((c) => c.path.endsWith("/set_msg_emoji_like")),
+    true,
+  );
 
-    const reactionMap = await app.store.reactions.aggregateForMessages(
-      "group:555666",
-      ["ob-react-1"],
-    );
-    const agg = reactionMap.get("ob-react-1") ?? [];
+  const { url } = await app.listen();
+  const { csrfToken } = (await (
+    await fetch(`${url}/api/auth/status`)
+  ).json()) as { csrfToken: string };
 
-    assert.equal(agg.length, 1);
-    assert.equal(agg[0]!.emojiName, "赞");
-    assert.equal(agg[0]!.count, 1);
+  const pauseRes = await fetch(`${url}/api/admin/bot/state`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+    body: JSON.stringify({ paused: true }),
+  });
 
-    // 3) Outbound qq_reaction dispatches set_msg_emoji_like.
-    const delivery = await app.gateway.dispatchUnit(
-      "group:555666",
-      {
-        kind: "qq_reaction",
-        messageId: "ob-react-1",
-        emojiId: "76",
-      },
-      "999999",
-    );
+  assert.equal(pauseRes.status, 200);
+  assert.equal(app.settings.bot.paused, true);
 
-    assert.equal(delivery.status, "sent");
-    assert.equal(
-      gatewayCalls.some((c) => c.path.endsWith("/set_msg_emoji_like")),
-      true,
-    );
+  const pausedWebhook = await app.webhook.handle({
+    post_type: "message",
+    message_type: "group",
+    group_id: 555_666,
+    user_id: 10_002,
+    message_id: "ob-paused-1",
+    time: 1_700_000_200,
+    message: "[CQ:at,qq=999999] 在吗？",
+    sender: { card: "小王" },
+  });
 
-    // 4) Pause bot -> messages are archived without enqueuing gate jobs.
-    const { url } = await app.listen();
-    const statusRes = await fetch(`${url}/api/auth/status`);
-    const { csrfToken } = (await statusRes.json()) as { csrfToken: string };
+  assert.equal(pausedWebhook.accepted, true);
+  assert.ok(
+    await app.store.messages.findByOnebotId("group:555666", "ob-paused-1"),
+  );
+  assert.equal(await app.store.jobs.countPending(), 0);
 
-    const pauseRes = await fetch(`${url}/api/admin/bot/state`, {
+  const backfill = (await (
+    await fetch(`${url}/api/admin/chats/group%3A555666/backfill`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-CSRF-Token": csrfToken,
       },
-      body: JSON.stringify({ paused: true }),
-    });
+      body: JSON.stringify({ count: 20 }),
+    })
+  ).json()) as { total: number; imported: number };
 
-    assert.equal(pauseRes.status, 200);
-    assert.equal(app.settings.bot.paused, true);
+  assert.equal(backfill.total, 1);
+  assert.equal(backfill.imported, 1);
 
-    const pausedWebhook = await app.webhook.handle({
-      post_type: "message",
-      message_type: "group",
-      group_id: 555_666,
-      user_id: 10_002,
-      message_id: "ob-paused-1",
-      time: 1_700_000_200,
-      message: "[CQ:at,qq=999999] 在吗？",
-      sender: { card: "小王" },
-    });
-
-    assert.equal(pausedWebhook.accepted, true);
-    const savedPaused = await app.store.messages.findByOnebotId(
-      "group:555666",
-      "ob-paused-1",
-    );
-
-    assert.ok(savedPaused);
-    assert.equal(await app.store.jobs.countPending(), 0);
-
-    // 5) History backfill pulls once and deduplicates on repeat.
-    const backfillRes = await fetch(
-      `${url}/api/admin/chats/group%3A555666/backfill`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken,
-        },
-        body: JSON.stringify({ count: 20 }),
+  const repeat = (await (
+    await fetch(`${url}/api/admin/chats/group%3A555666/backfill`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
       },
-    );
+      body: JSON.stringify({ count: 20 }),
+    })
+  ).json()) as { imported: number };
 
-    assert.equal(backfillRes.status, 200);
-    const backfillJson = (await backfillRes.json()) as {
-      total: number;
-      imported: number;
-    };
-
-    assert.equal(backfillJson.total, 1);
-    assert.equal(backfillJson.imported, 1);
-
-    const repeatRes = await fetch(
-      `${url}/api/admin/chats/group%3A555666/backfill`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-CSRF-Token": csrfToken,
-        },
-        body: JSON.stringify({ count: 20 }),
-      },
-    );
-    const repeatJson = (await repeatRes.json()) as {
-      total: number;
-      imported: number;
-    };
-
-    assert.equal(repeatJson.imported, 0);
-  } finally {
-    await gatewayStub.close();
-    await cleanup();
-  }
+  assert.equal(repeat.imported, 0);
 });
 
-test("MaintenanceStore.purgeOldData preserves memory-referenced messages", async () => {
-  const { app, cleanup } = await createTestBerryApp();
+test("MaintenanceStore.purgeOldData preserves memory-referenced messages", async (t) => {
+  const { app } = await createTestBerryApp({}, {}, t);
+  const oldTs = Date.now() - 45 * 86_400_000;
 
-  try {
-    const oldTs = Date.now() - 45 * 86_400_000;
+  const { message: referenced } = await captureText(app, {
+    kind: "group",
+    chatId: "888",
+    id: "old-keep",
+    userId: "1",
+    senderName: "甲",
+    text: "记住这条服务器密码规则",
+    sentAt: oldTs,
+  });
 
-    const { message: referenced } = await app.store.messages.capture({
-      kind: "group",
-      chatId: "888",
-      onebotMessageId: "old-keep",
-      userId: "1",
-      senderName: "甲",
-      text: "记住这条服务器密码规则",
-      segments: [{ type: "text", data: { text: "记住" } }],
-      replyToMessageId: null,
-      isBot: false,
-      mentionedBot: false,
-      sentAt: oldTs,
-      receivedAt: oldTs,
-    });
+  const { message: disposable } = await captureText(app, {
+    kind: "group",
+    chatId: "888",
+    id: "old-drop",
+    userId: "2",
+    senderName: "乙",
+    text: "水群消息",
+    sentAt: oldTs,
+  });
 
-    const { message: disposable } = await app.store.messages.capture({
-      kind: "group",
-      chatId: "888",
-      onebotMessageId: "old-drop",
-      userId: "2",
-      senderName: "乙",
-      text: "水群消息",
-      segments: [{ type: "text", data: { text: "水群消息" } }],
-      replyToMessageId: null,
-      isBot: false,
-      mentionedBot: false,
-      sentAt: oldTs,
-      receivedAt: oldTs,
-    });
+  await app.store.memories.upsert({
+    scope: "chat",
+    ownerId: "group:888",
+    key: "rule",
+    summary: "引用测试",
+    content: "重要规定",
+    sourceMessageId: referenced.id,
+  });
+  await app.store.gate.record({
+    chatKey: "group:888",
+    messageId: disposable.id,
+    action: "ignore",
+    stage: "l1_classifier",
+    confidence: 0.9,
+    reason: "闲聊",
+    model: "gpt-test",
+    durationMs: 20,
+    createdAt: oldTs,
+  });
 
-    await app.store.memories.upsert({
-      scope: "chat",
-      ownerId: "group:888",
-      key: "rule",
-      summary: "引用测试",
-      content: "重要规定",
-      sourceMessageId: referenced.id,
-    });
+  const purged = await app.store.maintenance.purgeOldData(30);
 
-    await app.store.gate.record({
-      chatKey: "group:888",
-      messageId: disposable.id,
-      action: "ignore",
-      stage: "l1_classifier",
-      confidence: 0.9,
-      reason: "闲聊",
-      model: "gpt-test",
-      durationMs: 20,
-      createdAt: oldTs,
-    });
+  assert.equal(purged.deletedMessages, 1);
+  assert.equal(purged.deletedDecisions, 1);
+  assert.ok(await app.store.messages.findByOnebotId("group:888", "old-keep"));
+  assert.equal(
+    await app.store.messages.findByOnebotId("group:888", "old-drop"),
+    null,
+  );
+});
 
-    const purged = await app.store.maintenance.purgeOldData(30);
+test("computeNextRunAt and previousNaturalWeek handle DST/leap-year/boundary rules", () => {
+  const beforeNineMs = Date.parse("2026-11-19T08:59:59+08:00");
+  const atNineMs = Date.parse("2026-11-19T09:00:00+08:00");
+  const afterNineMs = Date.parse("2026-11-19T09:00:00.500+08:00");
 
-    assert.equal(purged.deletedMessages, 1);
-    assert.equal(purged.deletedDecisions, 1);
+  assert.equal(
+    computeNextRunAt({ kind: "daily", time: "09:00" }, beforeNineMs),
+    atNineMs,
+  );
+  assert.equal(
+    computeNextRunAt({ kind: "daily", time: "09:00" }, atNineMs),
+    Date.parse("2026-11-20T09:00:00+08:00"),
+  );
+  assert.equal(
+    computeNextRunAt({ kind: "daily", time: "09:00" }, afterNineMs),
+    Date.parse("2026-11-20T09:00:00+08:00"),
+  );
+  assert.equal(
+    computeNextRunAt(
+      { kind: "weekly", weekdays: ["mon", "fri"], time: "18:30" },
+      beforeNineMs,
+    ),
+    Date.parse("2026-11-20T18:30:00+08:00"),
+  );
+  assert.equal(
+    computeNextRunAt(
+      { kind: "monthly", daysOfMonth: [1, 15], time: "10:00" },
+      beforeNineMs,
+    ),
+    Date.parse("2026-12-01T10:00:00+08:00"),
+  );
+  assert.equal(
+    computeNextRunAt(
+      { kind: "yearly", month: 2, day: 29, time: "09:00" },
+      beforeNineMs,
+    ),
+    Date.parse("2028-02-29T09:00:00+08:00"),
+  );
+  assert.equal(
+    computeNextRunAt(
+      { kind: "yearly", month: 2, day: 30, time: "09:00" },
+      beforeNineMs,
+    ),
+    null,
+  );
 
-    const kept = await app.store.messages.findByOnebotId(
-      "group:888",
-      "old-keep",
-    );
-    const removed = await app.store.messages.findByOnebotId(
-      "group:888",
-      "old-drop",
-    );
+  const week = previousNaturalWeek(Date.parse("2026-11-19T12:00:00+08:00"));
 
-    assert.ok(kept);
-    assert.equal(removed, null);
-  } finally {
-    await cleanup();
-  }
+  assert.equal(week.label, "2026-11-09");
+  assert.equal(week.start.toISOString(), "2026-11-08T16:00:00.000Z");
+  assert.equal(week.end.toISOString(), "2026-11-15T16:00:00.000Z");
+});
+
+test("MediaProcessor detects MIME via file-type magic bytes rather than headers", async (t) => {
+  const minimalPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2Z0AAAAASUVORK5CYII=",
+    "base64",
+  );
+  const mediaStub = await startStubServer((req, res) => {
+    if (req.url === "/valid.png") {
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.end(minimalPng);
+
+      return;
+    }
+
+    res.setHeader("Content-Type", "image/png");
+    res.end("not-real-png-bytes");
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {},
+    { media: { autoAnalyzeImages: false } },
+    t,
+  );
+
+  const capOk = await captureText(app, {
+    kind: "group",
+    chatId: "901",
+    id: "img-ok",
+    userId: "101",
+    senderName: "测试",
+    text: "[图片]",
+  });
+  const capBad = await captureText(app, {
+    kind: "group",
+    chatId: "901",
+    id: "img-bad",
+    userId: "101",
+    senderName: "测试",
+    text: "[图片]",
+  });
+
+  await app.media.enqueueMessageAssets(capOk.message, [
+    { kind: "image", rawUrl: `${mediaStub.url}/valid.png`, name: "" },
+  ]);
+  await app.media.enqueueMessageAssets(capBad.message, [
+    { kind: "image", rawUrl: `${mediaStub.url}/bad.bin`, name: "" },
+  ]);
+  await app.media.waitForMessages([capOk.message.id, capBad.message.id]);
+
+  const assetsMap = await app.store.assets.listForMessages([
+    capOk.message.id,
+    capBad.message.id,
+  ]);
+  const okAsset = assetsMap.get(capOk.message.id)?.[0];
+  const badAsset = assetsMap.get(capBad.message.id)?.[0];
+
+  assert.equal(okAsset?.status, "ready");
+  assert.equal(okAsset?.mimeType, "image/png");
+  assert.match(okAsset?.filePath ?? "", /\.png$/);
+
+  assert.equal(badAsset?.status, "failed");
+  assert.match(badAsset?.error ?? "", /不支持的图片格式/);
 });

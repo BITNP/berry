@@ -43,7 +43,11 @@ function redactString(input: string, secrets: string[]): string {
   return out;
 }
 
-function redactUnknown(value: unknown, secrets: string[], depth = 0): unknown {
+function redactSecretValues(
+  value: unknown,
+  secrets: string[],
+  depth = 0,
+): unknown {
   if (depth > 5) {
     return "[...]";
   }
@@ -53,22 +57,14 @@ function redactUnknown(value: unknown, secrets: string[], depth = 0): unknown {
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) => redactUnknown(item, secrets, depth + 1));
+    return value.map((item) => redactSecretValues(item, secrets, depth + 1));
   }
 
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};
 
     for (const [key, item] of Object.entries(value)) {
-      if (
-        /^(apiKey|password|secret|token|authorization)$/i.test(key) &&
-        typeof item === "string" &&
-        item
-      ) {
-        out[key] = "[已脱敏]";
-      } else {
-        out[key] = redactUnknown(item, secrets, depth + 1);
-      }
+      out[key] = redactSecretValues(item, secrets, depth + 1);
     }
 
     return out;
@@ -135,7 +131,7 @@ export class LogHub {
       level,
       scope,
       message: redactString(message, secrets),
-      context: redactUnknown(context, secrets) as Record<string, unknown>,
+      context: redactSecretValues(context, secrets) as Record<string, unknown>,
     };
 
     this.#entries.push(entry);
@@ -265,10 +261,23 @@ const prettyStream =
         },
       });
 
+const SENSITIVE_REDACT_PATHS = [
+  "apiKey",
+  "password",
+  "secret",
+  "token",
+  "authorization",
+  "Authorization",
+].flatMap((key) => [key, `*.${key}`, `*.*.${key}`]);
+
 const rootPino = pino(
   {
     level: process.env.BERRY_LOG_LEVEL === "debug" ? "debug" : "info",
     base: undefined,
+    redact: {
+      paths: SENSITIVE_REDACT_PATHS,
+      censor: "[已脱敏]",
+    },
   },
   pino.multistream([
     { level: "debug", stream: prettyStream },
@@ -309,7 +318,7 @@ export class Logger {
     const secrets = collectSecrets();
     const safeMessage = redactString(message, secrets);
     const safeMeta = meta
-      ? (redactUnknown(meta, secrets) as Record<string, unknown>)
+      ? (redactSecretValues(meta, secrets) as Record<string, unknown>)
       : undefined;
 
     if (safeMeta && Object.keys(safeMeta).length > 0) {

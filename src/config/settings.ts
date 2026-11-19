@@ -114,7 +114,6 @@ export const runtimeSettingsSchema = Type.Object(
     ),
     policy: Type.Object(
       {
-        allowlistEnabled: Type.Boolean({ default: false }),
         privateDefaultEnabled: Type.Boolean({ default: true }),
         groupDefaultMode: Type.Union(
           [

@@ -4,7 +4,13 @@ export default so1ve(
   {
     vue: true,
     test: false,
-    ignores: ["**/.devenv/**", "**/.direnv/**", "dist/**", "data/**"],
+    ignores: [
+      "**/.devenv/**",
+      "**/.direnv/**",
+      "dist/**",
+      "data/**",
+      "third_party/**",
+    ],
     typescript: {
       overrides: {
         "ts/prefer-nullish-coalescing": [

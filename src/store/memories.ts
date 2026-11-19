@@ -35,37 +35,34 @@ export class MemoriesStore {
     chat: { key: string; summary: string }[];
     user: { key: string; summary: string }[];
   }> {
-    const globalRows = await this.#database.db
-      .selectFrom("memories")
-      .select(["key", "summary"])
-      .where("scope", "=", "global")
-      .where("owner_id", "=", "global")
-      .orderBy("updated_at", "desc")
-      .execute();
+    const db = this.#database.db;
+    const [global, chat, user] = await Promise.all([
+      db
+        .selectFrom("memories")
+        .select(["key", "summary"])
+        .where("scope", "=", "global")
+        .where("owner_id", "=", "global")
+        .orderBy("updated_at", "desc")
+        .execute(),
+      db
+        .selectFrom("memories")
+        .select(["key", "summary"])
+        .where("scope", "=", "chat")
+        .where("owner_id", "=", chatKey)
+        .orderBy("updated_at", "desc")
+        .execute(),
+      userId
+        ? db
+            .selectFrom("memories")
+            .select(["key", "summary"])
+            .where("scope", "=", "user")
+            .where("owner_id", "=", userId)
+            .orderBy("updated_at", "desc")
+            .execute()
+        : Promise.resolve([]),
+    ]);
 
-    const chatRows = await this.#database.db
-      .selectFrom("memories")
-      .select(["key", "summary"])
-      .where("scope", "=", "chat")
-      .where("owner_id", "=", chatKey)
-      .orderBy("updated_at", "desc")
-      .execute();
-
-    const userRows = userId
-      ? await this.#database.db
-          .selectFrom("memories")
-          .select(["key", "summary"])
-          .where("scope", "=", "user")
-          .where("owner_id", "=", userId)
-          .orderBy("updated_at", "desc")
-          .execute()
-      : [];
-
-    return {
-      global: globalRows,
-      chat: chatRows,
-      user: userRows,
-    };
+    return { global, chat, user };
   }
 
   public async get(

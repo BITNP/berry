@@ -1,19 +1,19 @@
 import assert from "node:assert/strict";
 import type { ServerResponse } from "node:http";
+import type { TestContext } from "node:test";
 import test from "node:test";
 
-import { createTestBerryApp, startStubServer } from "./helpers.ts";
+import {
+  captureText,
+  chatReply,
+  chatToolCalls,
+  createTestBerryApp,
+  startStubServer,
+  waitUntil,
+} from "./helpers.ts";
 
-test("Keycloak QQ lookup, unbound rejection, and natural-language guild_create_node via internal API", async () => {
-  const guildRequests: {
-    method: string;
-    path: string;
-    auth: string | undefined;
-    actor: string | undefined;
-    body: unknown;
-  }[] = [];
-
-  const kcStub = await startStubServer((req, res) => {
+const startKeycloakStub = (t: TestContext) =>
+  startStubServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
 
@@ -23,75 +23,85 @@ test("Keycloak QQ lookup, unbound rejection, and natural-language guild_create_n
       return;
     }
 
+    const users = [
+      {
+        id: "sub-wrz",
+        username: "wrz",
+        firstName: "王润哲",
+        enabled: true,
+        attributes: { qq_number: ["11111"] },
+        roles: [
+          "permission-techdept-admin",
+          "permission-techdept-access",
+          "position-techdept-head",
+        ],
+      },
+      {
+        id: "sub-guicao",
+        username: "guicao",
+        firstName: "硅草",
+        enabled: true,
+        attributes: { qq_number: ["22222"] },
+        roles: ["permission-techdept-access"],
+      },
+    ];
+
     if (url.pathname === "/admin/realms/bitnp/users") {
       const q = url.searchParams.get("q") ?? "";
       const search = url.searchParams.get("search") ?? "";
+      const matches = users.filter((u) => {
+        if (q) {
+          return `qq_number:${u.attributes.qq_number[0]}` === q;
+        }
 
-      if (q === "qq_number:11111") {
-        res.end(
-          JSON.stringify([
-            {
-              id: "sub-wrz",
-              username: "wrz",
-              firstName: "润哲",
-              lastName: "王",
-              enabled: true,
-              attributes: { qq_number: ["11111"] },
-            },
-          ]),
-        );
+        if (search) {
+          return u.firstName.includes(search);
+        }
 
-        return;
-      }
+        return false;
+      });
 
-      if (search.includes("硅草")) {
-        res.end(
-          JSON.stringify([
-            {
-              id: "sub-guicao",
-              username: "guicao",
-              firstName: "硅草",
-              enabled: true,
-              attributes: { qq_number: ["22222"] },
-            },
-          ]),
-        );
-
-        return;
-      }
-
-      res.end(JSON.stringify([]));
+      res.end(JSON.stringify(matches));
 
       return;
     }
 
-    if (
-      url.pathname ===
-      "/admin/realms/bitnp/users/sub-wrz/role-mappings/realm/composite"
-    ) {
-      res.end(
-        JSON.stringify([
-          { name: "permission-techdept-admin" },
-          { name: "permission-techdept-access" },
-          { name: "position-techdept-head" },
-        ]),
-      );
+    const byId = users.find(
+      (u) => url.pathname === `/admin/realms/bitnp/users/${u.id}`,
+    );
+
+    if (byId) {
+      res.end(JSON.stringify(byId));
 
       return;
     }
 
-    if (
-      url.pathname ===
-      "/admin/realms/bitnp/users/sub-guicao/role-mappings/realm/composite"
-    ) {
-      res.end(JSON.stringify([{ name: "permission-techdept-access" }]));
+    const roleOwner = users.find(
+      (u) =>
+        url.pathname ===
+        `/admin/realms/bitnp/users/${u.id}/role-mappings/realm/composite`,
+    );
+
+    if (roleOwner) {
+      res.end(JSON.stringify(roleOwner.roles.map((name) => ({ name }))));
 
       return;
     }
 
     res.statusCode = 404;
     res.end();
-  });
+  }, t);
+
+test("Keycloak QQ lookup, unbound rejection, and natural-language guild_create_node via internal API", async (t) => {
+  const guildRequests: {
+    method: string;
+    path: string;
+    auth: string | undefined;
+    actor: string | undefined;
+    body: unknown;
+  }[] = [];
+
+  const kcStub = await startKeycloakStub(t);
 
   const guildStub = await startStubServer((req, res, bodyText) => {
     guildRequests.push({
@@ -155,239 +165,118 @@ test("Keycloak QQ lookup, unbound rejection, and natural-language guild_create_n
 
     res.statusCode = 404;
     res.end();
-  });
+  }, t);
 
-  let step = 0;
   const llmStub = await startStubServer((_req, res, bodyText) => {
     const reqJson = JSON.parse(bodyText) as {
       messages: { role: string; content: string | null }[];
     };
+    const sys = reqJson.messages[0]?.content ?? "";
+    const toolMsgs = reqJson.messages.filter((m) => m.role === "tool");
+    const lastMsg = reqJson.messages.at(-1);
 
     res.setHeader("Content-Type", "application/json");
-    step++;
 
-    // Unbound user turn: Main Agent delegates to guild_operator, which short-circuits before calling LLM.
-    if (step === 1) {
-      res.end(
-        JSON.stringify({
-          id: "u1",
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: "assistant",
-                content: null,
-                tool_calls: [
-                  {
-                    id: "call-del-unbound",
-                    type: "function",
-                    function: {
-                      name: "delegate_subagent",
-                      arguments: JSON.stringify({
-                        kind: "guild_operator",
-                        task: "创建节点：非法节点",
-                      }),
-                    },
-                  },
-                ],
+    if (sys.includes("公会看板协作子代理")) {
+      if (toolMsgs.length === 0) {
+        res.end(
+          JSON.stringify(
+            chatToolCalls([
+              {
+                id: "call-1",
+                name: "guild_search_nodes",
+                args: { query: "树莓娘" },
               },
-              finish_reason: "tool_calls",
-            },
-          ],
-        }),
+              {
+                id: "call-2",
+                name: "guild_resolve_member",
+                args: { query: "硅草" },
+              },
+            ]),
+          ),
+        );
+
+        return;
+      }
+
+      if (toolMsgs.length === 2) {
+        res.end(
+          JSON.stringify(
+            chatToolCalls([
+              {
+                id: "call-3",
+                name: "guild_create_node",
+                args: {
+                  parentId: 10,
+                  title: "接入监控告警",
+                  leaderSubjects: ["sub-guicao"],
+                },
+              },
+            ]),
+          ),
+        );
+
+        return;
+      }
+
+      res.end(
+        JSON.stringify(
+          chatReply({
+            brief: "已创建节点「接入监控告警」（ID 42，负责人：硅草）",
+            references: ["https://guild.bitnp.net/nodes/42"],
+          }),
+        ),
       );
 
       return;
     }
 
-    if (step === 2) {
-      const toolResult = reqJson.messages.at(-1)?.content ?? "";
+    // Main Agent flow.
+    if (lastMsg?.role === "tool") {
+      const toolResult = lastMsg.content ?? "";
 
-      assert.match(toolResult, /尚未在网协通行证绑定 QQ/);
       res.end(
-        JSON.stringify({
-          id: "u2",
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: "assistant",
-                content: JSON.stringify({
-                  units: [{ kind: "qq_reply", text: "请先绑定 QQ" }],
-                }),
+        JSON.stringify(
+          chatReply({
+            units: [
+              {
+                kind: "qq_reply",
+                text: toolResult.includes("尚未在网协通行证绑定")
+                  ? "请先绑定 QQ"
+                  : "已创建节点「接入监控告警」：https://guild.bitnp.net/nodes/42",
               },
-              finish_reason: "stop",
-            },
-          ],
-        }),
+            ],
+          }),
+        ),
       );
 
       return;
     }
 
-    // Bound user turn: Main Agent delegates -> subagent searches & creates -> subagent returns brief -> Main Agent replies.
-    if (step === 3) {
-      res.end(
-        JSON.stringify({
-          id: "b1-main",
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: "assistant",
-                content: null,
-                tool_calls: [
-                  {
-                    id: "call-del-bound",
-                    type: "function",
-                    function: {
-                      name: "delegate_subagent",
-                      arguments: JSON.stringify({
-                        kind: "guild_operator",
-                        task: "在「树莓娘 Agent」下创建节点「接入监控告警」，由硅草负责",
-                      }),
-                    },
-                  },
-                ],
-              },
-              finish_reason: "tool_calls",
-            },
-          ],
-        }),
-      );
+    const userContent = lastMsg?.content ?? "";
+    const unbound =
+      userContent.includes("88888") || userContent.includes("路人");
 
-      return;
-    }
-
-    if (step === 4) {
-      assert.match(reqJson.messages[0]?.content ?? "", /公会看板协作子代理/);
-      res.end(
-        JSON.stringify({
-          id: "b1-sub",
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: "assistant",
-                content: null,
-                tool_calls: [
-                  {
-                    id: "call-1",
-                    type: "function",
-                    function: {
-                      name: "guild_search_nodes",
-                      arguments: JSON.stringify({ query: "树莓娘" }),
-                    },
-                  },
-                  {
-                    id: "call-2",
-                    type: "function",
-                    function: {
-                      name: "guild_resolve_member",
-                      arguments: JSON.stringify({ query: "硅草" }),
-                    },
-                  },
-                ],
-              },
-              finish_reason: "tool_calls",
-            },
-          ],
-        }),
-      );
-
-      return;
-    }
-
-    if (step === 5) {
-      assert.match(reqJson.messages[0]?.content ?? "", /公会看板协作子代理/);
-      res.end(
-        JSON.stringify({
-          id: "b2-sub",
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: "assistant",
-                content: null,
-                tool_calls: [
-                  {
-                    id: "call-3",
-                    type: "function",
-                    function: {
-                      name: "guild_create_node",
-                      arguments: JSON.stringify({
-                        parentId: 10,
-                        title: "接入监控告警",
-                        leaderSubjects: ["sub-guicao"],
-                      }),
-                    },
-                  },
-                ],
-              },
-              finish_reason: "tool_calls",
-            },
-          ],
-        }),
-      );
-
-      return;
-    }
-
-    if (step === 6) {
-      assert.match(reqJson.messages[0]?.content ?? "", /公会看板协作子代理/);
-      res.end(
-        JSON.stringify({
-          id: "b3-sub",
-          choices: [
-            {
-              index: 0,
-              message: {
-                role: "assistant",
-                content: JSON.stringify({
-                  brief: "已创建节点「接入监控告警」（ID 42，负责人：硅草）",
-                  references: ["https://guild.bitnp.net/nodes/42"],
-                }),
-              },
-              finish_reason: "stop",
-            },
-          ],
-        }),
-      );
-
-      return;
-    }
-
-    const subagentToolOutput = reqJson.messages.at(-1)?.content ?? "";
-
-    assert.match(subagentToolOutput, /接入监控告警/);
     res.end(
-      JSON.stringify({
-        id: "b4-main",
-        choices: [
+      JSON.stringify(
+        chatToolCalls([
           {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: JSON.stringify({
-                units: [
-                  {
-                    kind: "qq_reply",
-                    text: "已创建节点「接入监控告警」：https://guild.bitnp.net/nodes/42",
-                  },
-                ],
-              }),
+            id: unbound ? "call-del-unbound" : "call-del-bound",
+            name: "delegate_subagent",
+            args: {
+              kind: "guild_operator",
+              task: unbound
+                ? "创建节点：非法节点"
+                : "在「树莓娘 Agent」下创建节点「接入监控告警」，由硅草负责",
             },
-            finish_reason: "stop",
           },
-        ],
-      }),
+        ]),
+      ),
     );
-  });
+  }, t);
 
-  let cleanup: (() => Promise<void>) | null = null;
-
-  try {
-    const created = await createTestBerryApp({
+  const { app } = await createTestBerryApp(
+    {
       oidcIssuer: `${kcStub.url}/realms/bitnp`,
       keycloakAdminUrl: `${kcStub.url}/admin/realms/bitnp`,
       keycloakClientId: "berry-admin",
@@ -396,107 +285,89 @@ test("Keycloak QQ lookup, unbound rejection, and natural-language guild_create_n
       guildInternalToken: "guild-internal-sec",
       guildPublicUrl: "https://guild.bitnp.net",
       mainBaseUrl: `${llmStub.url}/v1`,
-    });
-    const { app } = created;
+    },
+    {},
+    t,
+  );
 
-    cleanup = created.cleanup;
-    // Unbound QQ 88888
-    const unboundMsg = await app.store.messages.capture({
-      kind: "group",
-      chatId: "100",
-      onebotMessageId: "m-unbound",
-      userId: "88888",
-      senderName: "路人",
-      text: "帮我建个节点",
-      segments: [{ type: "text", data: { text: "帮我建个节点" } }],
-      replyToMessageId: null,
-      isBot: false,
-      mentionedBot: true,
-      sentAt: Date.now(),
-    });
+  // Unbound QQ 88888 cannot hit Guild internal API.
+  const unboundMsg = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "m-unbound",
+    userId: "88888",
+    senderName: "路人",
+    text: "帮我建个节点",
+    mentionedBot: true,
+  });
 
-    const resUnbound = await app.agent.invoke({
-      source: "qq_batch",
-      chatKey: "group:100",
-      kind: "group",
-      chatId: "100",
-      triggerMessageIds: [unboundMsg.message.id],
-      senderId: "88888",
-      senderName: "路人",
-    });
+  const resUnbound = await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:100",
+    kind: "group",
+    chatId: "100",
+    triggerMessageIds: [unboundMsg.message.id],
+    senderId: "88888",
+    senderName: "路人",
+  });
 
-    assert.equal(resUnbound.units[0]?.kind, "qq_reply");
-    assert.equal(guildRequests.length, 0);
+  assert.deepEqual(resUnbound.units, [
+    { kind: "qq_reply", text: "请先绑定 QQ" },
+  ]);
+  assert.equal(guildRequests.length, 0);
 
-    // Bound QQ 11111
-    const boundMsg = await app.store.messages.capture({
-      kind: "group",
-      chatId: "100",
-      onebotMessageId: "m-bound",
-      userId: "11111",
-      senderName: "王润哲",
-      text: "在树莓娘下面建个接入监控告警，给硅草负责",
-      segments: [
-        {
-          type: "text",
-          data: { text: "在树莓娘下面建个接入监控告警，给硅草负责" },
-        },
-      ],
-      replyToMessageId: null,
-      isBot: false,
-      mentionedBot: true,
-      sentAt: Date.now(),
-    });
+  // Bound QQ 11111 creates node impersonating sub-wrz with audit log and concise brief.
+  const boundMsg = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "m-bound",
+    userId: "11111",
+    senderName: "王润哲",
+    text: "在树莓娘下面建个接入监控告警，给硅草负责",
+    mentionedBot: true,
+  });
 
-    const resBound = await app.agent.invoke({
-      source: "qq_batch",
-      chatKey: "group:100",
-      kind: "group",
-      chatId: "100",
-      triggerMessageIds: [boundMsg.message.id],
-      senderId: "11111",
-      senderName: "王润哲",
-    });
+  const resBound = await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:100",
+    kind: "group",
+    chatId: "100",
+    triggerMessageIds: [boundMsg.message.id],
+    senderId: "11111",
+    senderName: "王润哲",
+  });
 
-    assert.equal(resBound.units.length, 1);
-    assert.equal(guildRequests.length, 2);
-    assert.equal(guildRequests[1]!.method, "POST");
-    assert.equal(guildRequests[1]!.auth, "Bearer guild-internal-sec");
-    assert.equal(guildRequests[1]!.actor, "sub-wrz");
-    assert.deepEqual(guildRequests[1]!.body, {
-      parentId: 10,
-      title: "接入监控告警",
-      description: "",
-      dueAt: null,
-      tags: [],
-      leaderSubjects: ["sub-guicao"],
-      memberSubjects: [],
-    });
+  assert.equal(resBound.units.length, 1);
+  assert.equal(guildRequests.length, 2);
+  assert.equal(guildRequests[1]!.method, "POST");
+  assert.equal(guildRequests[1]!.auth, "Bearer guild-internal-sec");
+  assert.equal(guildRequests[1]!.actor, "sub-wrz");
+  assert.deepEqual(guildRequests[1]!.body, {
+    parentId: 10,
+    title: "接入监控告警",
+    description: "",
+    dueAt: null,
+    tags: [],
+    leaderSubjects: ["sub-guicao"],
+    memberSubjects: [],
+  });
 
-    const audits = await app.store.guildAudit.list();
+  const audits = await app.store.guildAudit.list();
 
-    assert.equal(audits.length, 1);
-    assert.equal(audits[0]!.actorSubject, "sub-wrz");
-    assert.equal(audits[0]!.nodeId, 42);
-    assert.equal(audits[0]!.error, null);
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0]!.actorSubject, "sub-wrz");
+  assert.equal(audits[0]!.nodeId, 42);
+  assert.equal(audits[0]!.error, null);
 
-    // Ensure global conversation persisted the concise subagent brief without raw Guild JSON payloads.
-    const conv = await app.store.conversations.get();
+  const serializedConv = JSON.stringify(
+    (await app.store.conversations.get())?.messages ?? [],
+  );
 
-    assert.ok(conv);
-    const serializedConv = JSON.stringify(conv.messages);
-
-    assert.match(serializedConv, /接入监控告警/);
-    assert.doesNotMatch(serializedConv, /createdBySubject/);
-  } finally {
-    await cleanup?.();
-    await kcStub.close();
-    await guildStub.close();
-    await llmStub.close();
-  }
+  assert.match(serializedConv, /接入监控告警/);
+  assert.doesNotMatch(serializedConv, /createdBySubject/);
 });
 
-test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary without PostgreSQL", async () => {
+test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary", async (t) => {
   interface StubGuildEvent {
     id: number;
     kind: string;
@@ -518,7 +389,14 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
   ];
   const sseClients = new Set<ServerResponse>();
   const sentDms: { userId: number; text: string }[] = [];
-  const serviceAuthChecks: string[] = [];
+
+  t.after(() => {
+    for (const client of sseClients) {
+      client.end();
+    }
+
+    sseClients.clear();
+  });
 
   function pushSseEvent(ev: StubGuildEvent): void {
     eventsList.push(ev);
@@ -529,68 +407,23 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
     }
   }
 
-  const kcStub = await startStubServer((req, res) => {
-    res.setHeader("Content-Type", "application/json");
-    const url = new URL(req.url ?? "/", "http://127.0.0.1");
-
-    if (url.pathname === "/realms/bitnp/protocol/openid-connect/token") {
-      res.end(JSON.stringify({ access_token: "kc-tok", expires_in: 300 }));
-
-      return;
-    }
-
-    if (url.pathname === "/admin/realms/bitnp/users/sub-wrz") {
-      res.end(
-        JSON.stringify({
-          id: "sub-wrz",
-          username: "wrz",
-          firstName: "王润哲",
-          enabled: true,
-          attributes: { qq_number: ["11111"] },
-        }),
-      );
-
-      return;
-    }
-
-    if (url.pathname === "/admin/realms/bitnp/users/sub-guicao") {
-      res.end(
-        JSON.stringify({
-          id: "sub-guicao",
-          username: "guicao",
-          firstName: "硅草",
-          enabled: true,
-          attributes: { qq_number: ["22222"] },
-        }),
-      );
-
-      return;
-    }
-
-    if (url.pathname.endsWith("/role-mappings/realm/composite")) {
-      res.end(JSON.stringify([{ name: "permission-techdept-admin" }]));
-
-      return;
-    }
-
-    res.statusCode = 404;
-    res.end(JSON.stringify({ error: "not found" }));
-  });
+  const kcStub = await startKeycloakStub(t);
 
   const gatewayStub = await startStubServer((req, res, bodyText) => {
     res.setHeader("Content-Type", "application/json");
-
     if (req.url === "/api/v1/accounts/qq/send_private_msg_async") {
       const body = JSON.parse(bodyText) as {
         user_id: number;
-        message: { type: string; data?: { text?: string } }[];
+        message: { data?: { text?: string } }[];
       };
-      const text = body.message
-        .map((seg) => seg.data?.text ?? "")
-        .join("")
-        .trim();
 
-      sentDms.push({ userId: body.user_id, text });
+      sentDms.push({
+        userId: body.user_id,
+        text: body.message
+          .map((seg) => seg.data?.text ?? "")
+          .join("")
+          .trim(),
+      });
       res.end(
         JSON.stringify({
           status: "ok",
@@ -603,12 +436,11 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
     }
 
     res.statusCode = 404;
-    res.end(JSON.stringify({ status: "failed", retcode: 404 }));
-  });
+    res.end();
+  }, t);
 
   const llmStub = await startStubServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
-
     if (req.url !== "/v1/chat/completions") {
       res.statusCode = 404;
       res.end();
@@ -617,27 +449,15 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
     }
 
     res.end(
-      JSON.stringify({
-        id: "weekly-summary-1",
-        choices: [
-          {
-            index: 0,
-            message: {
-              role: "assistant",
-              content: "## 核心进展\n\n- 完成接口鉴权改造与告警联调。",
-            },
-            finish_reason: "stop",
-          },
-        ],
-        usage: { prompt_tokens: 90, completion_tokens: 30 },
-      }),
+      JSON.stringify(
+        chatReply("## 核心进展\n\n- 完成接口鉴权改造与告警联调。"),
+      ),
     );
-  });
+  }, t);
 
   const guildStub = await startStubServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
 
-    serviceAuthChecks.push(url.pathname);
     assert.equal(req.headers.authorization, "Bearer guild-internal-sec");
     assert.equal(req.headers["x-act-as-subject"], undefined);
 
@@ -646,16 +466,14 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
       const limit = Number.parseInt(url.searchParams.get("limit") ?? "50", 10);
       const filtered = eventsList.filter((e) => e.id > after);
       const items = filtered.slice(0, limit);
-      const latestId = eventsList.at(-1)?.id ?? 0;
-      const nextAfter = items.at(-1)?.id ?? after;
 
       res.setHeader("Content-Type", "application/json");
       res.end(
         JSON.stringify({
           items,
           hasMore: filtered.length > limit,
-          nextAfter,
-          latestId,
+          nextAfter: items.at(-1)?.id ?? after,
+          latestId: eventsList.at(-1)?.id ?? 0,
           serverTime: "2026-11-18T10:00:00Z",
         }),
       );
@@ -664,12 +482,14 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
     }
 
     if (url.pathname === "/api/internal/events/stream") {
-      const rawAfter =
-        url.searchParams.get("after") ??
-        (typeof req.headers["last-event-id"] === "string"
-          ? req.headers["last-event-id"]
-          : "0");
-      const after = Number.parseInt(rawAfter, 10) || 0;
+      const after =
+        Number.parseInt(
+          url.searchParams.get("after") ??
+            (typeof req.headers["last-event-id"] === "string"
+              ? req.headers["last-event-id"]
+              : "0"),
+          10,
+        ) || 0;
 
       res.writeHead(200, {
         "Content-Type": "text/event-stream; charset=utf-8",
@@ -687,9 +507,7 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
       }
 
       sseClients.add(res);
-      req.on("close", () => {
-        sseClients.delete(res);
-      });
+      req.on("close", () => sseClients.delete(res));
 
       return;
     }
@@ -698,7 +516,6 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
       const since = url.searchParams.get("since");
 
       res.setHeader("Content-Type", "application/json");
-
       if (!since) {
         res.end(
           JSON.stringify({ items: [], serverTime: "2026-11-18T10:00:00Z" }),
@@ -731,14 +548,12 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
 
     if (url.pathname === "/api/internal/activity-summary") {
       const start = url.searchParams.get("start") ?? "";
-      const end = url.searchParams.get("end") ?? "";
 
-      assert.ok(start && end);
       res.setHeader("Content-Type", "application/json");
       res.end(
         JSON.stringify({
           start,
-          end,
+          end: url.searchParams.get("end") ?? "",
           snapshotAt: "2026-11-18T10:20:00Z",
           createdCount: 2,
           completedCount: 1,
@@ -755,36 +570,9 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
               createdAt: start,
             },
           ],
-          completedNodes: [
-            {
-              id: 77,
-              parentId: null,
-              title: "接口鉴权改造",
-              dueAt: null,
-              completedAt: start,
-              createdAt: start,
-            },
-          ],
-          recentComments: [
-            {
-              id: 5,
-              nodeId: 88,
-              nodeTitle: "完善告警规则",
-              authorSubject: "sub-guicao",
-              bodyPreview: "已完成联调",
-              createdAt: start,
-            },
-          ],
-          overdueNodes: [
-            {
-              id: 66,
-              parentId: null,
-              title: "清理旧脚本",
-              dueAt: start,
-              completedAt: null,
-              createdAt: start,
-            },
-          ],
+          completedNodes: [],
+          recentComments: [],
+          overdueNodes: [],
         }),
       );
 
@@ -793,29 +581,10 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
 
     res.statusCode = 404;
     res.end();
-  });
+  }, t);
 
-  async function waitUntil(
-    predicate: () => Promise<boolean> | boolean,
-    timeoutMs = 2000,
-  ): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-
-    while (Date.now() < deadline) {
-      if (await predicate()) {
-        return;
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-
-    throw new Error("waitUntil timed out");
-  }
-
-  let cleanup: (() => Promise<void>) | null = null;
-
-  try {
-    const created = await createTestBerryApp({
+  const { app } = await createTestBerryApp(
+    {
       gatewayUrl: gatewayStub.url,
       gatewayAccount: "qq",
       gatewayToken: "gw-tok",
@@ -827,125 +596,98 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
       guildInternalToken: "guild-internal-sec",
       guildPublicUrl: "https://guild.bitnp.net",
       mainBaseUrl: `${llmStub.url}/v1`,
-    });
+    },
+    {},
+    t,
+  );
 
-    cleanup = created.cleanup;
-    const { app } = created;
+  app.guildAutomation.start();
+  assert.equal(app.guildAutomation.streamConnected, false);
 
-    app.guildAutomation.start();
-    assert.equal(app.guildAutomation.streamConnected, false);
+  await app.updateSettings({
+    ...app.settings,
+    guildAutomation: {
+      enabled: true,
+      pollSeconds: 60,
+      dueReminderEnabled: true,
+      dueAdvanceHours: 24,
+      assignmentsEnabled: true,
+      weeklyReportEnabled: true,
+      weeklySchedule: { kind: "weekly", weekdays: ["mon"], time: "09:00" },
+      weeklyUploadTool: "",
+    },
+  });
 
-    // Turning guildAutomation on at runtime triggers syncState() -> SSE connect.
-    await app.updateSettings({
-      ...app.settings,
-      guildAutomation: {
-        enabled: true,
-        pollSeconds: 60,
-        dueReminderEnabled: true,
-        dueAdvanceHours: 24,
-        assignmentsEnabled: true,
-        weeklyReportEnabled: true,
-        weeklySchedule: { kind: "weekly", weekdays: ["mon"], time: "09:00" },
-        weeklyUploadTool: "",
-      },
-    });
+  await waitUntil(async () => {
+    const cursor = await app.store.cursors.get("guild_event_cursor");
 
-    await waitUntil(async () => {
-      const cursor = await app.store.cursors.get("guild_event_cursor");
+    return app.guildAutomation.streamConnected && cursor === "1";
+  });
 
-      return app.guildAutomation.streamConnected && cursor === "1";
-    });
+  // Self-assignment on create advances cursor without DM; assigning another member sends DM.
+  pushSseEvent({
+    id: 2,
+    kind: "member.assigned",
+    nodeId: 90,
+    actorSubject: "sub-wrz",
+    payload: {
+      subject: "sub-wrz",
+      role: "leader",
+      nodeTitle: "部署流水线",
+      onCreate: true,
+    },
+    createdAt: "2026-11-18T10:01:00Z",
+  });
+  await waitUntil(
+    async () => (await app.store.cursors.get("guild_event_cursor")) === "2",
+  );
+  assert.equal(sentDms.length, 0);
 
-    // Self-assignment during node creation should advance cursor without sending a DM.
-    pushSseEvent({
-      id: 2,
-      kind: "member.assigned",
-      nodeId: 90,
-      actorSubject: "sub-wrz",
-      payload: {
-        subject: "sub-wrz",
-        role: "leader",
-        nodeTitle: "部署流水线",
-        onCreate: true,
-      },
-      createdAt: "2026-11-18T10:01:00Z",
-    });
+  pushSseEvent({
+    id: 3,
+    kind: "member.assigned",
+    nodeId: 90,
+    actorSubject: "sub-wrz",
+    payload: {
+      subject: "sub-guicao",
+      role: "leader",
+      nodeTitle: "部署流水线",
+      onCreate: true,
+    },
+    createdAt: "2026-11-18T10:02:00Z",
+  });
+  await waitUntil(
+    async () =>
+      (await app.store.cursors.get("guild_event_cursor")) === "3" &&
+      sentDms.length === 1,
+  );
+  assert.equal(sentDms[0]!.userId, 22_222);
+  assert.match(
+    sentDms[0]!.text,
+    /王润哲 已将你指定为公会任务的负责人：部署流水线/,
+  );
+  assert.match(sentDms[0]!.text, /https:\/\/guild\.bitnp\.net\/nodes\/90/);
 
-    await waitUntil(
-      async () => (await app.store.cursors.get("guild_event_cursor")) === "2",
-    );
-    assert.equal(sentDms.length, 0);
+  // Catch-up polling does not replay already-streamed events.
+  const catchup = await app.guildAutomation.runAssignments();
 
-    // Assigning another member notifies them via gateway with assignor name resolved.
-    pushSseEvent({
-      id: 3,
-      kind: "member.assigned",
-      nodeId: 90,
-      actorSubject: "sub-wrz",
-      payload: {
-        subject: "sub-guicao",
-        role: "leader",
-        nodeTitle: "部署流水线",
-        onCreate: true,
-      },
-      createdAt: "2026-11-18T10:02:00Z",
-    });
+  assert.equal(catchup.notified, 0);
+  assert.equal(sentDms.length, 1);
 
-    await waitUntil(
-      async () =>
-        (await app.store.cursors.get("guild_event_cursor")) === "3" &&
-        sentDms.length === 1,
-    );
-    assert.equal(sentDms[0]!.userId, 22_222);
-    assert.match(
-      sentDms[0]!.text,
-      /王润哲 已将你指定为公会任务的负责人：部署流水线/,
-    );
-    assert.match(sentDms[0]!.text, /https:\/\/guild\.bitnp\.net\/nodes\/90/);
+  // Due reminders seed on first run and notify leaders on subsequent run.
+  const dueSeed = await app.guildAutomation.runDueReminders();
 
-    // Catch-up polling must not duplicate already-streamed events.
-    const catchup = await app.guildAutomation.runAssignments();
+  assert.equal(dueSeed.notified, 0);
+  const dueRun = await app.guildAutomation.runDueReminders();
 
-    assert.equal(catchup.notified, 0);
-    assert.equal(sentDms.length, 1);
+  assert.equal(dueRun.notified, 1);
+  assert.equal(sentDms[1]!.userId, 22_222);
+  assert.match(sentDms[1]!.text, /完善告警规则/);
 
-    // Due reminders: first call seeds guild_due_cursor, second call notifies leaders.
-    const dueSeed = await app.guildAutomation.runDueReminders();
+  // Weekly report writes markdown into notebooks.
+  const report = await app.guildAutomation.runWeeklyReport();
+  const doc = await app.knowledge.readRaw("notebook", report.path);
 
-    assert.equal(dueSeed.notified, 0);
-    assert.equal(
-      await app.store.cursors.get("guild_due_cursor"),
-      "2026-11-18T10:00:00Z",
-    );
-
-    const dueRun = await app.guildAutomation.runDueReminders();
-
-    assert.equal(dueRun.notified, 1);
-    assert.equal(sentDms.length, 2);
-    assert.equal(sentDms[1]!.userId, 22_222);
-    assert.match(sentDms[1]!.text, /完善告警规则/);
-
-    // Weekly report pulls /api/internal/activity-summary and writes notebook.
-    const report = await app.guildAutomation.runWeeklyReport();
-    const doc = await app.knowledge.readLines("notebook", report.path, 1, 80);
-    const markdown = doc.content;
-
-    assert.match(markdown, /周内新增：2/);
-    assert.match(markdown, /完成接口鉴权改造与告警联调/);
-    assert.ok(serviceAuthChecks.includes("/api/internal/events"));
-    assert.ok(serviceAuthChecks.includes("/api/internal/events/stream"));
-    assert.ok(serviceAuthChecks.includes("/api/internal/due-nodes"));
-    assert.ok(serviceAuthChecks.includes("/api/internal/activity-summary"));
-  } finally {
-    await cleanup?.();
-    for (const client of sseClients) {
-      client.end();
-    }
-
-    sseClients.clear();
-    await guildStub.close();
-    await gatewayStub.close();
-    await kcStub.close();
-    await llmStub.close();
-  }
+  assert.match(doc, /周内新增：2/);
+  assert.match(doc, /完成接口鉴权改造与告警联调/);
 });

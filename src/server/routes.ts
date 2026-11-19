@@ -1,5 +1,6 @@
+import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { extname, join, normalize, resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 import {
   createApp,
@@ -8,45 +9,214 @@ import {
   createRouter,
   defineEventHandler,
   getHeader,
-  getQuery,
-  getRouterParam,
   readBody,
   readRawBody,
+  serveStatic,
   setHeader,
   setResponseStatus,
 } from "h3";
+import { LRUCache } from "lru-cache";
+import { lookup } from "mrmime";
+import { Type } from "typebox";
 
 import type { BerryApp } from "../app.ts";
-import { maskSettings, mergeMaskedSettings } from "../config/settings.ts";
+import {
+  maskSettings,
+  mergeMaskedSettings,
+  scheduleSpecSchema,
+} from "../config/settings.ts";
 import type { OneBotWebhookEvent } from "../gateway/webhook.ts";
 import { verifyWebhookSignature } from "../gateway/webhook.ts";
-import type {
-  ChatKind,
-  GroupTriggerMode,
-  MemoryScope,
-  ScheduleSpec,
-} from "../types.ts";
-import { makeChatKey, parseChatKey } from "../types.ts";
 import { errorMessage } from "../utils/time.ts";
 import {
-  optionalQueryInt,
-  pickEnum,
-  queryInt,
-  queryString,
-  requireParam,
-  requirePositiveIntParam,
+  idParamSchema,
+  parseBody,
+  parseChatKeyParam,
+  parseParams,
+  parseQuery,
+  stringIdParamSchema,
 } from "./http.ts";
 
-const MIME_BY_EXT: Record<string, string> = {
-  ".html": "text/html; charset=utf-8",
-  ".js": "application/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".ico": "image/x-icon",
-  ".json": "application/json; charset=utf-8",
-  ".woff2": "font/woff2",
-};
+const avatarParamsSchema = Type.Object({
+  kind: Type.Union([Type.Literal("user"), Type.Literal("group")]),
+  id: Type.String({ minLength: 1 }),
+});
+
+const guildTaskParamSchema = Type.Object({
+  task: Type.Union([
+    Type.Literal("due"),
+    Type.Literal("assignments"),
+    Type.Literal("weekly"),
+  ]),
+});
+
+const logsQuerySchema = Type.Object({
+  level: Type.Optional(
+    Type.Union([
+      Type.Literal("debug"),
+      Type.Literal("info"),
+      Type.Literal("warn"),
+      Type.Literal("error"),
+    ]),
+  ),
+  scope: Type.Optional(Type.String()),
+  search: Type.Optional(Type.String()),
+  afterId: Type.Optional(Type.Integer()),
+  limit: Type.Integer({ minimum: 1, default: 250 }),
+});
+
+const gateQuerySchema = Type.Object({
+  action: Type.Optional(
+    Type.Union([
+      Type.Literal("reply"),
+      Type.Literal("memory"),
+      Type.Literal("ignore"),
+    ]),
+  ),
+  stage: Type.Optional(
+    Type.Union([
+      Type.Literal("l0_rule"),
+      Type.Literal("l1_classifier"),
+      Type.Literal("dry_run"),
+    ]),
+  ),
+  chatKey: Type.Optional(Type.String()),
+  search: Type.Optional(Type.String()),
+  limit: Type.Integer({ minimum: 1, default: 50 }),
+  offset: Type.Integer({ minimum: 0, default: 0 }),
+});
+
+const messagesQuerySchema = Type.Object({
+  search: Type.Optional(Type.String()),
+  limit: Type.Integer({ minimum: 1, default: 80 }),
+  beforeId: Type.Optional(Type.Integer({ minimum: 1 })),
+});
+
+const memoryScopeSchema = Type.Union([
+  Type.Literal("global"),
+  Type.Literal("chat"),
+  Type.Literal("user"),
+]);
+
+const listMemoriesQuerySchema = Type.Object({
+  scope: Type.Optional(memoryScopeSchema),
+  ownerId: Type.Optional(Type.String()),
+});
+
+const deleteMemoryQuerySchema = Type.Object({
+  scope: memoryScopeSchema,
+  ownerId: Type.String({ default: "" }),
+  key: Type.String({ default: "" }),
+});
+
+const lookupQuerySchema = Type.Object({
+  q: Type.String({ default: "" }),
+});
+
+const docReadQuerySchema = Type.Object({
+  scope: Type.Union([Type.Literal("knowledge"), Type.Literal("notebook")], {
+    default: "notebook",
+  }),
+  path: Type.String({ default: "" }),
+});
+
+const docPathQuerySchema = Type.Object({
+  path: Type.String({ default: "" }),
+});
+
+const triggerModeSchema = Type.Union([
+  Type.Literal("off"),
+  Type.Literal("mention_only"),
+  Type.Literal("smart_observe"),
+]);
+
+const chatKindSchema = Type.Union([
+  Type.Literal("group"),
+  Type.Literal("private"),
+]);
+
+const nonBlankString = Type.String({ minLength: 1, pattern: "\\S" });
+
+const botStateBodySchema = Type.Object({
+  paused: Type.Boolean({ default: false }),
+});
+
+const dryRunBodySchema = Type.Object({
+  chatKey: Type.String({ default: "group:100000" }),
+  triggerMode: Type.Union(
+    [Type.Literal("mention_only"), Type.Literal("smart_observe")],
+    { default: "smart_observe" },
+  ),
+  senderName: Type.String({ default: "测试群友" }),
+  userId: Type.String({ default: "10001" }),
+  mentionedBot: Type.Boolean({ default: false }),
+  quotedBot: Type.Boolean({ default: false }),
+  text: nonBlankString,
+  recentContext: Type.Array(Type.String(), { default: [] }),
+});
+
+const createChatBodySchema = Type.Object({
+  kind: chatKindSchema,
+  chatId: nonBlankString,
+  title: Type.Optional(Type.String()),
+  enabled: Type.Optional(Type.Boolean()),
+  triggerMode: Type.Optional(triggerModeSchema),
+});
+
+const patchChatBodySchema = Type.Object({
+  title: Type.Optional(Type.String()),
+  enabled: Type.Optional(Type.Boolean()),
+  triggerMode: Type.Optional(triggerModeSchema),
+});
+
+const backfillBodySchema = Type.Object({
+  count: Type.Integer({ minimum: 1, maximum: 200, default: 40 }),
+});
+
+const digestBodySchema = Type.Object({
+  lookbackHours: Type.Number({ minimum: 1, default: 24 }),
+});
+
+const injectBodySchema = Type.Object({
+  content: nonBlankString,
+});
+
+const upsertMemoryBodySchema = Type.Object({
+  scope: memoryScopeSchema,
+  ownerId: Type.String({ default: "" }),
+  key: Type.String({ minLength: 1 }),
+  summary: Type.String({ default: "" }),
+  content: Type.String({ default: "" }),
+});
+
+const scheduleKindSchema = Type.Union([chatKindSchema, Type.Literal("")]);
+
+const createScheduleBodySchema = Type.Object({
+  title: nonBlankString,
+  kind: Type.Optional(scheduleKindSchema),
+  chatId: Type.Optional(Type.String()),
+  content: nonBlankString,
+  schedule: scheduleSpecSchema,
+  enabled: Type.Optional(Type.Boolean()),
+});
+
+const patchScheduleBodySchema = Type.Object({
+  title: Type.Optional(nonBlankString),
+  kind: Type.Optional(scheduleKindSchema),
+  chatId: Type.Optional(Type.String()),
+  content: Type.Optional(nonBlankString),
+  schedule: Type.Optional(scheduleSpecSchema),
+  enabled: Type.Optional(Type.Boolean()),
+});
+
+const docWriteBodySchema = Type.Object({
+  path: nonBlankString,
+  content: Type.String(),
+});
+
+const purgeBodySchema = Type.Object({
+  olderThanDays: Type.Integer({ minimum: 1, default: 30 }),
+});
 
 export function createHttpApp(berry: BerryApp, webDistDir: string) {
   const app = createApp({
@@ -63,25 +233,30 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
   });
 
   const router = createRouter();
-  let botInfoCache: {
-    value: { user_id: number; nickname: string } | null;
-    expiresAt: number;
-  } = { value: null, expiresAt: 0 };
+  const botInfoCache = new LRUCache<
+    "self",
+    { account: { user_id: number; nickname: string } | null }
+  >({
+    max: 1,
+    ttl: 60_000,
+  });
 
   async function cachedBotAccount() {
     if (!berry.gateway.configured) {
       return null;
     }
 
-    if (Date.now() < botInfoCache.expiresAt) {
-      return botInfoCache.value;
+    const cached = botInfoCache.get("self");
+
+    if (cached) {
+      return cached.account;
     }
 
-    const value = await berry.gateway.getLoginInfo().catch(() => null);
+    const account = await berry.gateway.getLoginInfo().catch(() => null);
 
-    botInfoCache = { value, expiresAt: Date.now() + 60_000 };
+    botInfoCache.set("self", { account });
 
-    return value;
+    return account;
   }
 
   router.get(
@@ -95,6 +270,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     })),
   );
 
+  // TODO: 待上游 message-gateway 支持 WebSocket 事件推送后，改为通过 WS 订阅事件并移除此临时 Webhook 路由与 BERRY_WEBHOOK_TOKEN。
   router.post(
     "/api/webhooks/onebot",
     defineEventHandler(async (event) => {
@@ -237,8 +413,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/bot/state",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const body = await readBody<{ paused?: boolean }>(event);
-      const paused = Boolean(body?.paused);
+      const { paused } = await parseBody(event, botStateBodySchema);
       const saved = await berry.updateSettings({
         ...berry.settings,
         bot: {
@@ -255,20 +430,9 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/logs",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const query = getQuery(event);
+      const query = await parseQuery(event, logsQuerySchema);
 
-      return berry.logs.list({
-        level: pickEnum(query.level, [
-          "debug",
-          "info",
-          "warn",
-          "error",
-        ] as const),
-        scope: queryString(query, "scope"),
-        search: queryString(query, "search"),
-        afterId: optionalQueryInt(query, "afterId"),
-        limit: queryInt(query, "limit", 250),
-      });
+      return berry.logs.list(query);
     }),
   );
 
@@ -286,13 +450,11 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/avatars/:kind/:id",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const kind = getRouterParam(event, "kind");
-      const id = requireParam(event, "id");
-
-      if (kind !== "user" && kind !== "group") {
-        throw createError({ statusCode: 400, message: "无效的头像类型" });
-      }
-
+      const { kind, id } = await parseParams(
+        event,
+        avatarParamsSchema,
+        "无效的头像类型",
+      );
       const avatar = await berry.avatars.get(kind, id);
 
       setHeader(event, "Content-Type", avatar.contentType);
@@ -306,7 +468,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/assets/:id/raw",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const id = requirePositiveIntParam(event, "id", "无效的附件编号");
+      const { id } = await parseParams(event, idParamSchema, "无效的附件编号");
       const asset = await berry.store.assets.get(id);
 
       if (!asset?.filePath) {
@@ -362,20 +524,9 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/gate-decisions",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const query = getQuery(event);
+      const query = await parseQuery(event, gateQuerySchema);
 
-      return berry.store.gate.list({
-        action: pickEnum(query.action, ["reply", "memory", "ignore"] as const),
-        stage: pickEnum(query.stage, [
-          "l0_rule",
-          "l1_classifier",
-          "dry_run",
-        ] as const),
-        chatKey: queryString(query, "chatKey"),
-        search: queryString(query, "search"),
-        limit: queryInt(query, "limit", 50),
-        offset: queryInt(query, "offset", 0),
-      });
+      return berry.store.gate.list(query);
     }),
   );
 
@@ -383,35 +534,18 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/gate-decisions/dry-run",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const body = await readBody<{
-        chatKey?: string;
-        triggerMode?: "mention_only" | "smart_observe";
-        senderName?: string;
-        userId?: string;
-        mentionedBot?: boolean;
-        quotedBot?: boolean;
-        text?: string;
-        recentContext?: string[];
-      }>(event);
-
-      if (!body?.text?.trim()) {
-        throw createError({
-          statusCode: 400,
-          message: "请输入待测试的消息内容",
-        });
-      }
+      const body = await parseBody(
+        event,
+        dryRunBodySchema,
+        "请输入待测试的消息内容",
+      );
 
       return berry.classifier.dryRun(berry.settings, {
+        ...body,
         chatKey: body.chatKey || "group:100000",
-        triggerMode: body.triggerMode || "smart_observe",
         senderName: body.senderName || "测试群友",
         userId: body.userId || "10001",
-        mentionedBot: Boolean(body.mentionedBot),
-        quotedBot: Boolean(body.quotedBot),
         text: body.text.trim(),
-        recentContext: Array.isArray(body.recentContext)
-          ? body.recentContext
-          : [],
       });
     }),
   );
@@ -430,23 +564,11 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/chats",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const body = await readBody<{
-        kind: ChatKind;
-        chatId: string;
-        title?: string;
-        enabled?: boolean;
-        triggerMode?: GroupTriggerMode;
-      }>(event);
-
-      if (
-        !body?.chatId?.trim() ||
-        (body.kind !== "group" && body.kind !== "private")
-      ) {
-        throw createError({
-          statusCode: 400,
-          message: "请填写有效的会话类型和号码",
-        });
-      }
+      const body = await parseBody(
+        event,
+        createChatBodySchema,
+        "请填写有效的会话类型和号码",
+      );
 
       return berry.store.chats.upsert({
         kind: body.kind,
@@ -485,14 +607,10 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/chats/:chatKey",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const chatKey = requireParam(event, "chatKey");
-      const body = await readBody<{
-        title?: string;
-        enabled?: boolean;
-        triggerMode?: GroupTriggerMode;
-      }>(event);
+      const { chatKey } = await parseChatKeyParam(event);
+      const body = await parseBody(event, patchChatBodySchema);
 
-      return berry.store.chats.update(chatKey, body ?? {});
+      return berry.store.chats.update(chatKey, body);
     }),
   );
 
@@ -519,20 +637,18 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/chats/:chatKey/messages",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const chatKey = requireParam(event, "chatKey");
-      const parsed = parseChatKey(chatKey);
-      const canonicalChatKey = makeChatKey(parsed.kind, parsed.chatId);
-      const query = getQuery(event);
+      const { chatKey } = await parseChatKeyParam(event);
+      const query = await parseQuery(event, messagesQuerySchema);
       const items = await berry.store.messages.search(chatKey, {
-        query: queryString(query, "search"),
-        limit: queryInt(query, "limit", 80),
-        beforeId: optionalQueryInt(query, "beforeId"),
+        query: query.search,
+        limit: query.limit,
+        beforeId: query.beforeId,
       });
 
       const [assetMap, reactionMap] = await Promise.all([
         berry.store.assets.listForMessages(items.map((m) => m.id)),
         berry.store.reactions.aggregateForMessages(
-          canonicalChatKey,
+          chatKey,
           items.map((m) => m.onebotMessageId),
         ),
       ]);
@@ -551,10 +667,9 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/chats/:chatKey/backfill",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const chatKey = requireParam(event, "chatKey");
-      const parsed = parseChatKey(chatKey);
+      const { kind, chatId } = await parseChatKeyParam(event);
 
-      if (parsed.kind !== "group") {
+      if (kind !== "group") {
         throw createError({ statusCode: 400, message: "仅支持群聊补录历史" });
       }
 
@@ -565,13 +680,10 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         });
       }
 
-      const body = await readBody<{ count?: number }>(event);
-      const rawMessages = await berry.gateway.getGroupMsgHistory(
-        parsed.chatId,
-        body?.count ?? 40,
-      );
+      const { count } = await parseBody(event, backfillBodySchema);
+      const rawMessages = await berry.gateway.getGroupMsgHistory(chatId, count);
 
-      return berry.webhook.ingestHistoryBatch(parsed.chatId, rawMessages);
+      return berry.webhook.ingestHistoryBatch(chatId, rawMessages);
     }),
   );
 
@@ -579,22 +691,18 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/chats/:chatKey/digest",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const chatKey = requireParam(event, "chatKey");
-      const parsed = parseChatKey(chatKey);
+      const { kind, chatId } = await parseChatKeyParam(event);
 
-      if (parsed.kind !== "group") {
+      if (kind !== "group") {
         throw createError({
           statusCode: 400,
           message: "仅支持对群聊生成讨论摘要",
         });
       }
 
-      const body = await readBody<{ lookbackHours?: number }>(event);
+      const { lookbackHours } = await parseBody(event, digestBodySchema);
 
-      await berry.scheduler.enqueueDigestNow(
-        parsed.chatId,
-        body?.lookbackHours ?? 24,
-      );
+      await berry.scheduler.enqueueDigestNow(chatId, lookbackHours);
 
       return { queued: true };
     }),
@@ -604,27 +712,25 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/chats/:chatKey/inject",
     defineEventHandler(async (event) => {
       const session = await berry.auth.requireAdmin(event);
-      const chatKey = requireParam(event, "chatKey");
-      const parsed = parseChatKey(chatKey);
-      const canonicalChatKey = makeChatKey(parsed.kind, parsed.chatId);
-      const body = await readBody<{ content?: string }>(event);
-
-      if (!body?.content?.trim()) {
-        throw createError({ statusCode: 400, message: "请输入指令内容" });
-      }
+      const { chatKey, kind, chatId } = await parseChatKeyParam(event);
+      const { content } = await parseBody(
+        event,
+        injectBodySchema,
+        "请输入指令内容",
+      );
 
       await berry.store.jobs.enqueue(
         "invoke",
         `admin:${chatKey}:${Date.now()}`,
-        canonicalChatKey,
+        chatKey,
         {
           source: "admin_inject",
-          chatKey: canonicalChatKey,
-          kind: parsed.kind,
-          chatId: parsed.chatId,
+          chatKey,
+          kind,
+          chatId,
           triggerMessageIds: [],
           senderName: session.name,
-          content: body.content.trim(),
+          content: content.trim(),
         },
       );
       berry.worker.wake();
@@ -637,13 +743,10 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/memories",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const query = getQuery(event);
+      const query = await parseQuery(event, listMemoriesQuerySchema);
 
       return {
-        items: await berry.store.memories.list({
-          scope: pickEnum(query.scope, ["global", "chat", "user"] as const),
-          ownerId: queryString(query, "ownerId"),
-        }),
+        items: await berry.store.memories.list(query),
       };
     }),
   );
@@ -652,24 +755,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/memories",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const body = await readBody<{
-        scope: MemoryScope;
-        ownerId: string;
-        key: string;
-        summary: string;
-        content: string;
-      }>(event);
-
-      if (
-        body?.scope !== "global" &&
-        body?.scope !== "chat" &&
-        body?.scope !== "user"
-      ) {
-        throw createError({
-          statusCode: 400,
-          statusMessage: "Invalid memory scope",
-        });
-      }
+      const body = await parseBody(event, upsertMemoryBodySchema);
 
       return berry.store.memories.upsert({
         ...body,
@@ -682,21 +768,16 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/memories",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const query = getQuery(event);
-      const scope = pickEnum(query.scope, ["global", "chat", "user"] as const);
-
-      if (!scope) {
-        throw createError({
-          statusCode: 400,
-          statusMessage: "Invalid memory scope",
-        });
-      }
+      const { scope, ownerId, key } = await parseQuery(
+        event,
+        deleteMemoryQuerySchema,
+      );
 
       return {
         deleted: await berry.store.memories.remove(
           scope,
-          scope === "global" ? "global" : (queryString(query, "ownerId") ?? ""),
-          queryString(query, "key") ?? "",
+          scope === "global" ? "global" : ownerId,
+          key,
         ),
       };
     }),
@@ -720,7 +801,11 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/guild/trigger/:task",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const task = getRouterParam(event, "task");
+      const { task } = await parseParams(
+        event,
+        guildTaskParamSchema,
+        "未知公会任务类型",
+      );
 
       switch (task) {
         case "due": {
@@ -733,10 +818,6 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
 
         case "weekly": {
           return berry.guildAutomation.runWeeklyReport();
-        }
-
-        default: {
-          throw createError({ statusCode: 400, message: "未知公会任务类型" });
         }
       }
     }),
@@ -755,7 +836,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/identity/lookup",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const q = queryString(getQuery(event), "q") ?? "";
+      const { q } = await parseQuery(event, lookupQuerySchema);
 
       if (!berry.directory.enabled) {
         return { enabled: false, items: [] };
@@ -781,14 +862,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/schedules",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const body = await readBody<{
-        title: string;
-        kind?: ChatKind | "";
-        chatId?: string;
-        content: string;
-        schedule: ScheduleSpec;
-        enabled?: boolean;
-      }>(event);
+      const body = await parseBody(event, createScheduleBodySchema);
 
       return berry.store.schedules.create(body, berry.settings.bot.timezone);
     }),
@@ -798,8 +872,8 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/schedules/:id",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const id = requireParam(event, "id");
-      const body = await readBody<Record<string, unknown>>(event);
+      const { id } = await parseParams(event, stringIdParamSchema);
+      const body = await parseBody(event, patchScheduleBodySchema);
       const updated = await berry.store.schedules.update(
         id,
         body,
@@ -818,7 +892,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/schedules/:id",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const id = requireParam(event, "id");
+      const { id } = await parseParams(event, stringIdParamSchema);
 
       return { deleted: await berry.store.schedules.remove(id) };
     }),
@@ -828,7 +902,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/schedules/:id/run",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const id = requireParam(event, "id");
+      const { id } = await parseParams(event, stringIdParamSchema);
       const ok = await berry.scheduler.triggerScheduleNow(id);
 
       if (!ok) {
@@ -852,10 +926,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/docs/content",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const query = getQuery(event);
-      const scope =
-        pickEnum(query.scope, ["knowledge", "notebook"] as const) ?? "notebook";
-      const path = queryString(query, "path") ?? "";
+      const { scope, path } = await parseQuery(event, docReadQuerySchema);
 
       return {
         scope,
@@ -869,7 +940,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/docs/content",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const body = await readBody<{ path: string; content: string }>(event);
+      const body = await parseBody(event, docWriteBodySchema);
 
       return berry.knowledge.writeNotebook(body.path, body.content, "replace");
     }),
@@ -879,7 +950,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/docs/content",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const path = queryString(getQuery(event), "path") ?? "";
+      const { path } = await parseQuery(event, docPathQuerySchema);
 
       return berry.knowledge.deleteNotebook(path);
     }),
@@ -978,7 +1049,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/jobs/:id/retry",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const id = requirePositiveIntParam(event, "id", "无效的任务编号");
+      const { id } = await parseParams(event, idParamSchema, "无效的任务编号");
       const ok = await berry.store.jobs.retry(id);
 
       if (ok) {
@@ -993,7 +1064,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/jobs/:id/cancel",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const id = requirePositiveIntParam(event, "id", "无效的任务编号");
+      const { id } = await parseParams(event, idParamSchema, "无效的任务编号");
 
       return { cancelled: await berry.store.jobs.cancel(id) };
     }),
@@ -1012,17 +1083,13 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/storage/purge",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const body = await readBody<{ olderThanDays?: number }>(event);
-      const days = Number(body?.olderThanDays ?? 30);
+      const { olderThanDays } = await parseBody(
+        event,
+        purgeBodySchema,
+        "保留天数须为大于或等于 1 的整数",
+      );
 
-      if (!Number.isFinite(days) || days < 1) {
-        throw createError({
-          statusCode: 400,
-          message: "保留天数须为大于或等于 1 的整数",
-        });
-      }
-
-      return berry.store.maintenance.purgeOldData(days);
+      return berry.store.maintenance.purgeOldData(olderThanDays);
     }),
   );
 
@@ -1050,41 +1117,52 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
 
   app.use(
     defineEventHandler(async (event) => {
-      if (event.method !== "GET" && event.method !== "HEAD") {
-        throw createError({ statusCode: 404, message: "Not Found" });
-      }
+      const served = await serveStatic(event, {
+        fallthrough: true,
+        indexNames: ["/index.html"],
+        getMeta: async (id) => {
+          const rel = id.replace(/^\/+/, "");
+          const candidate = resolve(resolvedDist, rel);
 
-      const rawPath = (event.path || "/").split("?")[0]!;
-      const rel = normalize(rawPath)
-        .replace(/^(\.\.[/\\])+/, "")
-        .replace(/^\/+/, "");
-      const candidate = rel
-        ? join(resolvedDist, rel)
-        : join(resolvedDist, "index.html");
+          if (
+            candidate !== resolvedDist &&
+            !candidate.startsWith(`${resolvedDist}${sep}`)
+          ) {
+            return;
+          }
 
-      try {
-        const info = await stat(candidate);
+          const info = await stat(candidate).catch(() => null);
 
-        if (info.isFile()) {
-          const ext = extname(candidate);
+          if (!info?.isFile()) {
+            return;
+          }
 
-          setHeader(
-            event,
-            "Content-Type",
-            MIME_BY_EXT[ext] ?? "application/octet-stream",
-          );
           if (rel.startsWith("assets/")) {
             setHeader(
               event,
               "Cache-Control",
               "public, max-age=31536000, immutable",
             );
+          } else if (rel === "index.html") {
+            setHeader(event, "Cache-Control", "no-store");
           }
 
-          return await readFile(candidate);
-        }
-      } catch {
-        // Fall back to index.html for SPA routes.
+          return {
+            type: lookup(candidate) || "application/octet-stream",
+            size: info.size,
+            mtime: info.mtimeMs,
+          };
+        },
+        getContents: (id) =>
+          createReadStream(resolve(resolvedDist, id.replace(/^\/+/, ""))),
+      });
+
+      if (served !== false) {
+        return;
+      }
+
+      if (event.method !== "GET" && event.method !== "HEAD") {
+        throw createError({ statusCode: 404, message: "Not Found" });
       }
 
       try {

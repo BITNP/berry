@@ -1,68 +1,143 @@
 import type { H3Event } from "h3";
-import { createError, getRouterParam } from "h3";
+import {
+  createError,
+  getValidatedQuery,
+  getValidatedRouterParams,
+  readBody,
+} from "h3";
+import type { Static, TObject } from "typebox";
+import { Type } from "typebox";
+import * as Value from "typebox/value";
 
-export function queryString(
-  query: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  const value = query[key];
+import type { ChatKey, ChatKind } from "../types.ts";
+import { makeChatKey, parseChatKey } from "../types.ts";
 
-  if (typeof value !== "string") {
-    return undefined;
+function normalizeRecord(
+  raw: unknown,
+  stripBlankStrings: boolean,
+): Record<string, unknown> {
+  if (!raw || typeof raw !== "object") {
+    return {};
   }
 
-  const trimmed = value.trim();
+  const out: Record<string, unknown> = {};
 
-  return trimmed || undefined;
-}
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
 
-export function optionalQueryInt(
-  query: Record<string, unknown>,
-  key: string,
-): number | undefined {
-  const raw = queryString(query, key);
-
-  if (!raw || !/^-?\d+$/.test(raw)) {
-    return undefined;
+      if (!stripBlankStrings || trimmed) {
+        out[key] = trimmed;
+      }
+    } else if (value !== undefined) {
+      out[key] = value;
+    }
   }
 
-  const parsed = Number.parseInt(raw, 10);
-
-  return Number.isSafeInteger(parsed) ? parsed : undefined;
+  return out;
 }
 
-export const queryInt = (
-  query: Record<string, unknown>,
-  key: string,
-  fallback: number,
-): number => optionalQueryInt(query, key) ?? fallback;
+function validateSchema<S extends TObject>(
+  schema: S,
+  raw: unknown,
+  options: {
+    normalizeStrings?: "strip" | "trim";
+    convert?: boolean;
+    message?: string;
+  } = {},
+): Static<S> {
+  const input = options.normalizeStrings
+    ? normalizeRecord(raw, options.normalizeStrings === "strip")
+    : raw && typeof raw === "object" && !Array.isArray(raw)
+      ? structuredClone(raw)
+      : {};
+  const defaulted = Value.Default(schema, input);
+  const prepared = options.convert
+    ? Value.Convert(schema, defaulted)
+    : defaulted;
 
-export const pickEnum = <const T extends readonly string[]>(
-  value: unknown,
-  allowed: T,
-): T[number] | undefined =>
-  typeof value === "string" && allowed.includes(value) ? value : undefined;
+  if (!Value.Check(schema, prepared)) {
+    const details = [...Value.Errors(schema, prepared)]
+      .map((err) => `${err.instancePath || "/"} ${err.message}`)
+      .join("; ");
 
-export function requireParam(event: H3Event, name: string): string {
-  const raw = getRouterParam(event, name);
-
-  if (!raw) {
-    throw createError({ statusCode: 400, message: "Missing route parameter" });
+    throw new Error(options.message || details || "请求参数校验失败");
   }
 
-  return decodeURIComponent(raw);
+  return prepared;
 }
 
-export function requirePositiveIntParam(
+export const parseQuery = <S extends TObject>(
   event: H3Event,
-  name: string,
-  message: string,
-): number {
-  const id = Number(getRouterParam(event, name));
+  schema: S,
+): Promise<Static<S>> =>
+  getValidatedQuery(event, (data) =>
+    validateSchema(schema, data, { normalizeStrings: "strip", convert: true }),
+  );
 
-  if (!Number.isInteger(id) || id <= 0) {
-    throw createError({ statusCode: 400, message });
+export const parseParams = <S extends TObject>(
+  event: H3Event,
+  schema: S,
+  message?: string,
+): Promise<Static<S>> =>
+  getValidatedRouterParams(
+    event,
+    (data) =>
+      validateSchema(schema, data, {
+        normalizeStrings: "trim",
+        convert: true,
+        message,
+      }),
+    { decode: true },
+  );
+
+export async function parseBody<S extends TObject>(
+  event: H3Event,
+  schema: S,
+  message?: string,
+): Promise<Static<S>> {
+  const raw = (await readBody<unknown>(event)) ?? {};
+
+  try {
+    return validateSchema(schema, raw, { message });
+  } catch (error) {
+    throw createError({
+      statusCode: 400,
+      message: error instanceof Error ? error.message : "请求体校验失败",
+    });
   }
+}
 
-  return id;
+export const idParamSchema = Type.Object({
+  id: Type.Integer({ minimum: 1 }),
+});
+
+export const chatKeyParamSchema = Type.Object({
+  chatKey: Type.String({ minLength: 1 }),
+});
+
+export const stringIdParamSchema = Type.Object({
+  id: Type.String({ minLength: 1 }),
+});
+
+export async function parseChatKeyParam(
+  event: H3Event,
+): Promise<{ chatKey: ChatKey; kind: ChatKind; chatId: string }> {
+  const { chatKey } = await parseParams(
+    event,
+    chatKeyParamSchema,
+    "无效的会话标识",
+  );
+
+  try {
+    const parsed = parseChatKey(chatKey);
+
+    return {
+      chatKey: makeChatKey(parsed.kind, parsed.chatId),
+      kind: parsed.kind,
+      chatId: parsed.chatId,
+    };
+  } catch {
+    throw createError({ statusCode: 400, message: "无效的会话标识" });
+  }
 }

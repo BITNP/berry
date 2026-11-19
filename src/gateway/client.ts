@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+
 import type { EnvConfig } from "../config/env.ts";
 import type { Store } from "../store/index.ts";
 import type {
@@ -34,6 +36,15 @@ export interface GroupInfo {
   group_id: number;
   group_name: string;
   member_count?: number;
+}
+
+interface SentMessageContext {
+  delivery: DeliveryRecord;
+  chatKey: ChatKey;
+  text: string;
+  segments: OneBotSegment[];
+  replyToMessageId: string | null;
+  botQQ: string;
 }
 
 export class MessageGatewayClient {
@@ -251,7 +262,7 @@ export class MessageGatewayClient {
       }
 
       if (unit.kind === "qq_forward") {
-        await this.#dispatchForward(
+        return await this.#dispatchForward(
           delivery,
           chatKey,
           kind,
@@ -259,8 +270,6 @@ export class MessageGatewayClient {
           unit,
           botQQ,
         );
-
-        return (await this.#store.deliveries.list(1))[0] ?? delivery;
       }
 
       const segments: OneBotSegment[] = [
@@ -276,45 +285,14 @@ export class MessageGatewayClient {
           ? { group_id: Number(chatId), message: segments }
           : { user_id: Number(chatId), message: segments };
 
-      const { body } = await this.callAction<{
-        delivery_id?: string;
-        message_id?: string | number;
-      }>(action, params);
-
-      const gatewayDeliveryId = body.data?.delivery_id ?? null;
-
-      if (gatewayDeliveryId) {
-        const updated = await this.#store.deliveries.updateStatus(delivery.id, {
-          status: "queued",
-          gatewayDeliveryId,
-        });
-
-        this.#spawnTracker(
-          delivery.id,
-          chatKey,
-          gatewayDeliveryId,
-          unit.text,
-          segments,
-          unit.quoteMessageId ?? null,
-          botQQ,
-        );
-
-        return updated ?? delivery;
-      }
-
-      const msgId = body.data?.message_id
-        ? String(body.data.message_id)
-        : `sent-${delivery.id}`;
-
-      return await this.#markSent(
-        delivery.id,
+      return await this.#sendAsyncMessage(action, params, {
+        delivery,
         chatKey,
-        msgId,
-        unit.text,
+        text: unit.text,
         segments,
-        unit.quoteMessageId ?? null,
+        replyToMessageId: unit.quoteMessageId ?? null,
         botQQ,
-      );
+      });
     } catch (error) {
       const detail = errorMessage(error);
 
@@ -338,6 +316,39 @@ export class MessageGatewayClient {
     }
   }
 
+  async #sendAsyncMessage(
+    action: "send_group_msg_async" | "send_private_msg_async",
+    params: Record<string, unknown>,
+    ctx: SentMessageContext,
+  ): Promise<DeliveryRecord> {
+    const { body } = await this.callAction<{
+      delivery_id?: string;
+      message_id?: string | number;
+    }>(action, params);
+
+    const gatewayDeliveryId = body.data?.delivery_id ?? null;
+
+    if (gatewayDeliveryId) {
+      const updated = await this.#store.deliveries.updateStatus(
+        ctx.delivery.id,
+        {
+          status: "queued",
+          gatewayDeliveryId,
+        },
+      );
+
+      this.#spawnTracker(gatewayDeliveryId, ctx);
+
+      return updated ?? ctx.delivery;
+    }
+
+    const msgId = body.data?.message_id
+      ? String(body.data.message_id)
+      : `sent-${ctx.delivery.id}`;
+
+    return this.#markSent(msgId, ctx);
+  }
+
   async #dispatchForward(
     delivery: DeliveryRecord,
     chatKey: ChatKey,
@@ -345,49 +356,28 @@ export class MessageGatewayClient {
     chatId: string,
     unit: Extract<OutputUnit, { kind: "qq_forward" }>,
     botQQ: string,
-  ): Promise<void> {
+  ): Promise<DeliveryRecord> {
     if (kind === "private") {
       const joined = `${unit.title}\n\n${unit.items.map((item) => item.text).join("\n\n")}`;
       const segments: OneBotSegment[] = [
         { type: "text", data: { text: joined } },
       ];
-      const { body } = await this.callAction<{
-        delivery_id?: string;
-        message_id?: string | number;
-      }>("send_private_msg_async", {
-        user_id: Number(chatId),
-        message: segments,
-      });
 
-      if (body.data?.delivery_id) {
-        await this.#store.deliveries.updateStatus(delivery.id, {
-          status: "queued",
-          gatewayDeliveryId: body.data.delivery_id,
-        });
-        this.#spawnTracker(
-          delivery.id,
+      return this.#sendAsyncMessage(
+        "send_private_msg_async",
+        {
+          user_id: Number(chatId),
+          message: segments,
+        },
+        {
+          delivery,
           chatKey,
-          body.data.delivery_id,
-          joined,
+          text: joined,
           segments,
-          null,
+          replyToMessageId: null,
           botQQ,
-        );
-
-        return;
-      }
-
-      await this.#markSent(
-        delivery.id,
-        chatKey,
-        String(body.data?.message_id ?? `fwd-${delivery.id}`),
-        joined,
-        segments,
-        null,
-        botQQ,
+        },
       );
-
-      return;
     }
 
     const nodes = unit.items.map((item) => ({
@@ -412,38 +402,24 @@ export class MessageGatewayClient {
 
     const summaryText = `[${unit.title}]\n${unit.items.map((item) => item.text).join("\n")}`;
 
-    await this.#markSent(
-      delivery.id,
-      chatKey,
+    return this.#markSent(
       String(body.data?.message_id ?? `fwd-${delivery.id}`),
-      summaryText,
-      [],
-      null,
-      botQQ,
+      {
+        delivery,
+        chatKey,
+        text: summaryText,
+        segments: [],
+        replyToMessageId: null,
+        botQQ,
+      },
     );
   }
 
-  #spawnTracker(
-    deliveryId: number,
-    chatKey: ChatKey,
-    gatewayDeliveryId: string,
-    text: string,
-    segments: OneBotSegment[],
-    replyToMessageId: string | null,
-    botQQ: string,
-  ): void {
-    const task = this.#trackDelivery(
-      deliveryId,
-      chatKey,
-      gatewayDeliveryId,
-      text,
-      segments,
-      replyToMessageId,
-      botQQ,
-    )
+  #spawnTracker(gatewayDeliveryId: string, ctx: SentMessageContext): void {
+    const task = this.#trackDelivery(gatewayDeliveryId, ctx)
       .catch((error) => {
         this.#logger.warn("Delivery status tracking failed", {
-          deliveryId,
+          deliveryId: ctx.delivery.id,
           gatewayDeliveryId,
           error: errorMessage(error),
         });
@@ -456,13 +432,8 @@ export class MessageGatewayClient {
   }
 
   async #trackDelivery(
-    deliveryId: number,
-    chatKey: ChatKey,
     gatewayDeliveryId: string,
-    text: string,
-    segments: OneBotSegment[],
-    replyToMessageId: string | null,
-    botQQ: string,
+    ctx: SentMessageContext,
   ): Promise<void> {
     const url = `${this.#baseUrl}/api/v1/accounts/${encodeURIComponent(this.#account)}/message-status/${encodeURIComponent(gatewayDeliveryId)}`;
 
@@ -471,7 +442,7 @@ export class MessageGatewayClient {
         return;
       }
 
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      await delay(delayMs);
       if (this.#closed) {
         return;
       }
@@ -483,8 +454,8 @@ export class MessageGatewayClient {
 
       if (res.status === 404) {
         await this.#markFailed(
-          deliveryId,
-          chatKey,
+          ctx.delivery.id,
+          ctx.chatKey,
           "Gateway delivery status not found (evicted or restarted)",
         );
 
@@ -499,13 +470,8 @@ export class MessageGatewayClient {
 
       if (state.status === "sent") {
         await this.#markSent(
-          deliveryId,
-          chatKey,
           state.receipt?.message_id ?? `gw-${gatewayDeliveryId}`,
-          text,
-          segments,
-          replyToMessageId,
-          botQQ,
+          ctx,
         );
 
         return;
@@ -513,15 +479,15 @@ export class MessageGatewayClient {
 
       if (state.status === "failed") {
         await this.#markFailed(
-          deliveryId,
-          chatKey,
+          ctx.delivery.id,
+          ctx.chatKey,
           state.error || state.reason || "gateway delivery failed",
         );
 
         return;
       }
 
-      await this.#store.deliveries.updateStatus(deliveryId, {
+      await this.#store.deliveries.updateStatus(ctx.delivery.id, {
         status: state.status,
         ...(state.attempts === undefined ? {} : { attempts: state.attempts }),
         ...(state.error ? { error: state.error } : {}),
@@ -530,29 +496,24 @@ export class MessageGatewayClient {
   }
 
   async #markSent(
-    deliveryId: number,
-    chatKey: ChatKey,
     onebotMessageId: string,
-    text: string,
-    segments: OneBotSegment[],
-    replyToMessageId: string | null,
-    botQQ: string,
+    ctx: SentMessageContext,
   ): Promise<DeliveryRecord> {
-    const updated = await this.#store.deliveries.updateStatus(deliveryId, {
+    const updated = await this.#store.deliveries.updateStatus(ctx.delivery.id, {
       status: "sent",
       onebotMessageId,
     });
-    const { kind, chatId } = parseChatKey(chatKey);
+    const { kind, chatId } = parseChatKey(ctx.chatKey);
 
     await this.#store.messages.capture({
       kind,
       chatId,
       onebotMessageId,
-      userId: botQQ || "bot",
+      userId: ctx.botQQ || "bot",
       senderName: "树莓娘",
-      text,
-      segments,
-      replyToMessageId,
+      text: ctx.text,
+      segments: ctx.segments,
+      replyToMessageId: ctx.replyToMessageId,
       isBot: true,
       mentionedBot: false,
       sentAt: Date.now(),

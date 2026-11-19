@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac } from "node:crypto";
 
 import type { RuntimeSettings } from "../config/settings.ts";
 import type { MessageGate } from "../gate/gate.ts";
@@ -6,6 +6,7 @@ import type { MediaProcessor } from "../media/processor.ts";
 import type { Store } from "../store/index.ts";
 import type { ChatKind } from "../types.ts";
 import { makeChatKey } from "../types.ts";
+import { constantTimeEquals } from "../utils/crypto.ts";
 import { Logger } from "../utils/logger.ts";
 import { qfaceName } from "./qface.ts";
 import { parseOneBotSegments } from "./segments.ts";
@@ -28,17 +29,6 @@ export interface OneBotWebhookEvent {
     nickname?: string;
     card?: string;
   };
-}
-
-function constantTimeEquals(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-
-  if (bufA.length !== bufB.length) {
-    return false;
-  }
-
-  return timingSafeEqual(bufA, bufB);
 }
 
 export function verifyWebhookSignature(
@@ -71,6 +61,7 @@ export function verifyWebhookSignature(
   return false;
 }
 
+// TODO: 待上游 message-gateway 支持 WebSocket 事件流后，将入站事件接入切换为 WS 客户端，移除 HTTP Webhook 签名校验入口。
 export class OneBotWebhookHandler {
   #store: Store;
   #gate: MessageGate;

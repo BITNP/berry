@@ -75,7 +75,6 @@ interface RuntimeSettingsView {
     timeoutMs: number;
   };
   policy: {
-    allowlistEnabled: boolean;
     privateDefaultEnabled: boolean;
     groupDefaultMode: "off" | "mention_only" | "smart_observe";
     adminBypassGate: boolean;
@@ -766,9 +765,6 @@ onMounted(() => {
         <NTabPane name="policy" tab="门控策略">
           <NForm class="form-narrow" label-placement="top" size="small">
             <div class="form-grid-2">
-              <NFormItem label="启用会话白名单">
-                <NSwitch v-model:value="settings.policy.allowlistEnabled" />
-              </NFormItem>
               <NFormItem label="新私聊默认启用">
                 <NSwitch
                   v-model:value="settings.policy.privateDefaultEnabled"

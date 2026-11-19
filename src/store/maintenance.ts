@@ -42,22 +42,20 @@ async function folderStats(
   let bytes = 0;
 
   try {
-    const entries = await readdir(dir, { withFileTypes: true });
+    const entries = await readdir(dir, {
+      recursive: true,
+      withFileTypes: true,
+    });
 
     for (const entry of entries) {
-      const full = join(dir, entry.name);
-
-      if (entry.isDirectory()) {
-        const sub = await folderStats(full);
-
-        files += sub.files;
-        bytes += sub.bytes;
-      } else if (entry.isFile()) {
-        const info = await stat(full);
-
-        files++;
-        bytes += info.size;
+      if (!entry.isFile()) {
+        continue;
       }
+
+      const info = await stat(join(entry.parentPath, entry.name));
+
+      files++;
+      bytes += info.size;
     }
   } catch {
     // Missing folder is fine.
@@ -217,6 +215,7 @@ export class MaintenanceStore {
         .filter((id) => !protectedIds.has(id));
 
       let deletedAssetRows = 0;
+      let deletedMessages = 0;
 
       if (deletableMsgIds.length > 0) {
         const assetRows = await trx
@@ -225,9 +224,13 @@ export class MaintenanceStore {
           .where("message_id", "in", deletableMsgIds)
           .execute();
 
-        const pathCandidates = assetRows
-          .map((a) => a.file_path)
-          .filter((p): p is string => Boolean(p));
+        const pathCandidates = [
+          ...new Set(
+            assetRows
+              .map((a) => a.file_path)
+              .filter((p): p is string => Boolean(p)),
+          ),
+        ];
 
         const assetRes = await trx
           .deleteFrom("message_assets")
@@ -236,29 +239,27 @@ export class MaintenanceStore {
 
         deletedAssetRows = Number(assetRes.numDeletedRows);
 
-        for (const candidate of pathCandidates) {
-          const stillUsed = await trx
-            .selectFrom("message_assets")
-            .select("id")
-            .where("file_path", "=", candidate)
-            .limit(1)
-            .executeTakeFirst();
-
-          if (!stillUsed) {
-            orphanPaths.push(candidate);
-          }
-        }
-      }
-
-      let deletedMessages = 0;
-
-      if (deletableMsgIds.length > 0) {
         const msgRes = await trx
           .deleteFrom("messages")
           .where("id", "in", deletableMsgIds)
           .executeTakeFirst();
 
         deletedMessages = Number(msgRes.numDeletedRows);
+
+        if (pathCandidates.length > 0) {
+          const stillUsedRows = await trx
+            .selectFrom("message_assets")
+            .select("file_path")
+            .where("file_path", "in", pathCandidates)
+            .execute();
+          const stillUsed = new Set(stillUsedRows.map((r) => r.file_path));
+
+          for (const candidate of pathCandidates) {
+            if (!stillUsed.has(candidate)) {
+              orphanPaths.push(candidate);
+            }
+          }
+        }
       }
 
       const gateRes = await trx

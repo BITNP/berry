@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 
-import type { SitePermissions } from "../identity/authz.ts";
+import type { SitePermissions } from "bitnp-authz";
+
 import type { BerryDatabase } from "./database.ts";
 
 export interface AdminSession {

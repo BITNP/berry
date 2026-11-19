@@ -1,0 +1,17 @@
+{
+  "name": "bitnp-authz",
+  "version": "1.0.0",
+  "description": "Keycloak realm 角色到授权事实与展示职务的纯计算 SDK",
+  "type": "module",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false
+}

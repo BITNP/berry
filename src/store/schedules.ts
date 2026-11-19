@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { Cron } from "croner";
 import type { Selectable } from "kysely";
 
 import type { ChatKind, ScheduleRecord, ScheduleSpec } from "../types.ts";
@@ -24,86 +25,6 @@ const WEEKDAY_MAP: Record<string, number> = {
   sunday: 0,
 };
 
-interface ZonedParts {
-  year: number;
-  month: number;
-  day: number;
-  hour: number;
-  minute: number;
-  second: number;
-  weekday: number;
-}
-
-function getZonedParts(ms: number, timeZone: string): ZonedParts {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    weekday: "short",
-    hour12: false,
-  });
-
-  const map = new Map(
-    formatter
-      .formatToParts(new Date(ms))
-      .map((part) => [part.type, part.value]),
-  );
-
-  const rawHour = Number(map.get("hour"));
-
-  return {
-    year: Number(map.get("year")),
-    month: Number(map.get("month")),
-    day: Number(map.get("day")),
-    hour: rawHour === 24 ? 0 : rawHour,
-    minute: Number(map.get("minute")),
-    second: Number(map.get("second")),
-    weekday: WEEKDAY_MAP[(map.get("weekday") ?? "").toLowerCase()] ?? 0,
-  };
-}
-
-function fromZonedLocal(
-  parts: {
-    year: number;
-    month: number;
-    day: number;
-    hour: number;
-    minute: number;
-    second?: number;
-  },
-  timeZone: string,
-): number {
-  const targetUtc = Date.UTC(
-    parts.year,
-    parts.month - 1,
-    parts.day,
-    parts.hour,
-    parts.minute,
-    parts.second ?? 0,
-  );
-  let candidate = targetUtc;
-
-  for (let i = 0; i < 2; i++) {
-    const actual = getZonedParts(candidate, timeZone);
-    const actualUtc = Date.UTC(
-      actual.year,
-      actual.month - 1,
-      actual.day,
-      actual.hour,
-      actual.minute,
-      actual.second,
-    );
-
-    candidate += targetUtc - actualUtc;
-  }
-
-  return candidate;
-}
-
 function parseClock(time: string): { hour: number; minute: number } {
   const match = /^(\d{1,2}):(\d{2})$/.exec(time.trim());
 
@@ -121,19 +42,19 @@ function parseClock(time: string): { hour: number; minute: number } {
   return { hour, minute };
 }
 
-function addDays(
-  year: number,
-  month: number,
-  day: number,
-  deltaDays: number,
-): { year: number; month: number; day: number } {
-  const date = new Date(Date.UTC(year, month - 1, day + deltaDays));
+function nextCronRunMs(
+  pattern: string,
+  afterMs: number,
+  timeZone: string,
+): number | null {
+  const cron = new Cron(pattern, { timezone: timeZone });
+  let next = cron.nextRun(new Date(afterMs));
 
-  return {
-    year: date.getUTCFullYear(),
-    month: date.getUTCMonth() + 1,
-    day: date.getUTCDate(),
-  };
+  if (next && next.getTime() <= afterMs) {
+    next = cron.nextRun(new Date(afterMs + 1000));
+  }
+
+  return next ? next.getTime() : null;
 }
 
 export function computeNextRunAt(
@@ -169,98 +90,76 @@ export function computeNextRunAt(
 
     case "daily": {
       const { hour, minute } = parseClock(spec.time);
-      const local = getZonedParts(afterMs, timeZone);
 
-      for (let offset = 0; offset <= 2; offset++) {
-        const day = addDays(local.year, local.month, local.day, offset);
-        const candidate = fromZonedLocal({ ...day, hour, minute }, timeZone);
-
-        if (candidate > afterMs) {
-          return candidate;
-        }
-      }
-
-      return null;
+      return nextCronRunMs(`${minute} ${hour} * * *`, afterMs, timeZone);
     }
 
     case "weekly": {
       const { hour, minute } = parseClock(spec.time);
-      const weekdays = new Set(
-        spec.weekdays.map((item) => {
-          const day = WEEKDAY_MAP[item.trim().toLowerCase()];
+      const weekdays = [
+        ...new Set(
+          spec.weekdays.map((item) => {
+            const day = WEEKDAY_MAP[item.trim().toLowerCase()];
 
-          if (day === undefined) {
-            throw new Error(`Invalid weekday: ${item}`);
-          }
+            if (day === undefined) {
+              throw new Error(`Invalid weekday: ${item}`);
+            }
 
-          return day;
-        }),
-      );
-      const local = getZonedParts(afterMs, timeZone);
+            return day;
+          }),
+        ),
+      ];
 
-      for (let offset = 0; offset <= 14; offset++) {
-        const day = addDays(local.year, local.month, local.day, offset);
-        const candidate = fromZonedLocal({ ...day, hour, minute }, timeZone);
-
-        if (
-          candidate > afterMs &&
-          weekdays.has(getZonedParts(candidate, timeZone).weekday)
-        ) {
-          return candidate;
-        }
+      if (weekdays.length === 0) {
+        throw new Error("Weekly schedule requires at least one weekday");
       }
 
-      return null;
+      return nextCronRunMs(
+        `${minute} ${hour} * * ${weekdays.join(",")}`,
+        afterMs,
+        timeZone,
+      );
     }
 
     case "monthly": {
       const { hour, minute } = parseClock(spec.time);
-      const days = new Set(spec.daysOfMonth);
-      const local = getZonedParts(afterMs, timeZone);
+      const days = [
+        ...new Set(
+          spec.daysOfMonth.filter(
+            (day) => Number.isInteger(day) && day >= 1 && day <= 31,
+          ),
+        ),
+      ];
 
-      for (let offset = 0; offset <= 62; offset++) {
-        const day = addDays(local.year, local.month, local.day, offset);
-
-        if (!days.has(day.day)) {
-          continue;
-        }
-
-        const candidate = fromZonedLocal({ ...day, hour, minute }, timeZone);
-
-        if (candidate > afterMs) {
-          return candidate;
-        }
+      if (days.length === 0) {
+        throw new Error(
+          "Monthly schedule requires at least one valid day of month",
+        );
       }
 
-      return null;
+      return nextCronRunMs(
+        `${minute} ${hour} ${days.join(",")} * *`,
+        afterMs,
+        timeZone,
+      );
     }
 
     case "yearly": {
       const { hour, minute } = parseClock(spec.time);
-      const local = getZonedParts(afterMs, timeZone);
+      const probe = new Date(Date.UTC(2024, spec.month - 1, spec.day));
 
-      for (let yearOffset = 0; yearOffset <= 4; yearOffset++) {
-        const year = local.year + yearOffset;
-        const probe = new Date(Date.UTC(year, spec.month - 1, spec.day));
-
-        if (
-          probe.getUTCMonth() + 1 !== spec.month ||
-          probe.getUTCDate() !== spec.day
-        ) {
-          continue;
-        }
-
-        const candidate = fromZonedLocal(
-          { year, month: spec.month, day: spec.day, hour, minute },
-          timeZone,
-        );
-
-        if (candidate > afterMs) {
-          return candidate;
-        }
+      if (
+        probe.getUTCMonth() + 1 !== spec.month ||
+        probe.getUTCDate() !== spec.day
+      ) {
+        return null;
       }
 
-      return null;
+      return nextCronRunMs(
+        `${minute} ${hour} ${spec.day} ${spec.month} *`,
+        afterMs,
+        timeZone,
+      );
     }
   }
 }

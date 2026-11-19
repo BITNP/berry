@@ -250,7 +250,6 @@ export class ScheduleRunner {
         content: hasTarget
           ? `定时任务${actionLabel}「${task.title}」：${task.content}`
           : `无目标聊天的定时任务${actionLabel}「${task.title}」：${task.content}（请通过工具完成并将 units 返回为空数组 []）`,
-        metadata: { scheduleId: task.id },
       },
       now,
     );

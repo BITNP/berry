@@ -87,10 +87,6 @@ export class UsageStore {
     };
   }
 
-  public async todayCallCount(timeZone = "Asia/Shanghai"): Promise<number> {
-    return (await this.todaySummary(timeZone)).calls;
-  }
-
   public async dailySummary(days = 14): Promise<UsageDailyBucket[]> {
     const rows = await this.#database.db
       .selectFrom("llm_usage")

@@ -1,6 +1,8 @@
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { fileTypeFromBuffer } from "file-type";
+
 import type { Store } from "../store/index.ts";
 
 export interface CachedAvatar {
@@ -99,12 +101,14 @@ export class AvatarCache {
       const res = await fetch(remoteUrl, {
         signal: AbortSignal.timeout(4000),
       });
-      const contentType = res.headers.get("content-type")?.split(";")[0] ?? "";
 
-      if (res.ok && /^image\/(jpeg|png|gif|webp|avif)$/i.test(contentType)) {
+      if (res.ok) {
         const data = Buffer.from(await res.arrayBuffer());
+        const detected =
+          data.byteLength > 64 ? await fileTypeFromBuffer(data) : undefined;
+        const contentType = detected?.mime ?? "";
 
-        if (data.byteLength > 64) {
+        if (/^image\/(?:jpeg|png|gif|webp|avif)$/i.test(contentType)) {
           await Promise.all([
             writeFile(imgPath, data),
             writeFile(metaPath, JSON.stringify({ contentType }), "utf8"),

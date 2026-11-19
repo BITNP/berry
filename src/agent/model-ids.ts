@@ -27,14 +27,6 @@ export class ModelIds {
     return this.#resolve("user", ref).rawId;
   }
 
-  public resolveGroup(ref: string): string {
-    return this.#resolve("group", ref).rawId;
-  }
-
-  public resolveMessage(ref: string): string {
-    return this.#resolve("msg", ref).rawId;
-  }
-
   public resolveMessageMeta(ref: string): {
     rawId: string;
     chatKey?: ChatKey;

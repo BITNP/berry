@@ -1,22 +1,13 @@
-export function formatDateTime(ms: number, timeZone = "Asia/Shanghai"): string {
-  const parts = new Intl.DateTimeFormat("sv-SE", {
-    timeZone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  }).formatToParts(new Date(ms));
+import { TZDate } from "@date-fns/tz";
+import { format } from "date-fns";
 
-  const map = new Map(parts.map((part) => [part.type, part.value]));
-
-  return `${map.get("year")}-${map.get("month")}-${map.get("day")} ${map.get("hour")}:${map.get("minute")}:${map.get("second")}`;
-}
+export const formatDateTime = (
+  ms: number,
+  timeZone = "Asia/Shanghai",
+): string => format(new TZDate(ms, timeZone), "yyyy-MM-dd HH:mm:ss");
 
 export const formatDay = (ms: number, timeZone = "Asia/Shanghai"): string =>
-  formatDateTime(ms, timeZone).slice(0, 10);
+  format(new TZDate(ms, timeZone), "yyyy-MM-dd");
 
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) {

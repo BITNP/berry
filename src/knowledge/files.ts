@@ -36,8 +36,32 @@ export class KnowledgeBase {
 
     for (const current of scopes) {
       const root = this.#rootFor(current);
+      const entries = await readdir(root, {
+        recursive: true,
+        withFileTypes: true,
+      }).catch(() => []);
 
-      await this.#walk(root, root, current, items);
+      for (const entry of entries) {
+        if (!entry.isFile()) {
+          continue;
+        }
+
+        const full = resolve(entry.parentPath, entry.name);
+        const relPath = relative(root, full).replaceAll("\\", "/");
+
+        if (relPath.split("/").some((part) => part.startsWith("."))) {
+          continue;
+        }
+
+        const info = await stat(full);
+
+        items.push({
+          scope: current,
+          path: relPath,
+          sizeBytes: info.size,
+          updatedAt: info.mtimeMs,
+        });
+      }
     }
 
     const normalizedPrefix = prefix.replace(/^\/+/, "");
@@ -196,41 +220,5 @@ export class KnowledgeBase {
     }
 
     return resolved;
-  }
-
-  async #walk(
-    root: string,
-    dir: string,
-    scope: DocScope,
-    out: DocFileInfo[],
-  ): Promise<void> {
-    let entries;
-
-    try {
-      entries = await readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-
-    for (const entry of entries) {
-      if (entry.name.startsWith(".")) {
-        continue;
-      }
-
-      const full = resolve(dir, entry.name);
-
-      if (entry.isDirectory()) {
-        await this.#walk(root, full, scope, out);
-      } else if (entry.isFile()) {
-        const info = await stat(full);
-
-        out.push({
-          scope,
-          path: relative(root, full).replaceAll("\\", "/"),
-          sizeBytes: info.size,
-          updatedAt: info.mtimeMs,
-        });
-      }
-    }
   }
 }

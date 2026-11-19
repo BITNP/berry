@@ -1,3 +1,8 @@
+import { setTimeout as delay } from "node:timers/promises";
+
+import { TZDate } from "@date-fns/tz";
+import { format, startOfWeek, subWeeks } from "date-fns";
+
 import { completeChat } from "../agent/llm.ts";
 import type { EnvConfig } from "../config/env.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
@@ -16,32 +21,23 @@ const DUE_CURSOR = "guild_due_cursor";
 const EVENT_CURSOR = "guild_event_cursor";
 const WEEKLY_CURSOR = "guild_weekly_last_period";
 
-export function previousNaturalWeek(atMs = Date.now()): {
+export function previousNaturalWeek(
+  atMs = Date.now(),
+  timeZone = "Asia/Shanghai",
+): {
   start: Date;
   end: Date;
   label: string;
 } {
-  // Compute UTC+8 natural week [Mon 00:00, next Mon 00:00).
-  const shanghaiOffsetMs = 8 * 3600 * 1000;
-  const local = new Date(atMs + shanghaiOffsetMs);
-  const weekdayMon0 = (local.getUTCDay() + 6) % 7;
-  const endUtcMs =
-    Date.UTC(
-      local.getUTCFullYear(),
-      local.getUTCMonth(),
-      local.getUTCDate() - weekdayMon0,
-      0,
-      0,
-      0,
-    ) - shanghaiOffsetMs;
-  const startUtcMs = endUtcMs - 7 * 86_400 * 1000;
-  const start = new Date(startUtcMs);
-  const end = new Date(endUtcMs);
+  const thisMonday = startOfWeek(new TZDate(atMs, timeZone), {
+    weekStartsOn: 1,
+  });
+  const prevMonday = subWeeks(thisMonday, 1);
 
   return {
-    start,
-    end,
-    label: formatDay(startUtcMs, "Asia/Shanghai"),
+    start: new Date(prevMonday),
+    end: new Date(thisMonday),
+    label: format(prevMonday, "yyyy-MM-dd"),
   };
 }
 
@@ -60,6 +56,7 @@ export class GuildAutomationRunner {
   #running = false;
   #lastPollAt = 0;
   #streamConnected = false;
+  #stopController: AbortController | null = null;
   #streamAbort: AbortController | null = null;
   #streamPromise: Promise<void> | null = null;
   #eventQueue: Promise<unknown> = Promise.resolve();
@@ -90,6 +87,8 @@ export class GuildAutomationRunner {
 
   public start(): void {
     this.#started = true;
+    this.#stopController?.abort();
+    this.#stopController = new AbortController();
 
     if (!this.#timer) {
       this.#timer = setInterval(() => {
@@ -103,6 +102,8 @@ export class GuildAutomationRunner {
 
   public async stop(): Promise<void> {
     this.#started = false;
+    this.#stopController?.abort();
+    this.#stopController = null;
 
     if (this.#timer) {
       clearInterval(this.#timer);
@@ -176,11 +177,7 @@ export class GuildAutomationRunner {
   }
 
   public async runDueReminders(): Promise<{ notified: number }> {
-    if (!this.#guild.enabled) {
-      throw new Error(
-        "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
-      );
-    }
+    this.#requireEnabled();
 
     const settings = this.#getSettings();
     const saved = await this.#store.cursors.get(DUE_CURSOR);
@@ -225,14 +222,8 @@ export class GuildAutomationRunner {
     return { notified };
   }
 
-  public runAssignments(): Promise<{ notified: number }> {
-    if (!this.#guild.enabled) {
-      return Promise.reject(
-        new Error(
-          "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
-        ),
-      );
-    }
+  public async runAssignments(): Promise<{ notified: number }> {
+    this.#requireEnabled();
 
     return this.#enqueueEventWork(async () => {
       const settings = this.#getSettings();
@@ -279,11 +270,7 @@ export class GuildAutomationRunner {
     path: string;
     periodStart: string;
   }> {
-    if (!this.#guild.enabled) {
-      throw new Error(
-        "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
-      );
-    }
+    this.#requireEnabled();
 
     const settings = this.#getSettings();
     const period = previousNaturalWeek(atMs);
@@ -496,8 +483,19 @@ ${summary}
         backoffMs = 2000;
       }
 
-      await this.#sleep(backoffMs);
+      await delay(backoffMs, undefined, {
+        ref: false,
+        signal: this.#stopController?.signal,
+      }).catch(() => undefined);
       backoffMs = Math.min(backoffMs * 2, 60_000);
+    }
+  }
+
+  #requireEnabled(): void {
+    if (!this.#guild.enabled) {
+      throw new Error(
+        "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
+      );
     }
   }
 
@@ -592,14 +590,6 @@ ${summary}
     } catch {
       return "";
     }
-  }
-
-  #sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => {
-      const timer = setTimeout(resolve, ms);
-
-      timer.unref();
-    });
   }
 
   async #maybeRunWeeklyReport(settings: RuntimeSettings): Promise<void> {

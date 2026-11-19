@@ -134,25 +134,18 @@ export class JobsStore {
   public async claim(
     kinds: JobKind[],
     now = Date.now(),
-    excludeChatKeys: string[] = [],
   ): Promise<JobRecord | null> {
     if (kinds.length === 0) {
       return null;
     }
 
     const job = await this.#database.writeTx(async (trx) => {
-      let query = trx
+      const next = await trx
         .selectFrom("jobs")
         .selectAll()
         .where("state", "=", "pending")
         .where("kind", "in", kinds)
-        .where("run_after", "<=", now);
-
-      if (excludeChatKeys.length > 0) {
-        query = query.where("chat_key", "not in", excludeChatKeys);
-      }
-
-      const next = await query
+        .where("run_after", "<=", now)
         .orderBy("run_after", "asc")
         .orderBy("id", "asc")
         .limit(1)
@@ -178,15 +171,7 @@ export class JobsStore {
     });
 
     if (job) {
-      this.#events.emit({
-        type: "job_update",
-        data: {
-          id: job.id,
-          kind: job.kind,
-          chatKey: job.chatKey,
-          state: job.state,
-        },
-      });
+      this.#emitJobUpdate(job.id, job.kind, job.chatKey, job.state);
     }
 
     return job;
@@ -204,15 +189,7 @@ export class JobsStore {
     );
 
     if (row) {
-      this.#events.emit({
-        type: "job_update",
-        data: {
-          id: row.id,
-          kind: row.kind as JobKind,
-          chatKey: row.chat_key,
-          state: "done",
-        },
-      });
+      this.#emitJobUpdate(row.id, row.kind as JobKind, row.chat_key, "done");
     }
   }
 
@@ -256,15 +233,7 @@ export class JobsStore {
         .execute();
     });
 
-    this.#events.emit({
-      type: "job_update",
-      data: {
-        id: job.id,
-        kind: job.kind,
-        chatKey: job.chatKey,
-        state,
-      },
-    });
+    this.#emitJobUpdate(job.id, job.kind, job.chatKey, state);
 
     return state;
   }
@@ -288,15 +257,7 @@ export class JobsStore {
     );
 
     if (row) {
-      this.#events.emit({
-        type: "job_update",
-        data: {
-          id: row.id,
-          kind: row.kind as JobKind,
-          chatKey: row.chat_key,
-          state: "pending",
-        },
-      });
+      this.#emitJobUpdate(row.id, row.kind as JobKind, row.chat_key, "pending");
     }
 
     return Boolean(row);
@@ -320,15 +281,7 @@ export class JobsStore {
     );
 
     for (const row of rows) {
-      this.#events.emit({
-        type: "job_update",
-        data: {
-          id: row.id,
-          kind: row.kind as JobKind,
-          chatKey: row.chat_key,
-          state: "pending",
-        },
-      });
+      this.#emitJobUpdate(row.id, row.kind as JobKind, row.chat_key, "pending");
     }
 
     return rows.length;
@@ -351,15 +304,7 @@ export class JobsStore {
     );
 
     if (row) {
-      this.#events.emit({
-        type: "job_update",
-        data: {
-          id: row.id,
-          kind: row.kind as JobKind,
-          chatKey: row.chat_key,
-          state: "failed",
-        },
-      });
+      this.#emitJobUpdate(row.id, row.kind as JobKind, row.chat_key, "failed");
     }
 
     return Boolean(row);
@@ -384,5 +329,17 @@ export class JobsStore {
       .executeTakeFirstOrThrow();
 
     return Number(row.count);
+  }
+
+  #emitJobUpdate(
+    id: number,
+    kind: JobKind,
+    chatKey: string,
+    state: JobRecord["state"],
+  ): void {
+    this.#events.emit({
+      type: "job_update",
+      data: { id, kind, chatKey, state },
+    });
   }
 }

@@ -1,6 +1,8 @@
+import type { SitePermissions } from "bitnp-authz";
+import { fromRoles } from "bitnp-authz";
+import { LRUCache } from "lru-cache";
+
 import type { EnvConfig } from "../config/env.ts";
-import type { SitePermissions } from "./authz.ts";
-import { fromRoles } from "./authz.ts";
 
 export interface DirectoryUser {
   subject: string;
@@ -11,14 +13,13 @@ export interface DirectoryUser {
   permissions: SitePermissions;
 }
 
-interface CacheEntry<T> {
-  value: T;
-  expiresAt: number;
-}
-
 const POSITIVE_TTL_MS = 5 * 60 * 1000;
 const NEGATIVE_TTL_MS = 30 * 1000;
 const MAX_CACHE_SIZE = 2000;
+
+interface CachedDirectoryUser {
+  user: DirectoryUser | null;
+}
 
 interface KeycloakUserRaw {
   id?: string;
@@ -37,8 +38,15 @@ export class IdentityDirectory {
   #qqAttr: string;
   #token = "";
   #tokenExpiresAt = 0;
-  #bySubject = new Map<string, CacheEntry<DirectoryUser | null>>();
-  #byQQ = new Map<string, CacheEntry<DirectoryUser | null>>();
+  #bySubject = new LRUCache<string, CachedDirectoryUser>({
+    max: MAX_CACHE_SIZE,
+    ttl: POSITIVE_TTL_MS,
+  });
+
+  #byQQ = new LRUCache<string, CachedDirectoryUser>({
+    max: MAX_CACHE_SIZE,
+    ttl: POSITIVE_TTL_MS,
+  });
 
   constructor(
     env: Pick<
@@ -73,16 +81,16 @@ export class IdentityDirectory {
       return null;
     }
 
-    const cached = this.#readCache(this.#bySubject, subject);
+    const cached = this.#bySubject.get(subject);
 
     if (cached !== undefined) {
-      return cached;
+      return cached.user;
     }
 
     const res = await this.#adminGet(`/users/${encodeURIComponent(subject)}`);
 
     if (res.status === 404) {
-      this.#writeCache(this.#bySubject, subject, null, NEGATIVE_TTL_MS);
+      this.#bySubject.set(subject, { user: null }, { ttl: NEGATIVE_TTL_MS });
 
       return null;
     }
@@ -95,14 +103,13 @@ export class IdentityDirectory {
     const user = await this.#hydrateUser(raw);
     const resolved = user?.enabled ? user : null;
 
-    this.#writeCache(
-      this.#bySubject,
+    this.#bySubject.set(
       subject,
-      resolved,
-      resolved ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS,
+      { user: resolved },
+      { ttl: resolved ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS },
     );
     if (resolved?.qq) {
-      this.#writeCache(this.#byQQ, resolved.qq, resolved, POSITIVE_TTL_MS);
+      this.#byQQ.set(resolved.qq, { user: resolved }, { ttl: POSITIVE_TTL_MS });
     }
 
     return resolved;
@@ -115,10 +122,10 @@ export class IdentityDirectory {
       return null;
     }
 
-    const cached = this.#readCache(this.#byQQ, clean);
+    const cached = this.#byQQ.get(clean);
 
     if (cached !== undefined) {
-      return cached;
+      return cached.user;
     }
 
     const params = new URLSearchParams({
@@ -153,18 +160,16 @@ export class IdentityDirectory {
       }
     }
 
-    this.#writeCache(
-      this.#byQQ,
+    this.#byQQ.set(
       clean,
-      matched,
-      matched ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS,
+      { user: matched },
+      { ttl: matched ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS },
     );
     if (matched) {
-      this.#writeCache(
-        this.#bySubject,
+      this.#bySubject.set(
         matched.subject,
-        matched,
-        POSITIVE_TTL_MS,
+        { user: matched },
+        { ttl: POSITIVE_TTL_MS },
       );
     }
 
@@ -323,34 +328,5 @@ export class IdentityDirectory {
     }
 
     throw new Error("Unreachable");
-  }
-
-  #readCache<T>(map: Map<string, CacheEntry<T>>, key: string): T | undefined {
-    const entry = map.get(key);
-
-    if (!entry) {
-      return undefined;
-    }
-
-    if (Date.now() >= entry.expiresAt) {
-      map.delete(key);
-
-      return undefined;
-    }
-
-    return entry.value;
-  }
-
-  #writeCache<T>(
-    map: Map<string, CacheEntry<T>>,
-    key: string,
-    value: T,
-    ttlMs: number,
-  ): void {
-    if (map.size >= MAX_CACHE_SIZE) {
-      map.clear();
-    }
-
-    map.set(key, { value, expiresAt: Date.now() + ttlMs });
   }
 }

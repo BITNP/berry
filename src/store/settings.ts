@@ -28,16 +28,6 @@ export class SettingsStore {
     return parseSettings(JSON.parse(row.data_json));
   }
 
-  public async load(): Promise<RuntimeSettings> {
-    const row = await this.#database.db
-      .selectFrom("settings")
-      .selectAll()
-      .where("id", "=", 1)
-      .executeTakeFirstOrThrow();
-
-    return parseSettings(JSON.parse(row.data_json));
-  }
-
   public async save(settings: RuntimeSettings): Promise<RuntimeSettings> {
     const validated = parseSettings(settings);
     const now = Date.now();

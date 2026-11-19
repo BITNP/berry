@@ -1,3 +1,5 @@
+import { EventSourceParserStream } from "eventsource-parser/stream";
+
 import type { EnvConfig } from "../config/env.ts";
 
 export interface GuildNodeSummary {
@@ -225,16 +227,6 @@ export class GuildInternalClient {
     );
   }
 
-  public listUsers(
-    actorSubject: string,
-  ): Promise<{ subject: string; userName: string }[]> {
-    return this.#request<{ subject: string; userName: string }[]>(
-      "GET",
-      "/api/internal/users",
-      actorSubject,
-    );
-  }
-
   public async createNode(
     actorSubject: string,
     input: GuildCreateNodeInput,
@@ -259,22 +251,6 @@ export class GuildInternalClient {
       `/api/internal/nodes/${nodeId}`,
       actorSubject,
       input,
-    );
-
-    return { ...detail, url: this.nodeUrl(detail.id) };
-  }
-
-  public async replaceMembers(
-    actorSubject: string,
-    nodeId: number,
-    leaders: string[],
-    members: string[],
-  ): Promise<GuildNodeDetail & { url: string }> {
-    const detail = await this.#request<GuildNodeDetail>(
-      "PUT",
-      `/api/internal/nodes/${nodeId}/members`,
-      actorSubject,
-      { leaders, members },
     );
 
     return { ...detail, url: this.nodeUrl(detail.id) };
@@ -383,11 +359,7 @@ export class GuildInternalClient {
     signal: AbortSignal,
     onOpen?: () => void,
   ): AsyncGenerator<GuildSseFrame> {
-    if (!this.enabled) {
-      throw new Error(
-        "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
-      );
-    }
+    this.#assertEnabled();
 
     const qs =
       after === undefined ? "" : `?after=${encodeURIComponent(String(after))}`;
@@ -418,88 +390,16 @@ export class GuildInternalClient {
 
     onOpen?.();
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let eventName = "message";
-    let eventId: string | undefined;
-    let dataLines: string[] = [];
+    const stream = res.body
+      .pipeThrough(new TextDecoderStream())
+      .pipeThrough(new EventSourceParserStream());
 
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-
-        while (true) {
-          const nlIndex = buffer.indexOf("\n");
-
-          if (nlIndex === -1) {
-            break;
-          }
-
-          let line = buffer.slice(0, nlIndex);
-
-          buffer = buffer.slice(nlIndex + 1);
-
-          if (line.endsWith("\r")) {
-            line = line.slice(0, -1);
-          }
-
-          if (line === "") {
-            if (dataLines.length > 0) {
-              yield {
-                ...(eventId === undefined ? {} : { id: eventId }),
-                event: eventName,
-                data: dataLines.join("\n"),
-              };
-            }
-
-            eventName = "message";
-            eventId = undefined;
-            dataLines = [];
-
-            continue;
-          }
-
-          if (line.startsWith(":")) {
-            continue;
-          }
-
-          const colon = line.indexOf(":");
-          const field = colon === -1 ? line : line.slice(0, colon);
-          const rawValue = colon === -1 ? "" : line.slice(colon + 1);
-          const fieldValue = rawValue.startsWith(" ")
-            ? rawValue.slice(1)
-            : rawValue;
-
-          switch (field) {
-            case "id": {
-              eventId = fieldValue;
-
-              break;
-            }
-
-            case "event": {
-              eventName = fieldValue || "message";
-
-              break;
-            }
-
-            case "data": {
-              dataLines.push(fieldValue);
-
-              break;
-            }
-          }
-        }
-      }
-    } finally {
-      await reader.cancel().catch(() => undefined);
+    for await (const frame of stream) {
+      yield {
+        ...(frame.id === undefined ? {} : { id: frame.id }),
+        event: frame.event || "message",
+        data: frame.data,
+      };
     }
   }
 
@@ -527,17 +427,21 @@ export class GuildInternalClient {
     );
   }
 
+  #assertEnabled(): void {
+    if (!this.enabled) {
+      throw new Error(
+        "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
+      );
+    }
+  }
+
   async #fetchJson<T>(
     method: string,
     path: string,
     headers: Record<string, string>,
     body?: unknown,
   ): Promise<T> {
-    if (!this.enabled) {
-      throw new Error(
-        "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
-      );
-    }
+    this.#assertEnabled();
 
     const res = await fetch(`${this.#apiUrl}${path}`, {
       method,

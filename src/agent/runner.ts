@@ -274,142 +274,13 @@ export class BerryAgent {
     });
 
     // Resolve opaque quote, reaction, and optional targetRef handles back to real OneBot IDs.
-    const isTargetAuthorized = (targetChatKey: ChatKey): boolean => {
-      if (
-        targetChatKey === input.chatKey ||
-        !targetChatKey.startsWith("private:") ||
-        input.source === "schedule" ||
-        actorIsAdmin
-      ) {
-        return true;
-      }
-
-      return parseChatKey(targetChatKey).chatId === speakerQQ;
-    };
-
-    const logger = this.#logger;
-
-    function resolveUnitTarget(targetRef?: string): ChatKey | null {
-      if (!targetRef?.trim()) {
-        return input.chatKey;
-      }
-
-      try {
-        const targetChatKey = ids.resolveTargetChatKey(targetRef);
-
-        if (!isTargetAuthorized(targetChatKey)) {
-          logger.warn("Blocked unauthorized cross-private dispatch", {
-            fromChatKey: input.chatKey,
-            targetChatKey,
-            speakerQQ,
-          });
-
-          return null;
-        }
-
-        return targetChatKey;
-      } catch {
-        logger.warn("Dropped unit with unresolvable targetRef", {
-          fromChatKey: input.chatKey,
-          targetRef,
-        });
-
-        return null;
-      }
-    }
-
-    function resolveMsgHandle(
-      ref: string,
-    ): { rawId: string; chatKey: ChatKey } | null {
-      try {
-        const meta = ids.resolveMessageMeta(ref);
-        const targetChatKey = meta.chatKey ?? input.chatKey;
-
-        if (!isTargetAuthorized(targetChatKey)) {
-          return null;
-        }
-
-        return { rawId: meta.rawId, chatKey: targetChatKey };
-      } catch {
-        if (requestMessages.some((m) => m.onebotMessageId === ref)) {
-          return { rawId: ref, chatKey: input.chatKey };
-        }
-
-        return null;
-      }
-    }
-
-    const resolvedUnits: OutputUnit[] = [];
-    const plannedDispatches: { targetChatKey: ChatKey; unit: OutputUnit }[] =
-      [];
-
-    for (const unit of result.structured.units) {
-      if (unit.kind === "qq_forward") {
-        const targetChatKey = resolveUnitTarget(unit.targetRef);
-
-        if (!targetChatKey) {
-          continue;
-        }
-
-        const cleanUnit: OutputUnit = {
-          kind: "qq_forward",
-          title: unit.title,
-          items: unit.items,
-        };
-
-        plannedDispatches.push({ targetChatKey, unit: cleanUnit });
-        resolvedUnits.push(cleanUnit);
-
-        continue;
-      }
-
-      if (unit.kind === "qq_reaction") {
-        const resolvedMsg = resolveMsgHandle(unit.messageId);
-
-        if (!resolvedMsg) {
-          continue;
-        }
-
-        const cleanUnit: OutputUnit = {
-          kind: "qq_reaction",
-          messageId: resolvedMsg.rawId,
-          emojiId: unit.emojiId,
-        };
-
-        plannedDispatches.push({
-          targetChatKey: resolvedMsg.chatKey,
-          unit: cleanUnit,
-        });
-        resolvedUnits.push(cleanUnit);
-
-        continue;
-      }
-
-      const targetChatKey = resolveUnitTarget(unit.targetRef);
-
-      if (!targetChatKey) {
-        continue;
-      }
-
-      let rawQuote: string | undefined;
-
-      if (unit.quoteMessageId) {
-        const resolvedQuote = resolveMsgHandle(unit.quoteMessageId);
-
-        if (resolvedQuote?.chatKey === targetChatKey) {
-          rawQuote = resolvedQuote.rawId;
-        }
-      }
-
-      const cleanUnit: OutputUnit = {
-        kind: "qq_reply",
-        text: unit.text,
-        ...(rawQuote ? { quoteMessageId: rawQuote } : {}),
-      };
-
-      plannedDispatches.push({ targetChatKey, unit: cleanUnit });
-      resolvedUnits.push(cleanUnit);
-    }
+    const plannedDispatches = this.#resolveDispatches(result.structured.units, {
+      ids,
+      input,
+      requestMessages,
+      speakerQQ,
+      actorIsAdmin,
+    });
 
     for (const dispatch of plannedDispatches) {
       await gateway.dispatchUnit(
@@ -419,8 +290,10 @@ export class BerryAgent {
       );
     }
 
+    const units = plannedDispatches.map((d) => d.unit);
+
     // Persist clean turn ONLY when we spoke or changed state (anti-pollution).
-    if (resolvedUnits.length > 0 || result.mutated) {
+    if (units.length > 0 || result.mutated) {
       const persistedUser: TurnMessage = {
         role: "user",
         content: cleanUserContent,
@@ -437,11 +310,11 @@ export class BerryAgent {
 
     this.#logger.info("Invocation finished", {
       chatKey: input.chatKey,
-      units: resolvedUnits.length,
+      units: units.length,
       mutated: result.mutated,
     });
 
-    return { units: resolvedUnits, mutated: result.mutated };
+    return { units, mutated: result.mutated };
   }
 
   public async updateMemoryFromMessage(
@@ -551,29 +424,25 @@ export class BerryAgent {
       return;
     }
 
-    const keepFromTurn = Math.max(
+    let turnCursor = Math.max(
       1,
       userIndices.length - COMPACTION_KEEP_RECENT_TURNS,
     );
-    let splitIndex = userIndices[keepFromTurn] ?? userIndices.at(-1)!;
 
-    while (splitIndex > userIndices[1]!) {
+    while (turnCursor < userIndices.length - 1) {
+      const splitAt = userIndices[turnCursor]!;
       const keptTokens = conversation.messages
-        .slice(splitIndex)
+        .slice(splitAt)
         .reduce((sum, m) => sum + estimateTokens(JSON.stringify(m)), 0);
 
       if (keptTokens <= budget * 0.3) {
         break;
       }
 
-      const nextIdx = userIndices.find((idx) => idx > splitIndex);
-
-      if (!nextIdx) {
-        break;
-      }
-
-      splitIndex = nextIdx;
+      turnCursor++;
     }
+
+    const splitIndex = userIndices[turnCursor]!;
 
     if (splitIndex <= 0) {
       return;
@@ -625,5 +494,141 @@ export class BerryAgent {
     } finally {
       this.#compacting = false;
     }
+  }
+
+  #resolveDispatches(
+    rawUnits: OutputUnit[],
+    ctx: {
+      ids: ModelIds;
+      input: UnifiedInput;
+      requestMessages: MessageRecord[];
+      speakerQQ: string | null;
+      actorIsAdmin: boolean;
+    },
+  ): { targetChatKey: ChatKey; unit: OutputUnit }[] {
+    const logger = this.#logger;
+    const { ids, input, requestMessages, speakerQQ, actorIsAdmin } = ctx;
+
+    function isTargetAuthorized(targetChatKey: ChatKey): boolean {
+      if (
+        targetChatKey === input.chatKey ||
+        !targetChatKey.startsWith("private:") ||
+        input.source === "schedule" ||
+        actorIsAdmin
+      ) {
+        return true;
+      }
+
+      return parseChatKey(targetChatKey).chatId === speakerQQ;
+    }
+
+    function resolveUnitTarget(targetRef?: string): ChatKey | null {
+      if (!targetRef?.trim()) {
+        return input.chatKey;
+      }
+
+      try {
+        const targetChatKey = ids.resolveTargetChatKey(targetRef);
+
+        if (!isTargetAuthorized(targetChatKey)) {
+          logger.warn("Blocked unauthorized cross-private dispatch", {
+            fromChatKey: input.chatKey,
+            targetChatKey,
+            speakerQQ,
+          });
+
+          return null;
+        }
+
+        return targetChatKey;
+      } catch {
+        logger.warn("Dropped unit with unresolvable targetRef", {
+          fromChatKey: input.chatKey,
+          targetRef,
+        });
+
+        return null;
+      }
+    }
+
+    function resolveMsgHandle(
+      ref: string,
+    ): { rawId: string; chatKey: ChatKey } | null {
+      try {
+        const meta = ids.resolveMessageMeta(ref);
+        const targetChatKey = meta.chatKey ?? input.chatKey;
+
+        return isTargetAuthorized(targetChatKey)
+          ? { rawId: meta.rawId, chatKey: targetChatKey }
+          : null;
+      } catch {
+        return requestMessages.some((m) => m.onebotMessageId === ref)
+          ? { rawId: ref, chatKey: input.chatKey }
+          : null;
+      }
+    }
+
+    const dispatches: { targetChatKey: ChatKey; unit: OutputUnit }[] = [];
+
+    for (const unit of rawUnits) {
+      if (unit.kind === "qq_forward") {
+        const targetChatKey = resolveUnitTarget(unit.targetRef);
+
+        if (targetChatKey) {
+          dispatches.push({
+            targetChatKey,
+            unit: {
+              kind: "qq_forward",
+              title: unit.title,
+              items: unit.items,
+            },
+          });
+        }
+
+        continue;
+      }
+
+      if (unit.kind === "qq_reaction") {
+        const resolvedMsg = resolveMsgHandle(unit.messageId);
+
+        if (resolvedMsg) {
+          dispatches.push({
+            targetChatKey: resolvedMsg.chatKey,
+            unit: {
+              kind: "qq_reaction",
+              messageId: resolvedMsg.rawId,
+              emojiId: unit.emojiId,
+            },
+          });
+        }
+
+        continue;
+      }
+
+      const targetChatKey = resolveUnitTarget(unit.targetRef);
+
+      if (!targetChatKey) {
+        continue;
+      }
+
+      const resolvedQuote = unit.quoteMessageId
+        ? resolveMsgHandle(unit.quoteMessageId)
+        : null;
+      const rawQuote =
+        resolvedQuote?.chatKey === targetChatKey
+          ? resolvedQuote.rawId
+          : undefined;
+
+      dispatches.push({
+        targetChatKey,
+        unit: {
+          kind: "qq_reply",
+          text: unit.text,
+          ...(rawQuote ? { quoteMessageId: rawQuote } : {}),
+        },
+      });
+    }
+
+    return dispatches;
   }
 }

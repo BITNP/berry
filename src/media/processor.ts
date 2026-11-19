@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { fileTypeFromBuffer } from "file-type";
 import OpenAI from "openai";
 
 import { completeChat } from "../agent/llm.ts";
@@ -16,44 +17,6 @@ import { errorMessage } from "../utils/time.ts";
 
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_FORWARD_CHARS = 8000;
-
-function detectImageMime(bytes: Buffer): { mime: string; ext: string } | null {
-  if (
-    bytes.length >= 3 &&
-    bytes[0] === 0xff &&
-    bytes[1] === 0xd8 &&
-    bytes[2] === 0xff
-  ) {
-    return { mime: "image/jpeg", ext: "jpg" };
-  }
-
-  if (
-    bytes.length >= 8 &&
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47
-  ) {
-    return { mime: "image/png", ext: "png" };
-  }
-
-  if (
-    bytes.length >= 6 &&
-    bytes.subarray(0, 6).toString("ascii").startsWith("GIF8")
-  ) {
-    return { mime: "image/gif", ext: "gif" };
-  }
-
-  if (
-    bytes.length >= 12 &&
-    bytes.subarray(0, 4).toString("ascii") === "RIFF" &&
-    bytes.subarray(8, 12).toString("ascii") === "WEBP"
-  ) {
-    return { mime: "image/webp", ext: "webp" };
-  }
-
-  return null;
-}
 
 export class MediaProcessor {
   #store: Store;
@@ -261,9 +224,9 @@ export class MediaProcessor {
       }
 
       const bytes = await this.#downloadBytes(record.rawUrl);
-      const detected = detectImageMime(bytes);
+      const detected = await fileTypeFromBuffer(bytes);
 
-      if (!detected) {
+      if (!detected || !/^image\/(?:jpeg|png|gif|webp)$/i.test(detected.mime)) {
         throw new Error("不支持的图片格式");
       }
 
@@ -327,16 +290,18 @@ export class MediaProcessor {
       }
 
       const bytes = await this.#downloadBytes(record.rawUrl);
+      const detected = await fileTypeFromBuffer(bytes);
+      const mimeType = detected?.mime ?? "audio/mpeg";
       const sha256 = createHash("sha256").update(bytes).digest("hex");
       const text = await this.#transcribeAudio(
         bytes,
-        attachment.name || "audio.mp3",
+        attachment.name || `audio.${detected?.ext ?? "mp3"}`,
         record.chatKey,
         settings,
       );
 
       await this.#store.assets.markReady(record.id, {
-        mimeType: "audio/mpeg",
+        mimeType,
         sha256,
         transcript: text,
       });

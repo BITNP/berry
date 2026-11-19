@@ -1,22 +1,34 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 
+import { fromClaims } from "bitnp-authz";
 import type { H3Event } from "h3";
 import {
   createError,
   deleteCookie,
   getCookie,
   getHeader,
-  getQuery,
+  getRequestURL,
   sendRedirect,
   setCookie,
 } from "h3";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import { LRUCache } from "lru-cache";
+import * as oidc from "openid-client";
+import { Type } from "typebox";
 
 import type { EnvConfig } from "../config/env.ts";
-import { fromClaims } from "../identity/authz.ts";
 import type { Store } from "../store/index.ts";
 import type { AdminSession } from "../store/sessions.ts";
-import { queryString } from "./http.ts";
+import { constantTimeEquals } from "../utils/crypto.ts";
+import { parseQuery } from "./http.ts";
+
+const loginQuerySchema = Type.Object({
+  returnTo: Type.Optional(Type.String()),
+});
+
+const callbackQuerySchema = Type.Object({
+  code: Type.String({ default: "" }),
+  state: Type.String({ default: "" }),
+});
 
 const SESSION_COOKIE = "berry_session";
 const PENDING_TTL_MS = 10 * 60 * 1000;
@@ -25,14 +37,6 @@ interface PendingLogin {
   nonce: string;
   verifier: string;
   returnTo: string;
-  expiresAt: number;
-}
-
-interface OidcDiscovery {
-  issuer: string;
-  authorization_endpoint: string;
-  token_endpoint: string;
-  jwks_uri: string;
 }
 
 function safeReturnTo(raw: string | undefined): string {
@@ -49,23 +53,15 @@ function claimString(claims: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
-function constantTimeEquals(a: string, b: string): boolean {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-
-  if (bufA.length !== bufB.length) {
-    return false;
-  }
-
-  return timingSafeEqual(bufA, bufB);
-}
-
 export class AdminAuthService {
   #env: EnvConfig;
   #store: Store;
-  #pending = new Map<string, PendingLogin>();
-  #discovery: OidcDiscovery | null = null;
-  #jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+  #pending = new LRUCache<string, PendingLogin>({
+    max: 500,
+    ttl: PENDING_TTL_MS,
+  });
+
+  #oidcConfig: oidc.Configuration | null = null;
   #devCsrf = randomBytes(24).toString("base64url");
 
   constructor(env: EnvConfig, store: Store) {
@@ -152,8 +148,8 @@ export class AdminAuthService {
   }
 
   public async startLogin(event: H3Event): Promise<unknown> {
-    const query = getQuery(event);
-    const returnTo = safeReturnTo(queryString(query, "returnTo"));
+    const query = await parseQuery(event, loginQuerySchema);
+    const returnTo = safeReturnTo(query.returnTo);
 
     if (this.#env.devAuthBypass) {
       return sendRedirect(event, returnTo, 302);
@@ -164,32 +160,26 @@ export class AdminAuthService {
     }
 
     try {
-      const discovery = await this.#ensureDiscovery();
-      const state = randomBytes(24).toString("base64url");
-      const nonce = randomBytes(24).toString("base64url");
-      const verifier = randomBytes(32).toString("base64url");
-      const challenge = createHash("sha256")
-        .update(verifier)
-        .digest("base64url");
+      const config = await this.#ensureConfig();
+      const state = oidc.randomState();
+      const nonce = oidc.randomNonce();
+      const verifier = oidc.randomPKCECodeVerifier();
+      const challenge = await oidc.calculatePKCECodeChallenge(verifier);
 
-      this.#prunePending();
       this.#pending.set(state, {
         nonce,
         verifier,
         returnTo,
-        expiresAt: Date.now() + PENDING_TTL_MS,
       });
 
-      const url = new URL(discovery.authorization_endpoint);
-
-      url.searchParams.set("client_id", this.#env.oidcClientId);
-      url.searchParams.set("redirect_uri", this.#redirectUri());
-      url.searchParams.set("response_type", "code");
-      url.searchParams.set("scope", "openid profile email roles");
-      url.searchParams.set("state", state);
-      url.searchParams.set("nonce", nonce);
-      url.searchParams.set("code_challenge", challenge);
-      url.searchParams.set("code_challenge_method", "S256");
+      const url = oidc.buildAuthorizationUrl(config, {
+        redirect_uri: this.#redirectUri(),
+        scope: "openid profile email roles",
+        state,
+        nonce,
+        code_challenge: challenge,
+        code_challenge_method: "S256",
+      });
 
       return sendRedirect(event, url.href, 302);
     } catch {
@@ -198,9 +188,7 @@ export class AdminAuthService {
   }
 
   public async callback(event: H3Event): Promise<unknown> {
-    const query = getQuery(event);
-    const code = queryString(query, "code") ?? "";
-    const state = queryString(query, "state") ?? "";
+    const { code, state } = await parseQuery(event, callbackQuerySchema);
 
     const pending = state ? this.#pending.get(state) : undefined;
 
@@ -208,45 +196,32 @@ export class AdminAuthService {
       this.#pending.delete(state);
     }
 
-    if (!code || !pending || pending.expiresAt < Date.now()) {
+    if (!code || !pending) {
       return sendRedirect(event, "/login?error=oidc_failed", 302);
     }
 
     try {
-      const discovery = await this.#ensureDiscovery();
-      const tokenRes = await fetch(discovery.token_endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({
-          grant_type: "authorization_code",
-          code,
-          redirect_uri: this.#redirectUri(),
-          client_id: this.#env.oidcClientId,
-          client_secret: this.#env.oidcClientSecret,
-          code_verifier: pending.verifier,
-        }),
-        signal: AbortSignal.timeout(15_000),
-      });
+      const config = await this.#ensureConfig();
+      const callbackUrl = new URL(this.#redirectUri());
 
-      if (!tokenRes.ok) {
+      callbackUrl.search = getRequestURL(event).search;
+
+      const tokens = await oidc.authorizationCodeGrant(config, callbackUrl, {
+        pkceCodeVerifier: pending.verifier,
+        expectedState: state,
+        expectedNonce: pending.nonce,
+        idTokenExpected: true,
+      });
+      const rawClaims = tokens.claims();
+
+      if (!rawClaims) {
         return sendRedirect(event, "/login?error=oidc_failed", 302);
       }
 
-      const tokenJson = (await tokenRes.json()) as { id_token?: string };
-
-      if (!tokenJson.id_token || !this.#jwks) {
-        return sendRedirect(event, "/login?error=oidc_failed", 302);
-      }
-
-      const verified = await jwtVerify(tokenJson.id_token, this.#jwks, {
-        issuer: discovery.issuer,
-        audience: this.#env.oidcClientId,
-      });
-      const claims = verified.payload as Record<string, unknown>;
-
+      const claims = rawClaims as Record<string, unknown>;
       const sub = claimString(claims, "sub");
 
-      if (claims.nonce !== pending.nonce || !sub) {
+      if (!sub) {
         return sendRedirect(event, "/login?error=oidc_failed", 302);
       }
 
@@ -297,35 +272,24 @@ export class AdminAuthService {
     return `${this.#env.publicUrl}/api/auth/callback`;
   }
 
-  async #ensureDiscovery(): Promise<OidcDiscovery> {
-    if (this.#discovery && this.#jwks) {
-      return this.#discovery;
+  async #ensureConfig(): Promise<oidc.Configuration> {
+    if (this.#oidcConfig) {
+      return this.#oidcConfig;
     }
 
-    const res = await fetch(
-      `${this.#env.oidcIssuer}/.well-known/openid-configuration`,
-      { signal: AbortSignal.timeout(10_000) },
+    const issuerUrl = new URL(this.#env.oidcIssuer);
+    const config = await oidc.discovery(
+      issuerUrl,
+      this.#env.oidcClientId,
+      this.#env.oidcClientSecret,
+      undefined,
+      issuerUrl.protocol === "http:"
+        ? { execute: [oidc.allowInsecureRequests] }
+        : undefined,
     );
 
-    if (!res.ok) {
-      throw new Error(`OIDC discovery HTTP ${res.status}`);
-    }
+    this.#oidcConfig = config;
 
-    const doc = (await res.json()) as OidcDiscovery;
-
-    this.#discovery = doc;
-    this.#jwks = createRemoteJWKSet(new URL(doc.jwks_uri));
-
-    return doc;
-  }
-
-  #prunePending(): void {
-    const now = Date.now();
-
-    for (const [key, item] of this.#pending) {
-      if (item.expiresAt < now) {
-        this.#pending.delete(key);
-      }
-    }
+    return config;
   }
 }
