@@ -2,15 +2,15 @@ import type { BerryAgent } from "../agent/runner.ts";
 import type { MessageGate } from "../gate/gate.ts";
 import type { GuildAutomationRunner } from "../guild/automation.ts";
 import type { ScheduleRunner } from "../scheduler/runner.ts";
-import type { GuildTaskKind, JobActionLink } from "../types.ts";
-import { JobRegistry, defaultChatLinks } from "./registry.ts";
+import type { GuildTaskKind } from "../types.ts";
+import { JobRegistry } from "./registry.ts";
 
 export type {
   DescribedJobMeta,
   JobDefinition,
   JobSummaryContext,
 } from "./registry.ts";
-export { JobRegistry, defaultChatLinks } from "./registry.ts";
+export { JobRegistry } from "./registry.ts";
 
 const GUILD_TASK_LABELS: Record<GuildTaskKind, string> = {
   due: "公会到期提醒",
@@ -29,7 +29,6 @@ export const createDefaultJobRegistry = (deps: {
       kind: "gate_batch",
       label: "消息分流",
       lane: "gate",
-      tagType: "default",
       execute: (job) => deps.gate.processBatch(job),
       referencedMessageIds: (payload) => payload.messageIds ?? [],
       summarize: (job, { messagesById }) => {
@@ -44,27 +43,11 @@ export const createDefaultJobRegistry = (deps: {
 
         return ids.length > 1 ? `${head}（共 ${ids.length} 条）` : head;
       },
-      links: (job) => {
-        if (
-          !job.chatKey.startsWith("group:") &&
-          !job.chatKey.startsWith("private:")
-        ) {
-          return [];
-        }
-
-        const encoded = encodeURIComponent(job.chatKey);
-
-        return [
-          { label: "查看分流记录", to: `/ai?tab=gate&chatKey=${encoded}` },
-          { label: "查看会话记录", to: `/chats?chatKey=${encoded}` },
-        ];
-      },
     })
     .register({
       kind: "invoke",
       label: "对话应答",
       lane: "dialog",
-      tagType: "primary",
       execute: async (job) => {
         await deps.agent.invoke(job.payload);
       },
@@ -94,7 +77,6 @@ export const createDefaultJobRegistry = (deps: {
       kind: "memory_update",
       label: "记忆提炼",
       lane: "background",
-      tagType: "success",
       execute: (job) =>
         deps.agent.updateMemoryFromMessage(
           job.payload.chatKey,
@@ -110,16 +92,11 @@ export const createDefaultJobRegistry = (deps: {
           ? `${msg.senderName}: ${msg.text.slice(0, 80)}`
           : `消息 #${String(id ?? "")}`;
       },
-      links: (job) => [
-        ...defaultChatLinks(job.chatKey),
-        { label: "查看长期记忆", to: "/memories" },
-      ],
     })
     .register({
       kind: "group_digest",
       label: "群聊摘要",
       lane: "background",
-      tagType: "info",
       execute: (job) => deps.scheduler.runGroupDigest(job),
       summarize: (job) => {
         const { startTimeMs, endTimeMs } = job.payload;
@@ -135,16 +112,11 @@ export const createDefaultJobRegistry = (deps: {
 
         return "群聊讨论摘要";
       },
-      links: (job) => [
-        { label: "查看摘要笔记", to: "/docs?tab=notebooks" },
-        ...defaultChatLinks(job.chatKey),
-      ],
     })
     .register({
       kind: "guild_task",
       label: "公会任务",
       lane: "background",
-      tagType: "warning",
       execute: async (job) => {
         const { task } = job.payload;
 
@@ -158,18 +130,4 @@ export const createDefaultJobRegistry = (deps: {
       },
       summarize: (job) =>
         GUILD_TASK_LABELS[job.payload.task] ?? job.payload.task,
-      links: (job): JobActionLink[] => {
-        const items: JobActionLink[] = [
-          { label: "前往公会联动", to: "/guild" },
-        ];
-
-        if (job.payload.task === "weekly") {
-          items.push(
-            { label: "查看周报笔记", to: "/docs?tab=notebooks" },
-            { label: "查看周报 AI 调用", to: "/ai?purpose=report" },
-          );
-        }
-
-        return items;
-      },
     });

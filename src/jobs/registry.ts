@@ -1,10 +1,8 @@
 import type {
-  JobActionLink,
   JobKind,
   JobLane,
   JobPayload,
   JobRecord,
-  JobTagType,
   JobTypeDescriptor,
   MessageRecord,
 } from "../types.ts";
@@ -17,19 +15,15 @@ export interface JobDefinition<K extends JobKind = JobKind> {
   readonly kind: K;
   readonly label: string;
   readonly lane: JobLane;
-  readonly tagType: JobTagType;
   readonly execute: (job: JobRecord<K>) => Promise<void>;
   readonly referencedMessageIds?: (payload: JobPayload<K>) => number[];
   readonly summarize?: (job: JobRecord<K>, ctx: JobSummaryContext) => string;
-  readonly links?: (job: JobRecord<K>) => JobActionLink[];
 }
 
 export interface DescribedJobMeta {
   label: string;
   lane: JobLane;
-  tagType: JobTagType;
   summary: string;
-  links: JobActionLink[];
 }
 
 export class JobRegistry {
@@ -64,7 +58,6 @@ export class JobRegistry {
       kind: def.kind,
       label: def.label,
       lane: def.lane,
-      tagType: def.tagType,
     }));
   }
 
@@ -105,31 +98,14 @@ export class JobRegistry {
       return {
         label: job.kind,
         lane: "background",
-        tagType: "default",
         summary: job.chatKey,
-        links: defaultChatLinks(job.chatKey),
       };
     }
 
     return {
       label: def.label,
       lane: def.lane,
-      tagType: def.tagType,
       summary: def.summarize ? def.summarize(job, ctx) : def.label,
-      links: def.links ? def.links(job) : defaultChatLinks(job.chatKey),
     };
   }
-}
-
-export function defaultChatLinks(chatKey: string): JobActionLink[] {
-  if (!chatKey.startsWith("group:") && !chatKey.startsWith("private:")) {
-    return [];
-  }
-
-  const encoded = encodeURIComponent(chatKey);
-
-  return [
-    { label: "查看该会话 AI 调用", to: `/ai?chatKey=${encoded}` },
-    { label: "查看会话消息", to: `/chats?chat=${encoded}` },
-  ];
 }

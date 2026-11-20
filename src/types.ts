@@ -180,19 +180,10 @@ export type JobPayload<K extends JobKind = JobKind> = K extends BuiltInJobKind
 
 export type JobLane = "gate" | "dialog" | "background";
 
-export type JobTagType =
-  "default" | "primary" | "info" | "success" | "warning" | "error";
-
 export interface JobTypeDescriptor {
   kind: string;
   label: string;
   lane: JobLane;
-  tagType: JobTagType;
-}
-
-export interface JobActionLink {
-  label: string;
-  to: string;
 }
 
 export interface JobRecord<K extends JobKind = JobKind> {

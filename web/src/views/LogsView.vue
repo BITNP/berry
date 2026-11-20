@@ -43,6 +43,9 @@ import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useEventStream } from "../composables/useEventStream.ts";
 import type { LlmCallRow } from "../utils/ai.ts";
 import { formatTime } from "../utils/format.ts";
+import type { JobLane, JobTagType } from "../utils/jobs.ts";
+import { jobActionLinks, jobTagType } from "../utils/jobs.ts";
+import type { JobLaneFilter } from "../utils/routes.ts";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -55,21 +58,10 @@ interface LogEntryView {
   context: Record<string, unknown>;
 }
 
-type JobLane = "gate" | "dialog" | "background";
-type JobTagType =
-  "default" | "primary" | "info" | "success" | "warning" | "error";
-type JobLaneFilter = "all" | "background" | "realtime";
-
 interface JobTypeDescriptor {
   kind: string;
   label: string;
   lane: JobLane;
-  tagType: JobTagType;
-}
-
-interface JobActionLink {
-  label: string;
-  to: string;
 }
 
 interface JobCounts {
@@ -84,12 +76,10 @@ interface JobRow {
   kind: string;
   label?: string;
   lane?: JobLane;
-  tagType?: JobTagType;
   dedupeKey: string;
   chatKey: string;
   payload: Record<string, unknown>;
   summary?: string;
-  links?: JobActionLink[];
   state: "pending" | "running" | "done" | "failed";
   attempts: number;
   lastError: string | null;
@@ -392,19 +382,24 @@ const jobKindMap = computed(
   () => new Map(jobKinds.value.map((item) => [item.kind, item])),
 );
 
-function jobMeta(row: Pick<JobRow, "kind" | "label" | "lane" | "tagType">): {
+function jobMeta(row: Pick<JobRow, "kind" | "label" | "lane">): {
   label: string;
   lane: JobLane;
   tagType: JobTagType;
 } {
   const registered = jobKindMap.value.get(row.kind);
+  const lane = row.lane ?? registered?.lane ?? "background";
 
   return {
     label: row.label ?? registered?.label ?? row.kind,
-    lane: row.lane ?? registered?.lane ?? "background",
-    tagType: row.tagType ?? registered?.tagType ?? "default",
+    lane,
+    tagType: jobTagType(row.kind, lane),
   };
 }
+
+const selectedJobLinks = computed(() =>
+  selectedJob.value ? jobActionLinks(selectedJob.value) : [],
+);
 
 const jobKindOptions = computed(() => {
   const seen = new Set<string>();
@@ -1684,8 +1679,8 @@ onUnmounted(() => {
               取消任务
             </NButton>
             <NButton
-              v-for="link in selectedJob.links ?? []"
-              :key="link.to"
+              v-for="link in selectedJobLinks"
+              :key="link.label"
               quaternary
               size="small"
               @click="

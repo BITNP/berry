@@ -435,12 +435,10 @@ test("extensible JobRegistry runs custom background jobs with dedupe and exposes
     kind: "kb_reindex",
     label: "资料库重建索引",
     lane: "background",
-    tagType: "info",
     execute: async (job) => {
       executedTargets.push(String(job.payload.scope ?? ""));
     },
     summarize: (job) => `重建 ${String(job.payload.scope ?? "all")} 索引`,
-    links: () => [{ label: "查看资料库", to: "/docs" }],
   });
 
   const first = await app.store.jobs.enqueueUniqueActive(
@@ -476,12 +474,12 @@ test("extensible JobRegistry runs custom background jobs with dedupe and exposes
       kind: string;
       label: string;
       lane: string;
-      tagType: string;
       summary: string;
       state: string;
-      links: { label: string; to: string }[];
+      tagType?: unknown;
+      links?: unknown;
     }[];
-    kinds: { kind: string; label: string; lane: string; tagType: string }[];
+    kinds: { kind: string; label: string; lane: string }[];
     counts: {
       pending: number;
       running: number;
@@ -499,7 +497,8 @@ test("extensible JobRegistry runs custom background jobs with dedupe and exposes
   assert.equal(item.label, "资料库重建索引");
   assert.equal(item.lane, "background");
   assert.equal(item.summary, "重建 knowledge 索引");
-  assert.deepEqual(item.links, [{ label: "查看资料库", to: "/docs" }]);
+  assert.equal(item.tagType, undefined);
+  assert.equal(item.links, undefined);
 });
 
 test("per-task thinkingEffort resolves defaults, category fallback, and exact overrides end-to-end", async (t) => {
