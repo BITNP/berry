@@ -1,13 +1,12 @@
 FROM node:24-bookworm-slim AS build
 
-ENV PNPM_HOME=/pnpm
-ENV PATH="${PNPM_HOME}/bin:${PATH}"
-
 WORKDIR /app
+
+RUN npm install -g pnpm@12.9.0
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY third_party ./third_party
-RUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts
+RUN pnpm install --frozen-lockfile --ignore-scripts
 
 COPY tsconfig.json tsconfig.web.json vite.config.ts ./
 COPY src ./src
@@ -32,5 +31,8 @@ ENV TZ=Asia/Shanghai
 
 VOLUME ["/app/data"]
 EXPOSE 3220
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:' + (process.env.BERRY_PORT || 3220) + '/api/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
 
 CMD ["node", "src/main.ts"]

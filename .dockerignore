@@ -1,0 +1,13 @@
+.git
+.devenv
+.direnv
+.env
+.env.*
+!.env.example
+node_modules
+**/node_modules
+dist
+data
+docs
+tests
+*.log

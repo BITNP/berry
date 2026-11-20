@@ -44,6 +44,30 @@ const startKeycloakStub = (t: TestContext) =>
         attributes: { qq_number: ["22222"] },
         roles: ["permission-techdept-access"],
       },
+      {
+        id: "sub-wrz-old",
+        username: "wrz_old",
+        firstName: "旧账号",
+        enabled: false,
+        attributes: { qq_number: ["11111"] },
+        roles: [],
+      },
+      {
+        id: "sub-dup-1",
+        username: "dup1",
+        firstName: "重号甲",
+        enabled: true,
+        attributes: { qq_number: ["33333"] },
+        roles: ["permission-techdept-access"],
+      },
+      {
+        id: "sub-dup-2",
+        username: "dup2",
+        firstName: "重号乙",
+        enabled: true,
+        attributes: { qq_number: ["33333"] },
+        roles: ["permission-techdept-access"],
+      },
     ];
 
     if (url.pathname === "/admin/realms/bitnp/users") {
@@ -690,4 +714,250 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
 
   assert.match(doc, /周内新增：2/);
   assert.match(doc, /完成接口鉴权改造与告警联调/);
+});
+
+test("Duplicate QQ bindings are rejected and guild_replace_members updates node members with audit", async (t) => {
+  const guildRequests: {
+    method: string;
+    path: string;
+    auth: string | undefined;
+    actor: string | undefined;
+    body: unknown;
+  }[] = [];
+
+  const kcStub = await startKeycloakStub(t);
+
+  const guildStub = await startStubServer((req, res, bodyText) => {
+    guildRequests.push({
+      method: req.method ?? "",
+      path: req.url ?? "",
+      auth: req.headers.authorization,
+      actor: req.headers["x-act-as-subject"] as string | undefined,
+      body: bodyText ? JSON.parse(bodyText) : null,
+    });
+    res.setHeader("Content-Type", "application/json");
+
+    if (req.url === "/api/internal/nodes/42/members" && req.method === "PUT") {
+      const payload = JSON.parse(bodyText) as {
+        leaders: string[];
+        members: string[];
+      };
+
+      res.end(
+        JSON.stringify({
+          id: 42,
+          parentId: 10,
+          title: "接入监控告警",
+          description: "",
+          dueAt: null,
+          completedAt: null,
+          tags: [],
+          sortOrder: 0,
+          childCount: 0,
+          commentCount: 0,
+          myRelation: "leader",
+          updatedAt: "2026-11-21T00:00:00Z",
+          createdBySubject: "sub-wrz",
+          breadcrumb: [{ id: 10, title: "树莓娘 Agent" }],
+          directLeaders: payload.leaders.map((subject) => ({
+            subject,
+            userName: subject,
+          })),
+          directMembers: payload.members.map((subject) => ({
+            subject,
+            userName: subject,
+          })),
+          permissions: {
+            canEdit: true,
+            canDelete: true,
+            canComment: true,
+            canManageMembers: true,
+            canAddChild: true,
+          },
+          children: [],
+        }),
+      );
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  }, t);
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const sys = reqJson.messages[0]?.content ?? "";
+    const toolMsgs = reqJson.messages.filter((m) => m.role === "tool");
+    const lastMsg = reqJson.messages.at(-1);
+
+    res.setHeader("Content-Type", "application/json");
+
+    if (sys.includes("公会看板协作子代理")) {
+      if (toolMsgs.length === 0) {
+        res.end(
+          JSON.stringify(
+            chatToolCalls([
+              {
+                id: "call-replace-members",
+                name: "guild_replace_members",
+                args: {
+                  nodeId: 42,
+                  leaders: ["sub-wrz"],
+                  members: ["sub-guicao"],
+                },
+              },
+            ]),
+          ),
+        );
+
+        return;
+      }
+
+      res.end(
+        JSON.stringify(
+          chatReply({
+            brief: "已更新节点 #42 成员：负责人 sub-wrz，成员 sub-guicao",
+            references: ["https://guild.bitnp.net/nodes/42"],
+          }),
+        ),
+      );
+
+      return;
+    }
+
+    if (lastMsg?.role === "tool") {
+      const toolResult = lastMsg.content ?? "";
+
+      res.end(
+        JSON.stringify(
+          chatReply({
+            units: [
+              {
+                kind: "qq_reply",
+                text: toolResult.includes("尚未在网协通行证绑定")
+                  ? "账号映射异常，请先检查绑定"
+                  : "已调整节点 #42 人员：https://guild.bitnp.net/nodes/42",
+              },
+            ],
+          }),
+        ),
+      );
+
+      return;
+    }
+
+    res.end(
+      JSON.stringify(
+        chatToolCalls([
+          {
+            id: "call-del-members",
+            name: "delegate_subagent",
+            args: {
+              kind: "guild_operator",
+              task: "把节点 42 改成王润哲负责、硅草参与",
+            },
+          },
+        ]),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      oidcIssuer: `${kcStub.url}/realms/bitnp`,
+      keycloakAdminUrl: `${kcStub.url}/admin/realms/bitnp`,
+      keycloakClientId: "berry-admin",
+      keycloakClientSecret: "kc-sec",
+      guildApiUrl: guildStub.url,
+      guildInternalToken: "guild-internal-sec",
+      guildPublicUrl: "https://guild.bitnp.net",
+      mainBaseUrl: `${llmStub.url}/v1`,
+    },
+    {},
+    t,
+  );
+
+  // Disabled account sharing QQ 11111 must not block active sub-wrz.
+  const activeUnique = await app.directory.byQQ("11111");
+
+  assert.equal(activeUnique?.subject, "sub-wrz");
+
+  // Warming bySubject for one duplicate owner must not poison byQQ for 33333.
+  const dupBySubject = await app.directory.bySubject("sub-dup-1");
+
+  assert.equal(dupBySubject?.subject, "sub-dup-1");
+  assert.equal(await app.directory.byQQ("33333"), null);
+
+  // Two enabled accounts sharing QQ 33333 must be refused on Guild proxy operations.
+  const dupMsg = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "m-dup",
+    userId: "33333",
+    senderName: "重号成员",
+    text: "帮我改节点人员",
+    mentionedBot: true,
+  });
+  const resDup = await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:100",
+    kind: "group",
+    chatId: "100",
+    triggerMessageIds: [dupMsg.message.id],
+    senderId: "33333",
+    senderName: "重号成员",
+  });
+
+  assert.deepEqual(resDup.units, [
+    { kind: "qq_reply", text: "账号映射异常，请先检查绑定" },
+  ]);
+  assert.equal(guildRequests.length, 0);
+
+  // Valid unique account invokes guild_replace_members -> PUT /api/internal/nodes/42/members.
+  const validMsg = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "m-replace-members",
+    userId: "11111",
+    senderName: "王润哲",
+    text: "把节点 42 改成我负责、硅草参与",
+    mentionedBot: true,
+  });
+  const resValid = await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:100",
+    kind: "group",
+    chatId: "100",
+    triggerMessageIds: [validMsg.message.id],
+    senderId: "11111",
+    senderName: "王润哲",
+  });
+
+  assert.deepEqual(resValid.units, [
+    {
+      kind: "qq_reply",
+      text: "已调整节点 #42 人员：https://guild.bitnp.net/nodes/42",
+    },
+  ]);
+  assert.equal(guildRequests.length, 1);
+  assert.equal(guildRequests[0]!.method, "PUT");
+  assert.equal(guildRequests[0]!.path, "/api/internal/nodes/42/members");
+  assert.equal(guildRequests[0]!.auth, "Bearer guild-internal-sec");
+  assert.equal(guildRequests[0]!.actor, "sub-wrz");
+  assert.deepEqual(guildRequests[0]!.body, {
+    leaders: ["sub-wrz"],
+    members: ["sub-guicao"],
+  });
+
+  const audits = await app.store.guildAudit.list();
+
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0]!.action, "replace_members");
+  assert.equal(audits[0]!.nodeId, 42);
+  assert.equal(audits[0]!.actorSubject, "sub-wrz");
+  assert.equal(audits[0]!.targetTitle, "接入监控告警");
+  assert.equal(audits[0]!.error, null);
 });

@@ -3,6 +3,7 @@ import { fromRoles } from "bitnp-authz";
 import { LRUCache } from "lru-cache";
 
 import type { EnvConfig } from "../config/env.ts";
+import { Logger } from "../utils/logger.ts";
 
 export interface DirectoryUser {
   subject: string;
@@ -36,6 +37,7 @@ export class IdentityDirectory {
   #clientId: string;
   #clientSecret: string;
   #qqAttr: string;
+  #logger = new Logger("identity:keycloak");
   #token = "";
   #tokenExpiresAt = 0;
   #bySubject = new LRUCache<string, CachedDirectoryUser>({
@@ -108,9 +110,6 @@ export class IdentityDirectory {
       { user: resolved },
       { ttl: resolved ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS },
     );
-    if (resolved?.qq) {
-      this.#byQQ.set(resolved.qq, { user: resolved }, { ttl: POSITIVE_TTL_MS });
-    }
 
     return resolved;
   }
@@ -140,23 +139,27 @@ export class IdentityDirectory {
     }
 
     const candidates = (await res.json()) as KeycloakUserRaw[];
+    const matchedRaws = candidates.filter(
+      (raw) => raw.enabled !== false && this.#extractQQ(raw) === clean,
+    );
+
+    if (matchedRaws.length > 1) {
+      this.#logger.warn(
+        "Ambiguous Keycloak QQ binding; refusing identity resolution",
+        { matchCount: matchedRaws.length },
+      );
+      this.#byQQ.set(clean, { user: null }, { ttl: NEGATIVE_TTL_MS });
+
+      return null;
+    }
+
     let matched: DirectoryUser | null = null;
 
-    for (const raw of candidates) {
-      if (raw.enabled === false) {
-        continue;
-      }
-
-      if (this.#extractQQ(raw) !== clean) {
-        continue;
-      }
-
-      const hydrated = await this.#hydrateUser(raw);
+    if (matchedRaws.length === 1) {
+      const hydrated = await this.#hydrateUser(matchedRaws[0]!);
 
       if (hydrated?.enabled && hydrated.qq === clean) {
         matched = hydrated;
-
-        break;
       }
     }
 

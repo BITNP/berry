@@ -50,6 +50,11 @@ export interface GuildUpdateNodeInput {
   completed: boolean;
 }
 
+export interface GuildReplaceMembersInput {
+  leaders: string[];
+  members: string[];
+}
+
 export interface GuildEvent {
   id: number;
   kind: string;
@@ -279,6 +284,21 @@ export class GuildInternalClient {
       `/api/internal/nodes/${nodeId}/move`,
       actorSubject,
       { parentId },
+    );
+
+    return { ...detail, url: this.nodeUrl(detail.id) };
+  }
+
+  public async replaceMembers(
+    actorSubject: string,
+    nodeId: number,
+    input: GuildReplaceMembersInput,
+  ): Promise<GuildNodeDetail & { url: string }> {
+    const detail = await this.#request<GuildNodeDetail>(
+      "PUT",
+      `/api/internal/nodes/${nodeId}/members`,
+      actorSubject,
+      input,
     );
 
     return { ...detail, url: this.nodeUrl(detail.id) };

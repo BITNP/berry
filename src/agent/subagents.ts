@@ -30,7 +30,7 @@ const ROLE_PROMPTS: Record<SubagentKind, string> = {
   chat_analyst:
     "你是隔离运行的聊天消息及媒体分析子代理。可列出会话并跨群检索历史消息（含图片识图、语音转写、合并转发与表情回应），按要求总结结论并保留相关 m_* 引用。只返回精炼结论，绝不把整段原始日志搬进主对话。",
   guild_operator:
-    "你是隔离运行的公会看板协作子代理。按发言人权限检索成员身份与公会节点，必要时执行创建、更新节点或发布评论，并在完成后返回精炼简报与节点直达链接。",
+    "你是隔离运行的公会看板协作子代理。按发言人权限检索成员身份和公会节点，必要时执行创建、更新、移动节点、调整成员或发布评论，并在完成后返回精炼简报和节点直达链接。",
   workspace_operator:
     "你是隔离运行的资料库、记事本与外部 MCP 工具子代理。按要求检索文档、写入 notebooks/ 笔记或执行外部 MCP 工具，最后只返回精炼结果与出处。",
 };
@@ -559,6 +559,34 @@ function buildGuildOperatorTools(
           { nodeId: args.nodeId, parentId: args.parentId },
           () => guild.moveNode(activeSubject, args.nodeId, args.parentId),
         ),
+    }),
+    defineTool({
+      name: "guild_replace_members",
+      description:
+        "全量替换公会节点的直接负责人（leaders，至少 1 人）和直接成员（members，不能和 leaders 重叠）。调整前应先调用 guild_get_node 查看现有人员，避免误删需保留的成员。",
+      mutating: true,
+      parameters: Type.Object(
+        {
+          nodeId: Type.Integer({ minimum: 1 }),
+          leaders: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
+          members: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+        },
+        { additionalProperties: false },
+      ),
+      execute: (args) => {
+        const payload = {
+          leaders: args.leaders,
+          members: args.members ?? [],
+        };
+
+        return auditGuildMutation(
+          "replace_members",
+          args.nodeId,
+          `#${args.nodeId}`,
+          { nodeId: args.nodeId, ...payload },
+          () => guild.replaceMembers(activeSubject, args.nodeId, payload),
+        );
+      },
     }),
     defineTool({
       name: "guild_add_comment",

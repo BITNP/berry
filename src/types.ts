@@ -239,7 +239,11 @@ export interface MemoryRecord {
 }
 
 export type GuildAuditAction =
-  "create_node" | "update_node" | "move_node" | "create_comment";
+  | "create_node"
+  | "update_node"
+  | "move_node"
+  | "replace_members"
+  | "create_comment";
 
 export interface GuildAuditRecord {
   id: number;
