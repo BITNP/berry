@@ -1,11 +1,15 @@
 import type { SubagentRegistry } from "../agent/subagents/registry.ts";
+import { inspectMediaTool } from "./media.ts";
 import { memoryManageTool } from "./memory.ts";
+import { qqDirectoryTool, searchQqEmojisTool } from "./qq.ts";
 import { ToolRegistry } from "./registry.ts";
 import { scheduleManageTool } from "./schedule.ts";
 
-export { chatTools } from "./chat.ts";
+export { chatHistoryTools } from "./chat.ts";
 export { guildTools } from "./guild.ts";
+export { inspectMediaTool, mediaTools } from "./media.ts";
 export { memoryManageTool } from "./memory.ts";
+export { qqDirectoryTool, qqTools, searchQqEmojisTool } from "./qq.ts";
 export { ToolRegistry } from "./registry.ts";
 export { scheduleManageTool } from "./schedule.ts";
 export type {
@@ -27,4 +31,7 @@ export const createDefaultMainToolRegistry = (
     subagents.asDelegateToolSource(),
     memoryManageTool,
     scheduleManageTool,
+    inspectMediaTool,
+    qqDirectoryTool,
+    searchQqEmojisTool,
   );

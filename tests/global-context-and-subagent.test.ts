@@ -51,7 +51,7 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
     const toolMsgs = reqJson.messages.filter((m) => m.role === "tool");
 
     // Isolated chat_analyst subagent dispatch.
-    if (sys.includes("聊天消息及媒体分析子代理")) {
+    if (sys.includes("聊天记录检索及摘要子代理")) {
       const task =
         (
           JSON.parse(

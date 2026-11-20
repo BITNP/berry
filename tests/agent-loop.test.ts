@@ -350,8 +350,24 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
   assert.equal(seenMainReasoning, "medium");
   assert.equal(seenSubagentReasoning, "low");
   assert.ok(seenMainToolNames.includes("custom_echo"));
+  assert.ok(seenMainToolNames.includes("search_qq_emojis"));
+  assert.ok(seenMainToolNames.includes("qq_directory"));
+  assert.ok(seenMainToolNames.includes("inspect_media"));
   assert.match(seenMainSystem, /- custom_echo: 自定义扩展主工具。/);
   assert.match(seenMainSystem, /\* ops_inspector: 执行自定义运维连通性检查。/);
+
+  const chatAnalyst = app.subagents.get("chat_analyst");
+  const chatAnalystToolNames = (chatAnalyst?.tools ?? []).map((tool) =>
+    "name" in tool ? tool.name : tool.id,
+  );
+
+  assert.deepEqual(chatAnalystToolNames, [
+    "list_chats",
+    "search_chat_messages",
+    "read_chat_window",
+    "fetch_older_history",
+    "inspect_media",
+  ]);
 
   const kindProp = (
     seenDelegateSchema?.properties as { kind?: { enum?: string[] } } | undefined
