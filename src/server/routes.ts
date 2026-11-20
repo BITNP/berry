@@ -18,11 +18,7 @@ import { lookup } from "mrmime";
 import { Type } from "typebox";
 
 import type { BerryApp } from "../app.ts";
-import {
-  maskSettings,
-  mergeMaskedSettings,
-  scheduleSpecSchema,
-} from "../config/settings.ts";
+import { parseSettings, scheduleSpecSchema } from "../config/settings.ts";
 import { errorMessage } from "../utils/time.ts";
 import {
   idParamSchema,
@@ -973,7 +969,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       await berry.auth.requireAdmin(event);
 
       return {
-        settings: maskSettings(berry.settings),
+        settings: berry.settings,
         envSummary: {
           gatewayUrl: berry.env.gatewayUrl,
           gatewayAccount: berry.env.gatewayAccount,
@@ -992,10 +988,10 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       const body = await readBody<unknown>(event);
 
       try {
-        const merged = mergeMaskedSettings(body, berry.settings);
-        const saved = await berry.updateSettings(merged);
+        const parsed = parseSettings(body);
+        const saved = await berry.updateSettings(parsed);
 
-        return { settings: maskSettings(saved) };
+        return { settings: saved };
       } catch (error) {
         throw createError({
           statusCode: 400,

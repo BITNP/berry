@@ -700,7 +700,7 @@ onMounted(() => {
                 <NFormItem label="API Base URL">
                   <NInput v-model:value="settings.mainModel.baseURL" />
                 </NFormItem>
-                <NFormItem label="API Key（留空或保持掩码则不覆盖）">
+                <NFormItem label="API Key">
                   <NInput
                     v-model:value="settings.mainModel.apiKey"
                     show-password-on="click"
@@ -1176,6 +1176,7 @@ onMounted(() => {
                 <NInput
                   v-model:value="pair.value"
                   placeholder="值"
+                  show-password-on="click"
                   type="password"
                 />
                 <NButton

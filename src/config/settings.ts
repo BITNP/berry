@@ -4,8 +4,6 @@ import * as Value from "typebox/value";
 
 import type { EnvConfig } from "./env.ts";
 
-export const SECRET_MASK = "••••••••";
-
 export const DEFAULT_PERSONA = `你是北京理工大学网络开拓者协会（BITNP，简称“网协”）的吉祥物兼值班小助手“树莓娘”。
 性格可靠、亲切、直率不装腔，用自然口语和群友交流，避免官方套话与无意义感叹号。
 回答技术问题、协查任务或操作公会看板前，先核对事实与权限，不确定时不编造。`;
@@ -253,81 +251,4 @@ export function isGroupAllowed(
   const allowlist = settings.policy.allowedGroups;
 
   return allowlist.length === 0 || allowlist.includes(groupId);
-}
-
-export function maskSettings(settings: RuntimeSettings): RuntimeSettings {
-  const copy = structuredClone(settings);
-
-  if (copy.mainModel.apiKey) {
-    copy.mainModel.apiKey = SECRET_MASK;
-  }
-
-  if (copy.gateModel.apiKey) {
-    copy.gateModel.apiKey = SECRET_MASK;
-  }
-
-  if (copy.media.visionApiKey) {
-    copy.media.visionApiKey = SECRET_MASK;
-  }
-
-  if (copy.media.audioApiKey) {
-    copy.media.audioApiKey = SECRET_MASK;
-  }
-
-  for (const server of copy.mcpServers) {
-    if (!server.headers) {
-      continue;
-    }
-
-    for (const [key, value] of Object.entries(server.headers)) {
-      if (value) {
-        server.headers[key] = SECRET_MASK;
-      }
-    }
-  }
-
-  return copy;
-}
-
-export function mergeMaskedSettings(
-  incoming: unknown,
-  current: RuntimeSettings,
-): RuntimeSettings {
-  const next = parseSettings(incoming);
-
-  if (next.mainModel.apiKey === SECRET_MASK) {
-    next.mainModel.apiKey = current.mainModel.apiKey;
-  }
-
-  if (next.gateModel.apiKey === SECRET_MASK) {
-    next.gateModel.apiKey = current.gateModel.apiKey;
-  }
-
-  if (next.media.visionApiKey === SECRET_MASK) {
-    next.media.visionApiKey = current.media.visionApiKey;
-  }
-
-  if (next.media.audioApiKey === SECRET_MASK) {
-    next.media.audioApiKey = current.media.audioApiKey;
-  }
-
-  const currentServers = new Map(
-    current.mcpServers.map((server) => [server.name, server]),
-  );
-
-  for (const server of next.mcpServers) {
-    const existing = currentServers.get(server.name);
-
-    if (!server.headers || !existing?.headers) {
-      continue;
-    }
-
-    for (const [key, value] of Object.entries(server.headers)) {
-      if (value === SECRET_MASK && existing.headers[key] !== undefined) {
-        server.headers[key] = existing.headers[key];
-      }
-    }
-  }
-
-  return next;
 }

@@ -5,7 +5,6 @@ import test from "node:test";
 
 import { WebSocketServer } from "ws";
 
-import { SECRET_MASK } from "../src/config/settings.ts";
 import { MessageGatewayClient } from "../src/gateway/client.ts";
 import { createTestBerryApp, startStubServer, waitUntil } from "./helpers.ts";
 
@@ -221,7 +220,7 @@ test("admin auth, CSRF, secret masking, TypeBox validation, and removed /api/web
     })
   ).json()) as { settings: { mainModel: { apiKey: string } } };
 
-  assert.equal(settingsJson.settings.mainModel.apiKey, SECRET_MASK);
+  assert.equal(settingsJson.settings.mainModel.apiKey, "test-main-key");
 
   const badCsrf = await fetch(`${url}/api/admin/settings`, {
     method: "PUT",
