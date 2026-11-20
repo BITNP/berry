@@ -13,7 +13,6 @@ import {
   setHeader,
   setResponseStatus,
 } from "h3";
-import { LRUCache } from "lru-cache";
 import { lookup } from "mrmime";
 import { Type } from "typebox";
 
@@ -259,31 +258,6 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
   });
 
   const router = createRouter();
-  const botInfoCache = new LRUCache<
-    "self",
-    { account: { user_id: number; nickname: string } | null }
-  >({
-    max: 1,
-    ttl: 60_000,
-  });
-
-  async function cachedBotAccount() {
-    if (!berry.gateway.configured) {
-      return null;
-    }
-
-    const cached = botInfoCache.get("self");
-
-    if (cached) {
-      return cached.account;
-    }
-
-    const account = await berry.gateway.getLoginInfo().catch(() => null);
-
-    botInfoCache.set("self", { account });
-
-    return account;
-  }
 
   router.get(
     "/api/healthz",
@@ -379,7 +353,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         berry.store.gate.summarySince(since24h),
         berry.store.chats.list(),
         berry.store.usage.todaySummary(berry.settings.bot.timezone),
-        cachedBotAccount(),
+        berry.gateway.getLoginInfo(),
         berry.store.maintenance.inspectStorage(),
         berry.store.usage.dailySummary(30),
       ]);

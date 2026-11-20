@@ -79,6 +79,7 @@ interface SentMessageContext {
 
 const DEFAULT_POLL_DELAYS_MS = [350, 700, 1200, 2000, 3000, 4000, 5000];
 const DEFAULT_MAX_TRACK_MS = 10 * 60 * 1000;
+const LOGIN_INFO_FAILURE_COOLDOWN_MS = 10_000;
 
 export interface GatewayClientOptions {
   pollDelaysMs?: number[];
@@ -100,6 +101,8 @@ export class MessageGatewayClient {
   #getSettings?: () => RuntimeSettings;
   #warmedChats = new Set<string>();
   #inFlightWarms = new Map<string, Promise<void>>();
+  #loginInfo: { user_id: number; nickname: string } | null = null;
+  #loginInfoRetryAfter = 0;
 
   constructor(
     env: Pick<EnvConfig, "gatewayUrl" | "gatewayAccount" | "gatewayToken">,
@@ -192,6 +195,11 @@ export class MessageGatewayClient {
     return { httpStatus: res.status, body };
   }
 
+  public clearLoginInfoCache(): void {
+    this.#loginInfo = null;
+    this.#loginInfoRetryAfter = 0;
+  }
+
   public async getLoginInfo(): Promise<{
     user_id: number;
     nickname: string;
@@ -200,12 +208,33 @@ export class MessageGatewayClient {
       return null;
     }
 
-    const { body } = await this.callAction<{
-      user_id: number;
-      nickname: string;
-    }>("get_login_info");
+    if (this.#loginInfo) {
+      return this.#loginInfo;
+    }
 
-    return body.data ?? null;
+    if (Date.now() < this.#loginInfoRetryAfter) {
+      return null;
+    }
+
+    try {
+      const { body } = await this.callAction<{
+        user_id: number;
+        nickname: string;
+      }>("get_login_info");
+
+      if (body.data) {
+        this.#loginInfo = body.data;
+        this.#loginInfoRetryAfter = 0;
+
+        return body.data;
+      }
+    } catch {
+      // Fall through to short negative cooldown.
+    }
+
+    this.#loginInfoRetryAfter = Date.now() + LOGIN_INFO_FAILURE_COOLDOWN_MS;
+
+    return null;
   }
 
   public async getGroupList(): Promise<GroupInfo[]> {

@@ -57,6 +57,7 @@ export class GatewayEventSubscriber {
   #gate: MessageGate;
   #media: MediaProcessor;
   #getSettings: () => RuntimeSettings;
+  #onConnected?: () => void;
   #logger = new Logger("gateway:events");
   #started = false;
   #connected = false;
@@ -69,6 +70,7 @@ export class GatewayEventSubscriber {
     gate: MessageGate,
     media: MediaProcessor,
     getSettings: () => RuntimeSettings,
+    onConnected?: () => void,
   ) {
     this.#baseUrl = env.gatewayUrl.replace(/\/+$/, "");
     this.#account = env.gatewayAccount || "qq";
@@ -77,6 +79,7 @@ export class GatewayEventSubscriber {
     this.#gate = gate;
     this.#media = media;
     this.#getSettings = getSettings;
+    this.#onConnected = onConnected;
   }
 
   public get configured(): boolean {
@@ -113,6 +116,7 @@ export class GatewayEventSubscriber {
       }
 
       this.#connected = true;
+      this.#onConnected?.();
       this.#logger.info("Connected to gateway event stream", {
         account: this.#account,
       });

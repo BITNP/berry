@@ -174,6 +174,7 @@ export class BerryApp {
       gate,
       media,
       getSettings,
+      () => gateway.clearLoginInfoCache(),
     );
     const scheduler = new ScheduleRunner(services, subagents, () =>
       workerRef.wake(),

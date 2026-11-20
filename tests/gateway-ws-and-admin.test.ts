@@ -692,3 +692,68 @@ test("MessageGatewayClient polls message-status past backoff ramp until terminal
 
   assert.equal(shutdownRecord?.status, "queued");
 });
+
+test("MessageGatewayClient caches login info until cleared on WS reconnect and cools down failures", async (t) => {
+  let calls = 0;
+  let failNext = true;
+  let nickname = "旧树莓娘";
+
+  const stub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/api/v1/accounts/qq/get_login_info") {
+      calls++;
+      if (failNext) {
+        res.statusCode = 502;
+        res.end(JSON.stringify({ message: "gateway starting" }));
+
+        return;
+      }
+
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          data: { user_id: 3_173_748_222, nickname },
+        }),
+      );
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: stub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+    },
+    {},
+    t,
+  );
+
+  // Initial failure is cooled down without hammering the offline gateway.
+  assert.equal(await app.gateway.getLoginInfo(), null);
+  assert.equal(await app.gateway.getLoginInfo(), null);
+  assert.equal(calls, 1);
+
+  // Reconnect clears cooldown and caches the successful account indefinitely.
+  failNext = false;
+  app.gateway.clearLoginInfoCache();
+  const first = await app.gateway.getLoginInfo();
+  const second = await app.gateway.getLoginInfo();
+
+  assert.deepEqual(first, { user_id: 3_173_748_222, nickname: "旧树莓娘" });
+  assert.deepEqual(second, first);
+  assert.equal(calls, 2);
+
+  // Only a subsequent reconnect/clear refreshes the cached login info.
+  nickname = "新树莓娘";
+  assert.equal((await app.gateway.getLoginInfo())?.nickname, "旧树莓娘");
+  assert.equal(calls, 2);
+
+  app.gateway.clearLoginInfoCache();
+  assert.equal((await app.gateway.getLoginInfo())?.nickname, "新树莓娘");
+  assert.equal(calls, 3);
+});
