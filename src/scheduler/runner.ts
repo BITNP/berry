@@ -75,11 +75,12 @@ export class ScheduleRunner {
   }
 
   public async runGroupDigest(job: JobRecord<"group_digest">): Promise<void> {
-    const { store, knowledge, mcp } = this.#services;
+    const { store, gateway, knowledge, mcp } = this.#services;
     const settings = this.#services.getSettings();
     const { chatKey, groupId, startTimeMs, endTimeMs, prompt, uploadTool } =
       job.payload;
 
+    await gateway.warmChatHistory("group", groupId, 200);
     const messages = await store.messages.search(chatKey, {
       startTimeMs,
       endTimeMs,

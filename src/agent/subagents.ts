@@ -28,7 +28,7 @@ export interface SubagentResult {
 
 const ROLE_PROMPTS: Record<SubagentKind, string> = {
   chat_analyst:
-    "你是隔离运行的聊天消息及媒体分析子代理。可列出会话并跨群检索历史消息（含图片识图、语音转写、合并转发与表情回应），按要求总结结论并保留相关 m_* 引用。只返回精炼结论，绝不把整段原始日志搬进主对话。",
+    "你是隔离运行的聊天消息及媒体分析子代理。可列出会话并跨群检索历史消息（含图片识图、语音转写、合并转发与表情回应），本地记录不足或时间不够早时可调用 fetch_older_history 从 QQ 网关继续向前拉取更早记录，按要求总结结论并保留相关 m_* 引用。只返回精炼结论，绝不把整段原始日志搬进主对话。",
   guild_operator:
     "你是隔离运行的公会看板协作子代理。按发言人权限检索成员身份和公会节点，必要时执行创建、更新、移动节点、调整成员或发布评论，并在完成后返回精炼简报和节点直达链接。",
   workspace_operator:
@@ -132,7 +132,7 @@ function buildChatAnalystTools(
     defineTool({
       name: "search_chat_messages",
       description:
-        "按关键词或时间范围搜索指定会话的历史消息（留空 targetRef 则检索当前会话，传 g_* 可跨群检索）。",
+        "按关键词或时间范围搜索指定会话的历史消息（留空 targetRef 则检索当前会话，传 g_* 可跨群检索；本地历史未覆盖 startTimeIso 时会自动向 QQ 网关向前拉取）。",
       parameters: Type.Object(
         {
           targetRef: Type.Optional(Type.String()),
@@ -144,26 +144,58 @@ function buildChatAnalystTools(
         { additionalProperties: false },
       ),
       execute: async (args) => {
-        const { targetChatKey, kind: targetKind } = resolveAuthorizedChat(
-          args.targetRef,
-        );
+        const {
+          targetChatKey,
+          kind: targetKind,
+          chatId: targetChatId,
+        } = resolveAuthorizedChat(args.targetRef);
         const startTimeMs = args.startTimeIso
           ? Date.parse(args.startTimeIso)
           : undefined;
         const endTimeMs = args.endTimeIso
           ? Date.parse(args.endTimeIso)
           : undefined;
+        const validStartMs = Number.isFinite(startTimeMs)
+          ? startTimeMs
+          : undefined;
+        const validEndMs = Number.isFinite(endTimeMs) ? endTimeMs : undefined;
+
+        if (gateway.configured) {
+          await gateway.warmChatHistory(targetKind, targetChatId, 200);
+
+          if (validStartMs !== undefined) {
+            const oldestBefore = await store.messages.oldest(targetChatKey);
+
+            if (!oldestBefore || oldestBefore.sentAt > validStartMs) {
+              await gateway
+                .syncChatHistory(targetKind, targetChatId, {
+                  mode: "older",
+                  count: 200,
+                  maxPages: 4,
+                  targetStartTimeMs: validStartMs,
+                })
+                .catch(() => undefined);
+            }
+          }
+        }
+
         const rows = await store.messages.search(targetChatKey, {
           query: args.query,
-          startTimeMs: Number.isFinite(startTimeMs) ? startTimeMs : undefined,
-          endTimeMs: Number.isFinite(endTimeMs) ? endTimeMs : undefined,
+          startTimeMs: validStartMs,
+          endTimeMs: validEndMs,
           limit: args.limit ?? 60,
         });
-        const enriched = await media.enrichMessagesText(targetChatKey, rows);
+        const [enriched, oldestAfter] = await Promise.all([
+          media.enrichMessagesText(targetChatKey, rows),
+          store.messages.oldest(targetChatKey),
+        ]);
 
         return {
           chatType: targetKind,
           count: rows.length,
+          localOldestSentAt: oldestAfter
+            ? new Date(oldestAfter.sentAt).toISOString()
+            : null,
           messages: rows.map((row) => ({
             id: row.id,
             quoteRef: ids.messageRef(row.onebotMessageId, targetChatKey),
@@ -178,7 +210,7 @@ function buildChatAnalystTools(
     defineTool({
       name: "read_chat_window",
       description:
-        "读取指定会话最近的连续消息窗口（含媒体识别摘要与表情回应；留空 targetRef 则读当前会话，传 g_* 可跨群读取）。",
+        "读取指定会话最近的连续消息窗口（含媒体识别摘要与表情回应；留空 targetRef 则读当前会话，传 g_* 可跨群读取；本地消息不足时会自动向 QQ 网关拉取补全）。",
       parameters: Type.Object(
         {
           targetRef: Type.Optional(Type.String()),
@@ -188,22 +220,55 @@ function buildChatAnalystTools(
         { additionalProperties: false },
       ),
       execute: async (args) => {
-        const { targetChatKey } = resolveAuthorizedChat(args.targetRef);
-        const rows = await store.messages.recent(
+        const {
           targetChatKey,
-          args.limit ?? 50,
-          { beforeId: args.beforeId },
-        );
-        const [enriched, reactionMap] = await Promise.all([
+          kind: targetKind,
+          chatId: targetChatId,
+        } = resolveAuthorizedChat(args.targetRef);
+        const limit = args.limit ?? 50;
+
+        if (gateway.configured) {
+          await gateway.warmChatHistory(
+            targetKind,
+            targetChatId,
+            Math.max(100, limit),
+          );
+        }
+
+        let rows = await store.messages.recent(targetChatKey, limit, {
+          beforeId: args.beforeId,
+        });
+
+        if (rows.length < limit && gateway.configured) {
+          const synced = await gateway
+            .syncChatHistory(targetKind, targetChatId, {
+              mode: "older",
+              count: Math.max(100, limit),
+              maxPages: 2,
+            })
+            .catch(() => null);
+
+          if (synced && synced.imported > 0) {
+            rows = await store.messages.recent(targetChatKey, limit, {
+              beforeId: args.beforeId,
+            });
+          }
+        }
+
+        const [enriched, reactionMap, oldestAfter] = await Promise.all([
           media.enrichMessagesText(targetChatKey, rows),
           store.reactions.aggregateForMessages(
             targetChatKey,
             rows.map((r) => r.onebotMessageId),
           ),
+          store.messages.oldest(targetChatKey),
         ]);
 
         return {
           count: rows.length,
+          localOldestSentAt: oldestAfter
+            ? new Date(oldestAfter.sentAt).toISOString()
+            : null,
           messages: rows.map((row) => ({
             id: row.id,
             quoteRef: ids.messageRef(row.onebotMessageId, targetChatKey),
@@ -213,6 +278,48 @@ function buildChatAnalystTools(
             reactions: reactionMap.get(row.onebotMessageId) ?? [],
             sentAt: new Date(row.sentAt).toISOString(),
           })),
+        };
+      },
+    }),
+    defineTool({
+      name: "fetch_older_history",
+      description:
+        "从 QQ 网关向前翻页拉取指定会话更早的历史消息并缓存到本地（按本地最早一条消息继续向前翻页）。当关键词检索未命中或需要查看更早几天的讨论时调用。",
+      parameters: Type.Object(
+        {
+          targetRef: Type.Optional(Type.String()),
+          pages: Type.Optional(Type.Integer({ minimum: 1, maximum: 5 })),
+          countPerPage: Type.Optional(
+            Type.Integer({ minimum: 50, maximum: 500 }),
+          ),
+        },
+        { additionalProperties: false },
+      ),
+      execute: async (args) => {
+        if (!gateway.configured) {
+          throw new Error("message-gateway 未配置，无法拉取远端历史消息");
+        }
+
+        const {
+          targetChatKey,
+          kind: targetKind,
+          chatId: targetChatId,
+        } = resolveAuthorizedChat(args.targetRef);
+        const result = await gateway.syncChatHistory(targetKind, targetChatId, {
+          mode: "older",
+          count: args.countPerPage ?? 200,
+          maxPages: args.pages ?? 2,
+        });
+        const oldestAfter = await store.messages.oldest(targetChatKey);
+
+        return {
+          fetched: result.fetched,
+          imported: result.imported,
+          pages: result.pages,
+          reachedStart: result.reachedStart,
+          localOldestSentAt: oldestAfter
+            ? new Date(oldestAfter.sentAt).toISOString()
+            : null,
         };
       },
     }),

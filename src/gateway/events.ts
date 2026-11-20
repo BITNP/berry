@@ -145,10 +145,7 @@ export class GatewayEventSubscriber {
     await this.#eventQueue.catch(() => undefined);
   }
 
-  public async handleEvent(
-    payload: OneBotEvent,
-    options: { historical?: boolean } = {},
-  ): Promise<{
+  public async handleEvent(payload: OneBotEvent): Promise<{
     accepted: boolean;
     reason?: string;
     messageId?: number;
@@ -293,11 +290,11 @@ export class GatewayEventSubscriber {
       return { accepted: true, reason: "duplicate", messageId: message.id };
     }
 
-    if (parsed.attachments.length > 0 && !options.historical) {
+    if (parsed.attachments.length > 0) {
       await this.#media.enqueueMessageAssets(message, parsed.attachments);
     }
 
-    if (!isBot && !options.historical) {
+    if (!isBot) {
       if (settings.bot.paused) {
         this.#logger.debug("Bot paused; archived message without gating", {
           messageId: message.id,
@@ -315,37 +312,6 @@ export class GatewayEventSubscriber {
     });
 
     return { accepted: true, messageId: message.id };
-  }
-
-  public async ingestHistoryBatch(
-    groupId: string,
-    rawMessages: Record<string, unknown>[],
-  ): Promise<{ total: number; imported: number }> {
-    let imported = 0;
-
-    for (const raw of rawMessages) {
-      const res = await this.handleEvent(
-        {
-          post_type: "message",
-          message_type: "group",
-          group_id: groupId,
-          user_id: raw.user_id as string | number | undefined,
-          message_id: raw.message_id as string | number | undefined,
-          time: raw.time as number | undefined,
-          message: raw.message,
-          raw_message: raw.raw_message as string | undefined,
-          sender: raw.sender as
-            { nickname?: string; card?: string } | undefined,
-        },
-        { historical: true },
-      );
-
-      if (res.accepted && res.reason !== "duplicate") {
-        imported++;
-      }
-    }
-
-    return { total: rawMessages.length, imported };
   }
 
   async #runLoop(): Promise<void> {

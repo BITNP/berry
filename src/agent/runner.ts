@@ -133,6 +133,11 @@ export class BerryAgent {
     }
 
     const firstId = requestMessages[0]?.id;
+
+    if (input.kind === "group" || input.kind === "private") {
+      await gateway.warmChatHistory(input.kind, input.chatId, 100);
+    }
+
     const recentContext =
       firstId === undefined
         ? await store.messages.recent(input.chatKey, 12, {

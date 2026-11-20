@@ -130,10 +130,24 @@ export class MessagesStore {
       .selectFrom("messages")
       .selectAll()
       .where("id", "in", ids)
+      .orderBy("sent_at", "asc")
       .orderBy("id", "asc")
       .execute();
 
     return rows.map(decodeMessage);
+  }
+
+  public async oldest(chatKey: string): Promise<MessageRecord | null> {
+    const row = await this.#database.db
+      .selectFrom("messages")
+      .selectAll()
+      .where("chat_key", "=", chatKey)
+      .orderBy("sent_at", "asc")
+      .orderBy("id", "asc")
+      .limit(1)
+      .executeTakeFirst();
+
+    return row ? decodeMessage(row) : null;
   }
 
   public async findByOnebotId(
@@ -184,14 +198,39 @@ export class MessagesStore {
     }
 
     if (options.beforeId !== undefined) {
-      query = query.where("id", "<", options.beforeId);
+      const anchor = await this.get(options.beforeId);
+
+      query = anchor
+        ? query.where((eb) =>
+            eb.or([
+              eb("sent_at", "<", anchor.sentAt),
+              eb.and([
+                eb("sent_at", "=", anchor.sentAt),
+                eb("id", "<", anchor.id),
+              ]),
+            ]),
+          )
+        : query.where("id", "<", options.beforeId);
     }
 
-    if (options.afterId !== undefined) {
-      query = query.where("id", ">", options.afterId);
+    if (options.afterId !== undefined && options.afterId > 0) {
+      const anchor = await this.get(options.afterId);
+
+      query = anchor
+        ? query.where((eb) =>
+            eb.or([
+              eb("sent_at", ">", anchor.sentAt),
+              eb.and([
+                eb("sent_at", "=", anchor.sentAt),
+                eb("id", ">", anchor.id),
+              ]),
+            ]),
+          )
+        : query.where("id", ">", options.afterId);
     }
 
     const rows = await query
+      .orderBy("sent_at", "desc")
       .orderBy("id", "desc")
       .limit(Math.max(1, limit))
       .execute();
@@ -225,7 +264,19 @@ export class MessagesStore {
       .where("recalled_at", "is", null);
 
     if (options.beforeId !== undefined) {
-      q = q.where("id", "<", options.beforeId);
+      const anchor = await this.get(options.beforeId);
+
+      q = anchor
+        ? q.where((eb) =>
+            eb.or([
+              eb("sent_at", "<", anchor.sentAt),
+              eb.and([
+                eb("sent_at", "=", anchor.sentAt),
+                eb("id", "<", anchor.id),
+              ]),
+            ]),
+          )
+        : q.where("id", "<", options.beforeId);
     }
 
     if (options.startTimeMs !== undefined) {
@@ -248,6 +299,7 @@ export class MessagesStore {
     }
 
     const rows = await q
+      .orderBy("sent_at", "desc")
       .orderBy("id", "desc")
       .limit(Math.min(500, Math.max(1, options.limit ?? 80)))
       .execute();

@@ -186,6 +186,15 @@ export class MessageGate {
     }
 
     const firstId = activeCandidates[0]!.id;
+
+    if (settings.gateModel.contextMessages > 0) {
+      await this.#gateway.warmChatHistory(
+        chat.kind,
+        chat.chatId,
+        Math.max(50, settings.gateModel.contextMessages * 4),
+      );
+    }
+
     const recentContext =
       settings.gateModel.contextMessages > 0
         ? await this.#store.messages.recent(

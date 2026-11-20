@@ -236,16 +236,19 @@ async function handleBackfill(row: ChatRow) {
   busyBackfill.value = row.chatKey;
 
   try {
-    const res = await apiFetch<{ total: number; imported: number }>(
-      `/api/admin/chats/${encodeURIComponent(row.chatKey)}/backfill`,
-      {
-        method: "POST",
-        body: JSON.stringify({ count: 50 }),
-      },
-    );
+    const res = await apiFetch<{
+      total: number;
+      imported: number;
+      reachedStart?: boolean;
+    }>(`/api/admin/chats/${encodeURIComponent(row.chatKey)}/backfill`, {
+      method: "POST",
+      body: JSON.stringify({ count: 200 }),
+    });
 
     message.success(
-      `历史补录完成：新增 ${res.imported} / 拉取 ${res.total} 条`,
+      res.imported === 0 && res.reachedStart
+        ? "已到历史起点，没有更早的消息可补录"
+        : `历史补录完成：新增 ${res.imported} / 拉取 ${res.total} 条`,
     );
 
     if (activeChat.value?.chatKey === row.chatKey) {

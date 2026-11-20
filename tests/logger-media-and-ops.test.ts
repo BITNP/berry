@@ -409,3 +409,182 @@ test("MediaProcessor detects MIME via file-type magic bytes rather than headers"
   assert.equal(badAsset?.status, "failed");
   assert.match(badAsset?.error ?? "", /不支持的图片格式/);
 });
+
+test("automatic history warm-up, backward pagination, and chronological ordering", async (t) => {
+  const historyCalls: Record<string, unknown>[] = [];
+  const tOldest = Date.UTC(2026, 10, 18, 10, 0, 0);
+  const tOlder = Date.UTC(2026, 10, 19, 10, 0, 0);
+  const tRecent = Date.UTC(2026, 10, 20, 10, 0, 0);
+  const tLive = Date.UTC(2026, 10, 21, 1, 50, 0);
+
+  const gwStub = await startStubServer((req, res, bodyText) => {
+    res.setHeader("Content-Type", "application/json");
+    const action = req.url?.split("/").pop() ?? "";
+    const body = bodyText
+      ? (JSON.parse(bodyText) as Record<string, unknown>)
+      : {};
+
+    if (action === "get_group_msg_history") {
+      historyCalls.push(body);
+      const seq = body.message_seq;
+
+      if (seq === undefined) {
+        res.end(
+          JSON.stringify({
+            status: "ok",
+            retcode: 0,
+            data: {
+              messages: [
+                {
+                  message_id: 2001,
+                  message_seq: 2001,
+                  user_id: 201,
+                  time: Math.floor(tRecent / 1000),
+                  message: [{ type: "text", data: { text: "网关限流讨论" } }],
+                  sender: { card: "同学A" },
+                },
+              ],
+            },
+          }),
+        );
+
+        return;
+      }
+
+      if (Number(seq) === 2001 && body.reverseOrder === true) {
+        res.end(
+          JSON.stringify({
+            status: "ok",
+            retcode: 0,
+            data: {
+              messages: [
+                {
+                  message_id: 1001,
+                  message_seq: 1001,
+                  user_id: 202,
+                  time: Math.floor(tOlder / 1000),
+                  message: [{ type: "text", data: { text: "云文档压测安排" } }],
+                  sender: { card: "同学B" },
+                },
+                {
+                  message_id: 2001,
+                  message_seq: 2001,
+                  user_id: 201,
+                  time: Math.floor(tRecent / 1000),
+                  message: [{ type: "text", data: { text: "网关限流讨论" } }],
+                  sender: { card: "同学A" },
+                },
+              ],
+            },
+          }),
+        );
+
+        return;
+      }
+
+      if (Number(seq) === 1001 && body.reverseOrder === true) {
+        res.end(
+          JSON.stringify({
+            status: "ok",
+            retcode: 0,
+            data: {
+              messages: [
+                {
+                  message_id: 900,
+                  message_seq: 900,
+                  user_id: 203,
+                  time: Math.floor(tOldest / 1000),
+                  message: [
+                    { type: "text", data: { text: "字体吐槽思源黑体" } },
+                  ],
+                  sender: { card: "同学C" },
+                },
+              ],
+            },
+          }),
+        );
+
+        return;
+      }
+
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: { messages: [] },
+        }),
+      );
+
+      return;
+    }
+
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gwStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+    },
+    {},
+    t,
+  );
+
+  // Live message arrives first (smaller auto-increment id, newer sentAt).
+  const live = await captureText(app, {
+    kind: "group",
+    chatId: "777",
+    id: "3001",
+    userId: "301",
+    senderName: "Kat",
+    text: "这几天聊了啥",
+    sentAt: tLive,
+  });
+
+  // Warm-up runs once per chat and deduplicates repeated calls.
+  await Promise.all([
+    app.gateway.warmChatHistory("group", "777", 100),
+    app.gateway.warmChatHistory("group", "777", 100),
+  ]);
+  await app.gateway.warmChatHistory("group", "777", 100);
+  assert.equal(historyCalls.length, 1);
+
+  // Recent context before the live message sees backfilled older message despite larger row id.
+  const beforeLive = await app.store.messages.recent("group:777", 10, {
+    beforeId: live.message.id,
+  });
+
+  assert.deepEqual(
+    beforeLive.map((m) => m.text),
+    ["网关限流讨论"],
+  );
+
+  // Step-back backfill advances to older pages instead of returning 0 forever.
+  const step1 = await app.gateway.syncChatHistory("group", "777", {
+    count: 200,
+    mode: "latest",
+    maxPages: 1,
+    stepBackIfLatestCached: true,
+  });
+
+  assert.equal(step1.imported, 1);
+
+  // Multi-page older sync reaches targetStartTimeMs.
+  const older = await app.gateway.syncChatHistory("group", "777", {
+    count: 200,
+    mode: "older",
+    maxPages: 3,
+    targetStartTimeMs: tOldest,
+  });
+
+  assert.equal(older.imported, 1);
+  assert.equal(older.oldestSentAt, tOldest);
+
+  const ordered = await app.store.messages.recent("group:777", 10);
+
+  assert.deepEqual(
+    ordered.map((m) => m.text),
+    ["字体吐槽思源黑体", "云文档压测安排", "网关限流讨论", "这几天聊了啥"],
+  );
+});

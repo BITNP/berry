@@ -6,13 +6,15 @@ import { isGroupAllowed } from "../config/settings.ts";
 import type { Store } from "../store/index.ts";
 import type {
   ChatKey,
+  ChatKind,
   DeliveryRecord,
   OneBotSegment,
   OutputUnit,
 } from "../types.ts";
-import { parseChatKey } from "../types.ts";
+import { makeChatKey, parseChatKey } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
+import { parseOneBotSegments } from "./segments.ts";
 
 interface GatewayEnvelope<T = unknown> {
   status?: string;
@@ -38,6 +40,28 @@ export interface GroupInfo {
   group_id: number;
   group_name: string;
   member_count?: number;
+}
+
+export interface HistoryFetchOptions {
+  messageSeq?: string | number;
+  reverseOrder?: boolean;
+}
+
+export interface SyncHistoryOptions {
+  count?: number;
+  maxPages?: number;
+  mode?: "latest" | "older";
+  targetStartTimeMs?: number;
+  stepBackIfLatestCached?: boolean;
+}
+
+export interface SyncHistoryResult {
+  fetched: number;
+  imported: number;
+  pages: number;
+  oldestSentAt: number | null;
+  newestSentAt: number | null;
+  reachedStart: boolean;
 }
 
 interface SentMessageContext {
@@ -69,6 +93,8 @@ export class MessageGatewayClient {
   #pollDelaysMs: number[];
   #maxTrackMs: number;
   #getSettings?: () => RuntimeSettings;
+  #warmedChats = new Set<string>();
+  #inFlightWarms = new Map<string, Promise<void>>();
 
   constructor(
     env: Pick<EnvConfig, "gatewayUrl" | "gatewayAccount" | "gatewayToken">,
@@ -239,20 +265,385 @@ export class MessageGatewayClient {
 
   public async getGroupMsgHistory(
     groupId: string,
-    count = 40,
+    count = 100,
+    options: HistoryFetchOptions = {},
+  ): Promise<Record<string, unknown>[]> {
+    if (!this.configured || !this.#isGroupAllowed(groupId)) {
+      return [];
+    }
+
+    const params: Record<string, unknown> = {
+      group_id: Number(groupId),
+      count: Math.min(500, Math.max(1, count)),
+    };
+
+    if (options.messageSeq !== undefined && options.messageSeq !== "") {
+      const numericSeq = Number(options.messageSeq);
+
+      params.message_seq = Number.isFinite(numericSeq)
+        ? numericSeq
+        : options.messageSeq;
+      params.reverseOrder = options.reverseOrder ?? true;
+    }
+
+    const { body } = await this.callAction<
+      { messages?: Record<string, unknown>[] } | Record<string, unknown>[]
+    >("get_group_msg_history", params);
+
+    if (Array.isArray(body.data)) {
+      return body.data;
+    }
+
+    return Array.isArray(body.data?.messages) ? body.data.messages : [];
+  }
+
+  public async getFriendMsgHistory(
+    userId: string,
+    count = 100,
+    options: HistoryFetchOptions = {},
   ): Promise<Record<string, unknown>[]> {
     if (!this.configured) {
       return [];
     }
 
-    const { body } = await this.callAction<{
-      messages?: Record<string, unknown>[];
-    }>("get_group_msg_history", {
-      group_id: Number(groupId),
-      count: Math.min(200, Math.max(1, count)),
-    });
+    const params: Record<string, unknown> = {
+      user_id: Number(userId),
+      count: Math.min(500, Math.max(1, count)),
+    };
+
+    if (options.messageSeq !== undefined && options.messageSeq !== "") {
+      const numericSeq = Number(options.messageSeq);
+
+      params.message_seq = Number.isFinite(numericSeq)
+        ? numericSeq
+        : options.messageSeq;
+      params.reverseOrder = options.reverseOrder ?? true;
+    }
+
+    const { body } = await this.callAction<
+      { messages?: Record<string, unknown>[] } | Record<string, unknown>[]
+    >("get_friend_msg_history", params);
+
+    if (Array.isArray(body.data)) {
+      return body.data;
+    }
 
     return Array.isArray(body.data?.messages) ? body.data.messages : [];
+  }
+
+  public async syncChatHistory(
+    kind: ChatKind,
+    chatId: string,
+    options: SyncHistoryOptions = {},
+  ): Promise<SyncHistoryResult> {
+    if (
+      !this.configured ||
+      (kind === "group" && !this.#isGroupAllowed(chatId))
+    ) {
+      return {
+        fetched: 0,
+        imported: 0,
+        pages: 0,
+        oldestSentAt: null,
+        newestSentAt: null,
+        reachedStart: true,
+      };
+    }
+
+    const chatKey = makeChatKey(kind, chatId);
+    const count = Math.min(500, Math.max(1, options.count ?? 200));
+    const maxPages = Math.min(5, Math.max(1, options.maxPages ?? 1));
+    const mode = options.mode ?? "latest";
+
+    let cursorSeq: string | undefined;
+
+    if (mode === "older") {
+      const oldest = await this.#store.messages.oldest(chatKey);
+
+      if (oldest) {
+        cursorSeq = oldest.onebotMessageId;
+      }
+    }
+
+    let fetched = 0;
+    let imported = 0;
+    let pages = 0;
+    let oldestSentAt: number | null = null;
+    let newestSentAt: number | null = null;
+    let reachedStart = false;
+
+    function recordRange(pageOldest: number | null, pageNewest: number | null) {
+      if (
+        pageOldest !== null &&
+        (oldestSentAt === null || pageOldest < oldestSentAt)
+      ) {
+        oldestSentAt = pageOldest;
+      }
+
+      if (
+        pageNewest !== null &&
+        (newestSentAt === null || pageNewest > newestSentAt)
+      ) {
+        newestSentAt = pageNewest;
+      }
+    }
+
+    for (let page = 0; page < maxPages; page++) {
+      const rawMessages = await this.#fetchHistoryPage(
+        kind,
+        chatId,
+        count,
+        cursorSeq,
+      );
+
+      if (rawMessages.length === 0) {
+        reachedStart = true;
+
+        break;
+      }
+
+      const batch = await this.#ingestHistoricalMessages(
+        kind,
+        chatId,
+        rawMessages,
+      );
+
+      fetched += rawMessages.length;
+      imported += batch.imported;
+      pages++;
+      recordRange(batch.oldestSentAt, batch.newestSentAt);
+
+      if (
+        options.targetStartTimeMs !== undefined &&
+        oldestSentAt !== null &&
+        oldestSentAt <= options.targetStartTimeMs
+      ) {
+        break;
+      }
+
+      if (
+        page === 0 &&
+        mode === "latest" &&
+        batch.imported === 0 &&
+        options.stepBackIfLatestCached &&
+        maxPages === 1
+      ) {
+        const oldest = await this.#store.messages.oldest(chatKey);
+        const stepCursor = oldest?.onebotMessageId;
+
+        if (stepCursor && stepCursor !== cursorSeq) {
+          const olderRaw = await this.#fetchHistoryPage(
+            kind,
+            chatId,
+            count,
+            stepCursor,
+          );
+
+          if (olderRaw.length === 0) {
+            reachedStart = true;
+          } else {
+            const olderBatch = await this.#ingestHistoricalMessages(
+              kind,
+              chatId,
+              olderRaw,
+            );
+
+            fetched += olderRaw.length;
+            imported += olderBatch.imported;
+            pages++;
+            recordRange(olderBatch.oldestSentAt, olderBatch.newestSentAt);
+
+            if (olderBatch.imported === 0) {
+              reachedStart = true;
+            }
+          }
+        }
+
+        break;
+      }
+
+      const nextCursor = batch.oldestCursor;
+
+      if (
+        !nextCursor ||
+        nextCursor === cursorSeq ||
+        (cursorSeq !== undefined && batch.imported === 0)
+      ) {
+        reachedStart = true;
+
+        break;
+      }
+
+      cursorSeq = nextCursor;
+    }
+
+    return {
+      fetched,
+      imported,
+      pages,
+      oldestSentAt,
+      newestSentAt,
+      reachedStart,
+    };
+  }
+
+  public async warmChatHistory(
+    kind: ChatKind,
+    chatId: string,
+    count = 100,
+  ): Promise<void> {
+    if (
+      !this.configured ||
+      (kind === "group" && !this.#isGroupAllowed(chatId))
+    ) {
+      return;
+    }
+
+    const chatKey = makeChatKey(kind, chatId);
+
+    if (this.#warmedChats.has(chatKey)) {
+      return;
+    }
+
+    const existing = this.#inFlightWarms.get(chatKey);
+
+    if (existing) {
+      await existing;
+
+      return;
+    }
+
+    const task = (async () => {
+      try {
+        await this.syncChatHistory(kind, chatId, {
+          count,
+          mode: "latest",
+          maxPages: 1,
+        });
+        this.#warmedChats.add(chatKey);
+      } catch (error) {
+        this.#logger.warn("Warm chat history sync failed", {
+          chatKey,
+          error: errorMessage(error),
+        });
+      } finally {
+        this.#inFlightWarms.delete(chatKey);
+      }
+    })();
+
+    this.#inFlightWarms.set(chatKey, task);
+    await task;
+  }
+
+  #fetchHistoryPage(
+    kind: ChatKind,
+    chatId: string,
+    count: number,
+    cursorSeq?: string,
+  ): Promise<Record<string, unknown>[]> {
+    const options: HistoryFetchOptions =
+      cursorSeq === undefined
+        ? {}
+        : { messageSeq: cursorSeq, reverseOrder: true };
+
+    return kind === "group"
+      ? this.getGroupMsgHistory(chatId, count, options)
+      : this.getFriendMsgHistory(chatId, count, options);
+  }
+
+  async #ingestHistoricalMessages(
+    kind: ChatKind,
+    chatId: string,
+    rawMessages: Record<string, unknown>[],
+  ): Promise<{
+    imported: number;
+    oldestSentAt: number | null;
+    newestSentAt: number | null;
+    oldestCursor: string | null;
+  }> {
+    const settings = this.#getSettings?.();
+    const sorted = [...rawMessages].sort(
+      (a, b) => Number(a.time ?? 0) - Number(b.time ?? 0),
+    );
+
+    await this.#store.chats.ensure(kind, chatId, {
+      enabled:
+        kind === "group"
+          ? (settings?.policy.groupDefaultMode ?? "mention_only") !== "off"
+          : (settings?.policy.privateDefaultEnabled ?? true),
+      triggerMode:
+        kind === "group"
+          ? (settings?.policy.groupDefaultMode ?? "mention_only")
+          : "smart_observe",
+    });
+
+    let imported = 0;
+    let oldestSentAt: number | null = null;
+    let newestSentAt: number | null = null;
+    let oldestCursor: string | null = null;
+
+    for (const raw of sorted) {
+      const userId =
+        raw.user_id !== undefined && raw.user_id !== null
+          ? String(raw.user_id)
+          : "";
+      const onebotMessageId =
+        raw.message_id !== undefined && raw.message_id !== null
+          ? String(raw.message_id)
+          : "";
+
+      if (!userId || !onebotMessageId) {
+        continue;
+      }
+
+      const botQQ = settings?.bot.botQQ || String(raw.self_id ?? "");
+      const parsed = parseOneBotSegments(
+        raw.message ?? raw.raw_message ?? "",
+        botQQ,
+        settings?.bot.names[0],
+      );
+      const sender = raw.sender as
+        { nickname?: string; card?: string } | undefined;
+      const senderName =
+        sender?.card?.trim() || sender?.nickname?.trim() || userId;
+      const sentAt =
+        typeof raw.time === "number" && raw.time > 0
+          ? raw.time * 1000
+          : Date.now();
+      const isBot = Boolean(botQQ && userId === botQQ);
+
+      const { created } = await this.#store.messages.capture({
+        kind,
+        chatId,
+        onebotMessageId,
+        userId,
+        senderName,
+        text: parsed.text,
+        segments: parsed.segments,
+        replyToMessageId: parsed.replyToMessageId,
+        isBot,
+        mentionedBot: parsed.mentionedBot,
+        sentAt,
+      });
+
+      if (created) {
+        imported++;
+      }
+
+      if (oldestSentAt === null || sentAt < oldestSentAt) {
+        oldestSentAt = sentAt;
+        const seq = raw.message_seq ?? raw.message_id;
+
+        oldestCursor =
+          seq !== undefined && seq !== null ? String(seq) : onebotMessageId;
+      }
+
+      if (newestSentAt === null || sentAt > newestSentAt) {
+        newestSentAt = sentAt;
+      }
+    }
+
+    return { imported, oldestSentAt, newestSentAt, oldestCursor };
   }
 
   public async dispatchUnit(

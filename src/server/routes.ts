@@ -166,7 +166,9 @@ const patchChatBodySchema = Type.Object({
 });
 
 const backfillBodySchema = Type.Object({
-  count: Type.Integer({ minimum: 1, maximum: 200, default: 40 }),
+  count: Type.Optional(
+    Type.Integer({ minimum: 1, maximum: 500, default: 200 }),
+  ),
 });
 
 const digestBodySchema = Type.Object({
@@ -636,10 +638,6 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       await berry.auth.requireAdmin(event);
       const { kind, chatId } = await parseChatKeyParam(event);
 
-      if (kind !== "group") {
-        throw createError({ statusCode: 400, message: "仅支持群聊补录历史" });
-      }
-
       if (!berry.gateway.configured) {
         throw createError({
           statusCode: 400,
@@ -648,9 +646,19 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       }
 
       const { count } = await parseBody(event, backfillBodySchema);
-      const rawMessages = await berry.gateway.getGroupMsgHistory(chatId, count);
+      const result = await berry.gateway.syncChatHistory(kind, chatId, {
+        count: count ?? 200,
+        mode: "latest",
+        maxPages: 1,
+        stepBackIfLatestCached: true,
+      });
 
-      return berry.gatewayEvents.ingestHistoryBatch(chatId, rawMessages);
+      return {
+        total: result.fetched,
+        imported: result.imported,
+        oldestSentAt: result.oldestSentAt,
+        reachedStart: result.reachedStart,
+      };
     }),
   );
 
