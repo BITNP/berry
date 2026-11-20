@@ -441,7 +441,8 @@ body {
 }
 
 .context-vlist {
-  max-height: 64vh;
+  height: 64vh;
+  min-height: 320px;
 }
 
 .context-vlist-item {

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {
-  ArrowDownToLine,
   Copy,
   FlaskConical,
   Pause,
@@ -8,7 +7,7 @@ import {
   RefreshCw,
   RotateCcw,
 } from "@lucide/vue";
-import type { DataTableColumns, VirtualListInst } from "naive-ui";
+import type { DataTableColumns } from "naive-ui";
 import {
   NAlert,
   NButton,
@@ -20,7 +19,6 @@ import {
   NDescriptionsItem,
   NDrawer,
   NDrawerContent,
-  NEmpty,
   NInput,
   NPopconfirm,
   NRadioButton,
@@ -31,13 +29,13 @@ import {
   NTabs,
   NTag,
   NText,
-  NVirtualList,
   useMessage,
 } from "naive-ui";
 import { computed, h, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
+import ChronoVirtualList from "../components/ChronoVirtualList.vue";
 import GateMonitorPane from "../components/GateMonitorPane.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useEventStream } from "../composables/useEventStream.ts";
@@ -133,7 +131,6 @@ const filterSearch = ref("");
 
 const selectedCall = ref<LlmCallRow | null>(null);
 const detailOpen = ref(false);
-const contextListRef = ref<VirtualListInst | null>(null);
 const expandedTurns = ref<Record<string, boolean>>({});
 
 const TURN_PREVIEW_LIMIT = 900;
@@ -150,6 +147,7 @@ interface ContextTurnItem {
 }
 
 const contextItems = computed<ContextTurnItem[]>(() => {
+  const sessionId = conversation.value?.sessionId ?? "s";
   const list = conversation.value?.messages ?? [];
 
   return list.map((turn, idx) => {
@@ -168,7 +166,7 @@ const contextItems = computed<ContextTurnItem[]>(() => {
     const isLong = body.length > TURN_PREVIEW_LIMIT;
 
     return {
-      key: `turn-${idx}`,
+      key: `${sessionId}-turn-${idx}`,
       index: idx + 1,
       role: turn.role,
       toolCallId: turn.tool_call_id,
@@ -185,10 +183,6 @@ function toggleTurnExpand(key: string) {
     ...expandedTurns.value,
     [key]: !expandedTurns.value[key],
   };
-}
-
-function scrollContextToBottom() {
-  contextListRef.value?.scrollTo({ position: "bottom" });
 }
 
 const usageTotals30d = computed(() => {
@@ -691,35 +685,22 @@ onMounted(() => {
                 {{ conversation.afterMessageId }}，更新于
                 {{ formatTime(conversation.updatedAt) }}
               </NText>
-              <NSpace :size="8">
-                <NButton
-                  v-if="contextItems.length > 0"
-                  secondary
-                  size="small"
-                  @click="scrollContextToBottom"
-                >
-                  <template #icon>
-                    <ArrowDownToLine :size="14" />
-                  </template>
-                  跳到底部
-                </NButton>
-                <NPopconfirm @positive-click="handleResetConversation">
-                  <template #trigger>
-                    <NButton
-                      :loading="resettingContext"
-                      size="small"
-                      type="warning"
-                    >
-                      <template #icon>
-                        <RotateCcw :size="14" />
-                      </template>
-                      重置全局上下文
-                    </NButton>
-                  </template>
-                  将清空全局短期上下文轮次并刷新
-                  sessionId，长期记忆保留不变。确认继续？
-                </NPopconfirm>
-              </NSpace>
+              <NPopconfirm @positive-click="handleResetConversation">
+                <template #trigger>
+                  <NButton
+                    :loading="resettingContext"
+                    size="small"
+                    type="warning"
+                  >
+                    <template #icon>
+                      <RotateCcw :size="14" />
+                    </template>
+                    重置全局上下文
+                  </NButton>
+                </template>
+                将清空全局短期上下文轮次并刷新
+                sessionId，长期记忆保留不变。确认继续？
+              </NPopconfirm>
             </div>
 
             <NCard
@@ -740,17 +721,10 @@ onMounted(() => {
               }}</pre>
             </NCard>
 
-            <NEmpty
-              v-if="contextItems.length === 0"
-              description="全局上下文当前暂无短期轮次"
-            />
-
-            <NVirtualList
-              v-else
-              ref="contextListRef"
+            <ChronoVirtualList
               class="context-vlist"
-              item-resizable
-              :item-size="140"
+              empty-text="全局上下文当前暂无短期轮次"
+              :item-size="54"
               :items="contextItems"
               key-field="key"
             >
@@ -793,7 +767,7 @@ onMounted(() => {
                   </div>
                 </div>
               </template>
-            </NVirtualList>
+            </ChronoVirtualList>
           </NSpace>
         </NTabPane>
 

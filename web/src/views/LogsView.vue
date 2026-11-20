@@ -19,7 +19,6 @@ import {
   NDescriptionsItem,
   NDrawer,
   NDrawerContent,
-  NEmpty,
   NInput,
   NPopconfirm,
   NRadioButton,
@@ -33,10 +32,11 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, h, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, h, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
+import ChronoVirtualList from "../components/ChronoVirtualList.vue";
 import InlineAiCallsList from "../components/InlineAiCallsList.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useEventStream } from "../composables/useEventStream.ts";
@@ -145,7 +145,6 @@ const filterLevel = ref<LogLevel | null>(null);
 const filterScope = ref<string | null>(null);
 const filterSearch = ref("");
 const autoScroll = ref(true);
-const consoleRef = ref<HTMLElement | null>(null);
 
 // Jobs state
 const loadingJobs = ref(false);
@@ -501,18 +500,6 @@ function toggleJobStateFilter(state: JobRow["state"]) {
   filterJobState.value = filterJobState.value === state ? null : state;
 }
 
-function scrollToBottom() {
-  if (!autoScroll.value || !consoleRef.value) {
-    return;
-  }
-
-  void nextTick(() => {
-    if (consoleRef.value) {
-      consoleRef.value.scrollTop = consoleRef.value.scrollHeight;
-    }
-  });
-}
-
 const { paused: streamPaused, togglePause } = useEventStream((type, data) => {
   if (type === "log" && data && typeof data === "object") {
     const entry = data as LogEntryView;
@@ -526,8 +513,6 @@ const { paused: streamPaused, togglePause } = useEventStream((type, data) => {
     if (entry.scope && !scopes.value.includes(entry.scope)) {
       scopes.value = [...scopes.value, entry.scope].sort();
     }
-
-    scrollToBottom();
 
     return;
   }
@@ -567,7 +552,6 @@ async function loadLogs() {
 
     entries.value = res.items;
     scopes.value = res.scopes;
-    scrollToBottom();
   } catch (err) {
     message.error(err instanceof Error ? err.message : "加载日志失败");
   } finally {
@@ -1314,36 +1298,38 @@ onUnmounted(() => {
             </NSpace>
           </div>
 
-          <div ref="consoleRef" class="log-console">
-            <NEmpty
-              v-if="visibleEntries.length === 0"
-              class="py-empty"
-              description="当前筛选下暂无日志"
-            />
-            <div
-              v-for="entry in visibleEntries"
-              :key="entry.id"
-              class="log-line"
-              :class="`lvl-${entry.level}`"
-            >
-              <span class="log-time tabular">{{ formatTime(entry.time) }}</span>
-              <NTag
-                class="log-lvl"
-                size="tiny"
-                :type="levelTagType[entry.level]"
-              >
-                {{ entry.level.toUpperCase() }}
-              </NTag>
-              <span class="log-scope mono">[{{ entry.scope }}]</span>
-              <span class="log-msg">{{ entry.message }}</span>
-              <span
-                v-if="Object.keys(entry.context).length > 0"
-                class="log-ctx mono"
-              >
-                {{ formatContext(entry.context) }}
-              </span>
-            </div>
-          </div>
+          <ChronoVirtualList
+            class="log-console"
+            empty-text="当前筛选下暂无日志"
+            :follow-bottom="autoScroll"
+            :item-size="20"
+            :items="visibleEntries"
+            key-field="id"
+            surface="console"
+          >
+            <template #default="{ item: entry }">
+              <div class="log-line" :class="`lvl-${entry.level}`">
+                <span class="log-time tabular">
+                  {{ formatTime(entry.time) }}
+                </span>
+                <NTag
+                  class="log-lvl"
+                  size="tiny"
+                  :type="levelTagType[entry.level]"
+                >
+                  {{ entry.level.toUpperCase() }}
+                </NTag>
+                <span class="log-scope mono">[{{ entry.scope }}]</span>
+                <span class="log-msg">{{ entry.message }}</span>
+                <span
+                  v-if="Object.keys(entry.context).length > 0"
+                  class="log-ctx mono"
+                >
+                  {{ formatContext(entry.context) }}
+                </span>
+              </div>
+            </template>
+          </ChronoVirtualList>
         </NTabPane>
       </NTabs>
     </NCard>
@@ -1638,15 +1624,8 @@ onUnmounted(() => {
 }
 
 .log-console {
-  max-height: 65vh;
-  overflow-y: auto;
-  font-family: var(--berry-mono);
-  font-size: 12px;
-  line-height: 1.6;
-  background: var(--berry-inset);
-  border: 1px solid var(--berry-border);
-  border-radius: 6px;
-  padding: 8px 10px;
+  height: 65vh;
+  min-height: 320px;
 }
 
 .log-line {
