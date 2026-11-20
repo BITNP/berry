@@ -134,6 +134,7 @@ export function normalizeSegments(rawMessage: unknown): OneBotSegment[] {
 export function parseOneBotSegments(
   rawMessage: unknown,
   botQQ: string,
+  botName = "树莓娘",
 ): ParsedSegments {
   const segments = normalizeSegments(rawMessage);
   const parts: string[] = [];
@@ -155,8 +156,9 @@ export function parseOneBotSegments(
 
       case "at": {
         const qq = String(seg.data.qq ?? "");
+        const isBotMention = Boolean(qq && botQQ && qq === botQQ);
 
-        if (qq && botQQ && qq === botQQ) {
+        if (isBotMention) {
           mentionedBot = true;
         }
 
@@ -164,6 +166,8 @@ export function parseOneBotSegments(
 
         if (qq === "all") {
           parts.push("@全体成员");
+        } else if (isBotMention) {
+          parts.push(`@${botName || "树莓娘"}`);
         } else if (name) {
           parts.push(`@${name}`);
         } else if (qq) {

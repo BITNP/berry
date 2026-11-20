@@ -254,6 +254,7 @@ export class GatewayEventSubscriber {
     const parsed = parseOneBotSegments(
       payload.message ?? payload.raw_message ?? "",
       botQQ,
+      settings.bot.names[0],
     );
     const senderName =
       payload.sender?.card?.trim() ||

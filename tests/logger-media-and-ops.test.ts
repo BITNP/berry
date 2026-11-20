@@ -113,13 +113,21 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   });
   const parsed = parseOneBotSegments(
     [
+      { type: "at", data: { qq: "999999" } },
+      { type: "text", data: { text: " " } },
       { type: "face", data: { id: "76" } },
       { type: "text", data: { text: " 看这个 " } },
+      { type: "at", data: { qq: "12345" } },
+      { type: "text", data: { text: " " } },
       { type: "json", data: { data: jsonCard } },
     ],
     "999999",
   );
 
+  assert.equal(parsed.mentionedBot, true);
+  assert.ok(parsed.text.includes("@树莓娘"));
+  assert.equal(parsed.text.includes("@999999"), false);
+  assert.ok(parsed.text.includes("@12345"));
   assert.ok(parsed.text.includes("[表情: 赞]"));
   assert.ok(parsed.text.includes("BITNP 纳新公告"));
   assert.ok(parsed.text.includes("https://bitnp.net/join"));
