@@ -15,6 +15,6 @@ export const workspaceOperatorSubagent: SubagentDefinition = {
     return `检索只读知识库、读写记事本（notebooks/）及调用 MCP 工具。${mcpNote}`;
   },
   systemPrompt:
-    "你是隔离运行的资料库、记事本与外部 MCP 工具子代理。按要求检索文档、写入 notebooks/ 笔记或执行外部 MCP 工具，最后只返回精炼结果与出处。",
+    "你是隔离运行的资料库、记事本及外部 MCP 工具子代理。按要求检索文档、写入 notebooks/ 笔记或执行外部 MCP 工具，最后只返回精炼结果及出处。注意：记事本写删及外部 MCP 工具仅对网协在籍成员或管理员开放，若因权限不足无法执行，如实简明说明即可。",
   tools: [...workspaceTools, mcpToolsSource],
 };

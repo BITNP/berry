@@ -22,17 +22,17 @@ export const inspectMediaTool = defineTool({
   ),
   execute: async (args, ctx) => {
     const { store, media } = ctx.services;
-    const { actor, ids } = ctx;
+    const { ids } = ctx;
     let targetId = args.messageId ?? null;
 
     if (!targetId && args.quoteRef) {
       const meta = ids.resolveMessageMeta(args.quoteRef);
       const lookupKey =
         meta.chatKey ??
-        resolveAuthorizedChat(ctx, args.targetRef).targetChatKey;
+        (await resolveAuthorizedChat(ctx, args.targetRef)).targetChatKey;
       const parsedLookup = parseChatKey(lookupKey);
 
-      assertCanReadChat(actor, parsedLookup.kind, parsedLookup.chatId);
+      await assertCanReadChat(ctx, parsedLookup.kind, parsedLookup.chatId);
       const msg = await store.messages.findByOnebotId(lookupKey, meta.rawId);
 
       targetId = msg?.id ?? null;
@@ -48,7 +48,7 @@ export const inspectMediaTool = defineTool({
       throw new Error("未找到指定消息");
     }
 
-    assertCanReadChat(actor, msgRow.kind, msgRow.chatId);
+    await assertCanReadChat(ctx, msgRow.kind, msgRow.chatId);
     await media.waitForMessages([targetId]);
     let assets = await store.assets.listForMessage(targetId);
 

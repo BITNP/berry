@@ -122,6 +122,8 @@ export class ScheduleRunner {
         actorSubject: null,
         actorName: null,
         actorIsAdmin: true,
+        actorIsManager: true,
+        actorAdmitted: true,
       },
       ids,
     });

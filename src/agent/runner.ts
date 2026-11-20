@@ -19,7 +19,6 @@ import type {
   TurnMessage,
   UnifiedInput,
 } from "../types.ts";
-import { parseChatKey } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage, formatDateTime } from "../utils/time.ts";
 import { runChatToolLoop } from "./loop.ts";
@@ -211,17 +210,36 @@ export class BerryAgent {
       time: formatDateTime(msg.sentAt, settings.bot.timezone),
     });
 
-    const actorIsAdmin = Boolean(
-      speakerQQ &&
-      (settings.policy.adminQQs.includes(speakerQQ) ||
-        identityUser?.permissions.systemAdmin),
-    );
+    const actorIsAdmin =
+      input.source === "admin_inject" ||
+      Boolean(
+        speakerQQ &&
+        (settings.policy.adminQQs.includes(speakerQQ) ||
+          identityUser?.permissions.systemAdmin),
+      );
+    const actorIsManager =
+      actorIsAdmin || Boolean(identityUser?.permissions.manager);
+    const actorAdmitted =
+      actorIsAdmin ||
+      input.source === "schedule" ||
+      Boolean(identityUser?.permissions.admitted);
 
     const knownGroups = allChats
-      .filter((c) => c.kind === "group")
+      .filter((c) => {
+        if (c.kind !== "group") {
+          return false;
+        }
+
+        if (actorIsAdmin || actorAdmitted) {
+          return true;
+        }
+
+        return c.chatKey === input.chatKey && !c.internal;
+      })
       .map((c) => ({
         targetRef: ids.groupRef(c.chatId),
         title: c.title,
+        ...(c.internal ? { internal: true } : {}),
       }));
 
     const coreEnvelope = {
@@ -231,14 +249,22 @@ export class BerryAgent {
         kind: input.kind,
         targetRef: chatRef,
         title: chat?.title ?? "",
+        ...(chat?.internal ? { internal: true } : {}),
       },
       speaker: speakerQQ
         ? {
             userRef: ids.userRef(speakerQQ),
             displayName: speakerName,
+            role: actorIsAdmin
+              ? "admin"
+              : actorAdmitted
+                ? "member"
+                : "external",
+            isAdmin: actorIsAdmin,
             keycloak: identityUser
               ? {
                   bound: true,
+                  admitted: identityUser.permissions.admitted,
                   subject: identityUser.subject,
                   name: identityUser.name,
                   manager: identityUser.permissions.manager,
@@ -248,7 +274,7 @@ export class BerryAgent {
                     (p) => p.label,
                   ),
                 }
-              : { bound: false },
+              : { bound: false, admitted: false },
           }
         : null,
       requestMessages: requestMessages.map(mapMessage),
@@ -285,6 +311,8 @@ export class BerryAgent {
         actorSubject: identityUser?.subject ?? null,
         actorName: identityUser?.name ?? speakerName,
         actorIsAdmin,
+        actorIsManager,
+        actorAdmitted,
         triggerMessageId: requestMessages.at(-1)?.id ?? null,
       },
       ids,
@@ -388,6 +416,17 @@ export class BerryAgent {
       afterId: conversation.afterMessageId,
     });
     const memoryIndex = await store.memories.index(chatKey, message.userId);
+    const identityUser = await this.#services.directory
+      .byQQ(message.userId)
+      .catch(() => null);
+    const actorIsAdmin = Boolean(
+      settings.policy.adminQQs.includes(message.userId) ||
+      identityUser?.permissions.systemAdmin,
+    );
+    const actorIsManager =
+      actorIsAdmin || Boolean(identityUser?.permissions.manager);
+    const actorAdmitted =
+      actorIsAdmin || Boolean(identityUser?.permissions.admitted);
     const ids = new ModelIds();
     const userRef = ids.userRef(message.userId);
     const memoryTool = memoryManageTool.bind({
@@ -395,9 +434,11 @@ export class BerryAgent {
       actor: {
         chatKey,
         senderQQ: message.userId,
-        actorSubject: null,
-        actorName: message.senderName,
-        actorIsAdmin: settings.policy.adminQQs.includes(message.userId),
+        actorSubject: identityUser?.subject ?? null,
+        actorName: identityUser?.name ?? message.senderName,
+        actorIsAdmin,
+        actorIsManager,
+        actorAdmitted,
         triggerMessageId: message.id,
       },
       ids,
@@ -552,16 +593,11 @@ export class BerryAgent {
     const { ids, input, requestMessages, speakerQQ, actorIsAdmin } = ctx;
 
     function isTargetAuthorized(targetChatKey: ChatKey): boolean {
-      if (
+      return (
         targetChatKey === input.chatKey ||
-        !targetChatKey.startsWith("private:") ||
         input.source === "schedule" ||
         actorIsAdmin
-      ) {
-        return true;
-      }
-
-      return parseChatKey(targetChatKey).chatId === speakerQQ;
+      );
     }
 
     function resolveUnitTarget(targetRef?: string): ChatKey | null {
@@ -573,7 +609,7 @@ export class BerryAgent {
         const targetChatKey = ids.resolveTargetChatKey(targetRef);
 
         if (!isTargetAuthorized(targetChatKey)) {
-          logger.warn("Blocked unauthorized cross-private dispatch", {
+          logger.warn("Blocked unauthorized cross-chat dispatch", {
             fromChatKey: input.chatKey,
             targetChatKey,
             speakerQQ,
@@ -635,6 +671,18 @@ export class BerryAgent {
         const resolvedMsg = resolveMsgHandle(unit.messageId);
 
         if (resolvedMsg) {
+          if (resolvedMsg.chatKey.startsWith("private:")) {
+            const msg = "QQ 表情回应仅支持群聊消息，已忽略私聊贴表情";
+
+            logger.warn("Dropped qq_reaction for private chat", {
+              fromChatKey: input.chatKey,
+              targetChatKey: resolvedMsg.chatKey,
+            });
+            errors.push(msg);
+
+            continue;
+          }
+
           try {
             const resolvedEmojiId = resolveReactionEmojiId(unit.emojiId);
 

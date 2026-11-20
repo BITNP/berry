@@ -41,6 +41,10 @@ export const qqDirectoryTool = defineTool({
     const kw = args.query?.trim().toLowerCase() ?? "";
 
     if (args.scope === "groups") {
+      if (!ctx.actor.actorIsAdmin && !ctx.actor.actorAdmitted) {
+        throw new Error("外部或未绑定人员无权查询机器人所在的 QQ 群列表");
+      }
+
       const all = await gateway.getGroupList();
       const filtered = kw
         ? all.filter((g) => g.group_name.toLowerCase().includes(kw))
@@ -58,6 +62,10 @@ export const qqDirectoryTool = defineTool({
     }
 
     if (args.scope === "friends") {
+      if (!ctx.actor.actorIsAdmin && !ctx.actor.actorAdmitted) {
+        throw new Error("外部或未绑定人员无权查询机器人好友列表");
+      }
+
       const all = await gateway.getFriendList();
       const filtered = kw
         ? all.filter((f) =>
@@ -75,7 +83,7 @@ export const qqDirectoryTool = defineTool({
       };
     }
 
-    const resolved = resolveAuthorizedChat(ctx, args.groupRef);
+    const resolved = await resolveAuthorizedChat(ctx, args.groupRef);
 
     if (resolved.kind !== "group") {
       throw new Error("查询群成员需要提供 groupRef 或在群聊内调用");
@@ -105,9 +113,9 @@ export const qqDirectoryTool = defineTool({
 export const searchQqEmojisTool = defineTool({
   name: "search_qq_emojis",
   description:
-    "检索全部 380+ QQNT 官方原生表情（支持按中文名称、关键词联想词或数字 ID 搜索，也可传入单个 Unicode Emoji 查其 NapCat 回应码点）。",
+    "检索全部 380+ QQNT 官方原生表情（支持按中文名称、关键词联想词或数字 ID 搜索，也可传入白名单内的常用 Unicode Emoji 查其回应码点）。",
   capability:
-    "- search_qq_emojis: 检索 380+ QQNT 官方原生表情名称、别名及数字 ID，或查询 Unicode Emoji 的回应码点。",
+    "- search_qq_emojis: 检索 380+ QQNT 官方原生表情名称、别名及数字 ID，或查询白名单 Unicode Emoji 的回应码点。",
   parameters: Type.Object(
     {
       query: Type.Optional(Type.String()),

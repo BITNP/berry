@@ -44,6 +44,7 @@ interface ChatRow {
   title: string;
   enabled: boolean;
   triggerMode: TriggerMode;
+  internal: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -106,12 +107,14 @@ const createForm = ref<{
   title: string;
   enabled: boolean;
   triggerMode: TriggerMode;
+  internal: boolean;
 }>({
   kind: "group",
   chatId: "",
   title: "",
   enabled: true,
   triggerMode: "mention_only",
+  internal: false,
 });
 
 const selectedChatKey = ref<string | null>(null);
@@ -249,6 +252,7 @@ async function handleCreateChat() {
       title: "",
       enabled: true,
       triggerMode: "mention_only",
+      internal: false,
     };
     message.success("已保存会话");
     await loadChats();
@@ -267,7 +271,12 @@ async function handleCreateChat() {
 
 async function patchChat(
   row: ChatRow,
-  patch: Partial<{ enabled: boolean; triggerMode: TriggerMode; title: string }>,
+  patch: Partial<{
+    enabled: boolean;
+    triggerMode: TriggerMode;
+    title: string;
+    internal: boolean;
+  }>,
 ) {
   try {
     const updated = await apiFetch<ChatRow>(
@@ -656,6 +665,14 @@ onUnmounted(() => {
                 <span class="chat-row-mode">
                   {{ triggerLabelMap[chat.triggerMode] }}
                 </span>
+                <NTag
+                  v-if="chat.kind === 'group' && chat.internal"
+                  :bordered="false"
+                  size="tiny"
+                  type="warning"
+                >
+                  内部
+                </NTag>
                 <span class="mono chat-row-id">{{ chat.chatId }}</span>
               </div>
             </div>
@@ -699,6 +716,20 @@ onUnmounted(() => {
                   :value="activeChat.enabled"
                   @update:value="
                     (val: boolean) => patchChat(activeChat!, { enabled: val })
+                  "
+                />
+              </NSpace>
+              <NSpace
+                v-if="activeChat.kind === 'group'"
+                align="center"
+                :size="6"
+              >
+                <NText class="sub-note" depth="3">内部群</NText>
+                <NSwitch
+                  size="small"
+                  :value="activeChat.internal"
+                  @update:value="
+                    (val: boolean) => patchChat(activeChat!, { internal: val })
                   "
                 />
               </NSpace>
@@ -922,6 +953,12 @@ onUnmounted(() => {
         </NFormItem>
         <NFormItem label="启用状态">
           <NSwitch v-model:value="createForm.enabled" />
+        </NFormItem>
+        <NFormItem
+          v-if="createForm.kind === 'group'"
+          label="内部工作群（仅网协在籍成员可查）"
+        >
+          <NSwitch v-model:value="createForm.internal" />
         </NFormItem>
         <NSpace justify="end">
           <NButton @click="createModalOpen = false">取消</NButton>

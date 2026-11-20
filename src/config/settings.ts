@@ -125,6 +125,14 @@ export const runtimeSettingsSchema = Type.Object(
     policy: Type.Object(
       {
         privateDefaultEnabled: Type.Boolean({ default: true }),
+        privateAccessMode: Type.Union(
+          [
+            Type.Literal("all"),
+            Type.Literal("members_and_admins"),
+            Type.Literal("admins_only"),
+          ],
+          { default: "all" },
+        ),
         groupDefaultMode: Type.Union(
           [
             Type.Literal("off"),

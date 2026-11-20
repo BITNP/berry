@@ -88,6 +88,7 @@ interface RuntimeSettingsView {
   };
   policy: {
     privateDefaultEnabled: boolean;
+    privateAccessMode: "all" | "members_and_admins" | "admins_only";
     groupDefaultMode: "off" | "mention_only" | "smart_observe";
     adminBypassGate: boolean;
     adminQQs: string[];
@@ -998,6 +999,19 @@ onMounted(() => {
               <NFormItem label="新私聊默认启用">
                 <NSwitch
                   v-model:value="settings.policy.privateDefaultEnabled"
+                />
+              </NFormItem>
+              <NFormItem label="私聊响应范围">
+                <NSelect
+                  v-model:value="settings.policy.privateAccessMode"
+                  :options="[
+                    { label: '所有私聊（默认）', value: 'all' },
+                    {
+                      label: '仅管理员及网协在籍成员',
+                      value: 'members_and_admins',
+                    },
+                    { label: '仅管理员', value: 'admins_only' },
+                  ]"
                 />
               </NFormItem>
               <NFormItem label="新群聊默认模式">

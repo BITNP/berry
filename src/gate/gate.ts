@@ -1,5 +1,6 @@
 import type { RuntimeSettings } from "../config/settings.ts";
 import type { MessageGatewayClient } from "../gateway/client.ts";
+import type { IdentityDirectory } from "../identity/keycloak.ts";
 import type { MediaProcessor } from "../media/processor.ts";
 import type { Store } from "../store/index.ts";
 import type { JobRecord, MessageRecord } from "../types.ts";
@@ -11,6 +12,7 @@ export class MessageGate {
   #classifier: SmallModelClassifier;
   #gateway: MessageGatewayClient;
   #media: MediaProcessor;
+  #directory: IdentityDirectory;
   #getSettings: () => RuntimeSettings;
   #wake: () => void;
   #logger = new Logger("gate");
@@ -20,6 +22,7 @@ export class MessageGate {
     classifier: SmallModelClassifier,
     gateway: MessageGatewayClient,
     media: MediaProcessor,
+    directory: IdentityDirectory,
     getSettings: () => RuntimeSettings,
     wake: () => void,
   ) {
@@ -27,8 +30,28 @@ export class MessageGate {
     this.#classifier = classifier;
     this.#gateway = gateway;
     this.#media = media;
+    this.#directory = directory;
     this.#getSettings = getSettings;
     this.#wake = wake;
+  }
+
+  async #resolveSenderAccess(
+    userId: string,
+    settings: RuntimeSettings,
+  ): Promise<{ isAdmin: boolean; isAdmitted: boolean }> {
+    if (settings.policy.adminQQs.includes(userId)) {
+      return { isAdmin: true, isAdmitted: true };
+    }
+
+    if (!this.#directory.enabled) {
+      return { isAdmin: false, isAdmitted: false };
+    }
+
+    const identity = await this.#directory.byQQ(userId).catch(() => null);
+    const isAdmin = Boolean(identity?.permissions.systemAdmin);
+    const isAdmitted = isAdmin || Boolean(identity?.permissions.admitted);
+
+    return { isAdmin, isAdmitted };
   }
 
   public async ingest(message: MessageRecord): Promise<void> {
@@ -69,6 +92,35 @@ export class MessageGate {
       }
 
       return;
+    }
+
+    if (
+      message.kind === "private" &&
+      settings.policy.privateAccessMode !== "all"
+    ) {
+      const access = await this.#resolveSenderAccess(message.userId, settings);
+      const allowed =
+        settings.policy.privateAccessMode === "admins_only"
+          ? access.isAdmin
+          : access.isAdmin || access.isAdmitted;
+
+      if (!allowed) {
+        await this.#store.gate.record({
+          chatKey: message.chatKey,
+          messageId: message.id,
+          action: "ignore",
+          stage: "l0_rule",
+          confidence: 1,
+          reason:
+            settings.policy.privateAccessMode === "admins_only"
+              ? "私聊门禁已设为仅管理员开放，已忽略非管理员私聊"
+              : "私聊门禁已设为仅管理员及网协在籍成员开放，已忽略未绑定或外部人员私聊",
+          model: "l0-rule",
+          durationMs: 0,
+        });
+
+        return;
+      }
     }
 
     if (

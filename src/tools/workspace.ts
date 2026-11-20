@@ -1,8 +1,14 @@
 import { Type } from "typebox";
 
 import type { AgentTool } from "../agent/loop.ts";
-import type { DynamicToolSource, ToolDefinition } from "./types.ts";
+import type { DynamicToolSource, ToolActor, ToolDefinition } from "./types.ts";
 import { defineTool } from "./types.ts";
+
+function assertMemberOrAdmin(actor: ToolActor, action: string): void {
+  if (!actor.actorIsAdmin && !actor.actorAdmitted) {
+    throw new Error(`仅网协在籍成员或管理员可${action}`);
+  }
+}
 
 export const listKnowledgeFilesTool = defineTool({
   name: "list_knowledge_files",
@@ -67,7 +73,8 @@ export const readKnowledgeLinesTool = defineTool({
 
 export const notebookWriteTool = defineTool({
   name: "notebook_write",
-  description: "新建或更新记事本（notebooks/）内的 Markdown 文档。",
+  description:
+    "新建或更新记事本（notebooks/）内的 Markdown 文档（仅网协在籍成员或管理员可用）。",
   mutating: true,
   parameters: Type.Object(
     {
@@ -79,23 +86,31 @@ export const notebookWriteTool = defineTool({
     },
     { additionalProperties: false },
   ),
-  execute: (args, ctx) =>
-    ctx.services.knowledge.writeNotebook(
+  execute: async (args, ctx) => {
+    assertMemberOrAdmin(ctx.actor, "写入记事本");
+
+    return ctx.services.knowledge.writeNotebook(
       args.path,
       args.content,
       args.mode ?? "replace",
-    ),
+    );
+  },
 });
 
 export const notebookDeleteTool = defineTool({
   name: "notebook_delete",
-  description: "删除记事本（notebooks/）内指定的 Markdown 文档。",
+  description:
+    "删除记事本（notebooks/）内指定的 Markdown 文档（仅网协在籍成员或管理员可用）。",
   mutating: true,
   parameters: Type.Object(
     { path: Type.String() },
     { additionalProperties: false },
   ),
-  execute: (args, ctx) => ctx.services.knowledge.deleteNotebook(args.path),
+  execute: async (args, ctx) => {
+    assertMemberOrAdmin(ctx.actor, "删除记事本");
+
+    return ctx.services.knowledge.deleteNotebook(args.path);
+  },
 });
 
 export const workspaceTools: readonly ToolDefinition[] = [
@@ -108,12 +123,21 @@ export const workspaceTools: readonly ToolDefinition[] = [
 
 export const mcpToolsSource: DynamicToolSource = {
   id: "mcp",
-  resolve: (ctx) =>
-    ctx.services.mcp.tools.map<AgentTool>((remote) => ({
+  resolve: (ctx) => {
+    if (!ctx.actor.actorIsAdmin && !ctx.actor.actorAdmitted) {
+      return [];
+    }
+
+    return ctx.services.mcp.tools.map<AgentTool>((remote) => ({
       name: remote.exposedName,
       description: remote.description,
       parameters: remote.inputSchema,
       mutating: true,
-      execute: (args) => ctx.services.mcp.call(remote.exposedName, args),
-    })),
+      execute: async (args) => {
+        assertMemberOrAdmin(ctx.actor, "调用外部 MCP 工具");
+
+        return ctx.services.mcp.call(remote.exposedName, args);
+      },
+    }));
+  },
 };

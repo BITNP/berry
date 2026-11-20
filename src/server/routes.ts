@@ -184,12 +184,14 @@ const createChatBodySchema = Type.Object({
   title: Type.Optional(Type.String()),
   enabled: Type.Optional(Type.Boolean()),
   triggerMode: Type.Optional(triggerModeSchema),
+  internal: Type.Optional(Type.Boolean()),
 });
 
 const patchChatBodySchema = Type.Object({
   title: Type.Optional(Type.String()),
   enabled: Type.Optional(Type.Boolean()),
   triggerMode: Type.Optional(triggerModeSchema),
+  internal: Type.Optional(Type.Boolean()),
 });
 
 const backfillBodySchema = Type.Object({
@@ -565,6 +567,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         triggerMode:
           body.triggerMode ??
           (body.kind === "group" ? "mention_only" : "smart_observe"),
+        internal: body.kind === "group" ? (body.internal ?? false) : false,
       });
     }),
   );

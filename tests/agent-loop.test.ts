@@ -410,6 +410,8 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
       actorSubject: null,
       actorName: "测试",
       actorIsAdmin: false,
+      actorIsManager: false,
+      actorAdmitted: false,
     },
     ids: new ModelIds(),
   });

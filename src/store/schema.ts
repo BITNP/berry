@@ -16,6 +16,7 @@ export interface BerryTables {
     title: string;
     enabled: number;
     trigger_mode: string;
+    internal: number;
     created_at: number;
     updated_at: number;
   };
@@ -527,6 +528,21 @@ const migrations: Record<string, Migration> = {
         .on("llm_usage")
         .columns(["created_at"])
         .execute();
+    },
+  },
+  "003_chats_internal": {
+    async up(db) {
+      const existing = await sql<{ name: string }>`
+        pragma table_info(chats)
+      `.execute(db);
+      const colSet = new Set(existing.rows.map((r) => r.name));
+
+      if (!colSet.has("internal")) {
+        await db.schema
+          .alterTable("chats")
+          .addColumn("internal", "integer", (c) => c.notNull().defaultTo(0))
+          .execute();
+      }
     },
   },
 };

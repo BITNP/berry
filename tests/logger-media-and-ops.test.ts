@@ -223,8 +223,18 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   assert.equal((removeCall.body as { emoji_id?: string }).emoji_id, "12951");
   assert.equal((removeCall.body as { set?: boolean }).set, false);
 
-  // QQNT catalog & Unicode codepoint resolution.
+  const privReactionDelivery = await app.gateway.dispatchUnit(
+    "private:12345",
+    { kind: "qq_reaction", messageId: "ob-priv-1", emojiId: "👍" },
+    "999999",
+  );
+
+  assert.equal(privReactionDelivery.status, "failed");
+  assert.match(privReactionDelivery.error ?? "", /仅支持群聊消息/);
+
+  // QQNT catalog & supported Unicode reaction whitelist.
   assert.equal(qfaceName("12951"), "㊗️");
+  assert.equal(qfaceName("129397"), "🥵");
   assert.equal(qfaceName("478"), "对的对的");
   assert.equal(qfaceName("179"), "doge");
   assert.equal(resolveReactionEmojiId("㊗️"), "12951");
@@ -234,14 +244,23 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   assert.equal(resolveReactionEmojiId("狗头"), "179");
   assert.equal(resolveReactionEmojiId("76"), "76");
   assert.equal(resolveReactionEmojiId("12951"), "12951");
-  assert.throws(() => resolveReactionEmojiId("99999999"), /未知的表情数字 ID/);
-  assert.throws(() => resolveReactionEmojiId("99999"), /未知的表情数字 ID/);
-  assert.throws(() => resolveReactionEmojiId("不存在的乱码文字"), /无法识别/);
+  assert.throws(() => resolveReactionEmojiId("🥵"), /不支持的表情回应/);
+  assert.throws(() => resolveReactionEmojiId("129397"), /不支持的表情数字 ID/);
+  assert.throws(
+    () => resolveReactionEmojiId("99999999"),
+    /不支持的表情数字 ID/,
+  );
+  assert.throws(() => resolveReactionEmojiId("99999"), /不支持的表情数字 ID/);
+  assert.throws(
+    () => resolveReactionEmojiId("不存在的乱码文字"),
+    /不支持的表情回应/,
+  );
 
   const searchRes = searchQFaceCatalog("西格玛");
 
   assert.ok(searchRes.items.some((item) => item.id === "469"));
   assert.equal(searchQFaceCatalog("㊗️").resolvedUnicodeId, "12951");
+  assert.equal(searchQFaceCatalog("🥵").resolvedUnicodeId, undefined);
 
   const { url } = await app.listen();
   const { csrfToken } = (await (

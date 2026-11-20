@@ -17,6 +17,7 @@ const decodeChat = (row: Selectable<BerryTables["chats"]>): ChatConfig => ({
   title: row.title,
   enabled: Boolean(row.enabled),
   triggerMode: row.trigger_mode as GroupTriggerMode,
+  internal: Boolean(row.internal),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -35,6 +36,7 @@ export class ChatsStore {
       title?: string;
       enabled: boolean;
       triggerMode: GroupTriggerMode;
+      internal?: boolean;
     },
   ): Promise<ChatConfig> {
     const chatKey = makeChatKey(kind, chatId);
@@ -50,6 +52,7 @@ export class ChatsStore {
           title: defaults.title ?? "",
           enabled: Number(defaults.enabled),
           trigger_mode: defaults.triggerMode,
+          internal: Number(defaults.internal ?? false),
           created_at: now,
           updated_at: now,
         })
@@ -95,6 +98,7 @@ export class ChatsStore {
     title?: string;
     enabled: boolean;
     triggerMode: GroupTriggerMode;
+    internal?: boolean;
   }): Promise<ChatConfig> {
     const chatKey = makeChatKey(input.kind, input.chatId);
     const now = Date.now();
@@ -109,6 +113,7 @@ export class ChatsStore {
           title: input.title ?? "",
           enabled: Number(input.enabled),
           trigger_mode: input.triggerMode,
+          internal: Number(input.internal ?? false),
           created_at: now,
           updated_at: now,
         })
@@ -117,6 +122,9 @@ export class ChatsStore {
             ...(input.title === undefined ? {} : { title: input.title }),
             enabled: Number(input.enabled),
             trigger_mode: input.triggerMode,
+            ...(input.internal === undefined
+              ? {}
+              : { internal: Number(input.internal) }),
             updated_at: now,
           }),
         )
@@ -132,6 +140,7 @@ export class ChatsStore {
       title?: string;
       enabled?: boolean;
       triggerMode?: GroupTriggerMode;
+      internal?: boolean;
     },
   ): Promise<ChatConfig> {
     const existing = await this.get(chatKey);
@@ -145,6 +154,7 @@ export class ChatsStore {
         title: patch.title ?? "",
         enabled: patch.enabled ?? true,
         triggerMode: patch.triggerMode ?? "mention_only",
+        internal: patch.internal ?? false,
       });
     }
 
@@ -161,6 +171,9 @@ export class ChatsStore {
           ...(patch.triggerMode === undefined
             ? {}
             : { trigger_mode: patch.triggerMode }),
+          ...(patch.internal === undefined
+            ? {}
+            : { internal: Number(patch.internal) }),
           updated_at: now,
         })
         .where("chat_key", "=", chatKey)

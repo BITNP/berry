@@ -165,6 +165,7 @@ export class BerryApp {
       classifier,
       gateway,
       media,
+      directory,
       getSettings,
       () => workerRef.wake(),
     );

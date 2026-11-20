@@ -707,6 +707,10 @@ export class MessageGatewayClient {
       }
 
       if (unit.kind === "qq_reaction") {
+        if (kind !== "group") {
+          throw new Error("QQ 表情回应仅支持群聊消息，已拦截私聊贴表情");
+        }
+
         const resolvedEmojiId = resolveReactionEmojiId(unit.emojiId);
 
         await this.callAction("set_msg_emoji_like", {

@@ -335,25 +335,25 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
   });
   await app.worker.drainOnce();
 
-  // 2) Turn 2 in private:20002 summarizing group:2048 without leaking raw noise into global history.
+  // 2) Turn 2 in admin private:10001 summarizing group:2048 without leaking raw noise into global history.
   const msgDmSummary = await captureText(app, {
     kind: "private",
-    chatId: "20002",
+    chatId: "10001",
     id: "ob-dm-summary",
-    userId: "20002",
-    senderName: "普通同学",
+    userId: "10001",
+    senderName: "管理员",
     text: "帮我总结技术保障中心群中最近在聊什么",
     mentionedBot: true,
   });
 
   await app.agent.invoke({
     source: "qq_batch",
-    chatKey: "private:20002",
+    chatKey: "private:10001",
     kind: "private",
-    chatId: "20002",
+    chatId: "10001",
     triggerMessageIds: [msgDmSummary.message.id],
-    senderId: "20002",
-    senderName: "普通同学",
+    senderId: "10001",
+    senderName: "管理员",
   });
 
   assert.ok(mainHistories[1]!.length >= 2);
@@ -370,12 +370,12 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
     dispatches.some(
       (d) =>
         d.action === "send_private_msg_async" &&
-        d.body.user_id === 20_002 &&
+        d.body.user_id === 10_001 &&
         JSON.stringify(d.body.message).includes("为你总结"),
     ),
   );
 
-  // 3) Private-chat read isolation and cross-private targetRef outbound guard.
+  // 3) Private-chat read isolation and non-admin cross-chat targetRef outbound guard.
   const msgDmLeak = await captureText(app, {
     kind: "private",
     chatId: "20002",
@@ -421,13 +421,45 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
     senderName: "普通同学",
   });
 
-  assert.equal(routingRes.units.length, 1);
+  // Non-admin cannot dispatch across chats (neither to another private chat nor to another group).
+  assert.equal(routingRes.units.length, 0);
   assert.equal(
     dispatches.some(
       (d) => d.action === "send_private_msg_async" && d.body.user_id === 9999,
     ),
     false,
   );
+  assert.equal(
+    dispatches.some(
+      (d) =>
+        d.action === "send_group_msg_async" &&
+        d.body.group_id === 2048 &&
+        JSON.stringify(d.body.message).includes("今晚正常巡检"),
+    ),
+    false,
+  );
+
+  // Admin can cross-dispatch via targetRef.
+  const msgAdminRoute = await captureText(app, {
+    kind: "private",
+    chatId: "10001",
+    id: "ob-admin-route",
+    userId: "10001",
+    senderName: "管理员",
+    text: "TARGET_ROUTING_TEST",
+    mentionedBot: true,
+  });
+  const adminRoutingRes = await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "private:10001",
+    kind: "private",
+    chatId: "10001",
+    triggerMessageIds: [msgAdminRoute.message.id],
+    senderId: "10001",
+    senderName: "管理员",
+  });
+
+  assert.equal(adminRoutingRes.units.length, 2);
   assert.equal(
     dispatches.some(
       (d) =>

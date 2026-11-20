@@ -10,7 +10,67 @@ const SINGLE_UNICODE_EMOJI_RE =
   /^[\p{Extended_Pictographic}\p{Emoji_Presentation}]$/u;
 const EMOJI_PRESENTATION_RE = /\p{Emoji_Presentation}/u;
 
-function extractUnicodeEmojiCodepoint(text: string): string | null {
+// Unicode emoji decimal codepoints known to render in QQ's emoji-like reaction
+// panel (QQ official EmojiType=2 list + verified QQNT entries like ㊗️ and ❤️).
+// Sending arbitrary codepoints outside this set (e.g. 🥵 / 129397) renders as a
+// blank reaction chip on QQ clients.
+const SUPPORTED_UNICODE_REACTION_IDS = new Set<string>([
+  "9728", // ☀️ 晴天
+  "9749", // ☕ 咖啡
+  "9786", // ☺️ 可爱
+  "10024", // ✨ 闪光
+  "10060", // ❌ 错误
+  "10068", // ❔ 问号
+  "10084", // ❤️ 红心
+  "12951", // ㊗️ 祝
+  "127801", // 🌹 玫瑰
+  "127817", // 🍉 西瓜
+  "127822", // 🍎 苹果
+  "127827", // 🍓 草莓
+  "127836", // 🍜 拉面
+  "127838", // 🍞 面包
+  "127847", // 🍧 刨冰
+  "127866", // 🍺 啤酒
+  "127867", // 🍻 干杯
+  "127881", // 🎉 庆祝
+  "128027", // 🐛 虫
+  "128046", // 🐮 牛
+  "128051", // 🐳 鲸鱼
+  "128053", // 🐵 猴
+  "128074", // 👊 拳头
+  "128076", // 👌 好的
+  "128077", // 👍 厉害
+  "128079", // 👏 鼓掌
+  "128089", // 👙 内衣
+  "128102", // 👦 男孩
+  "128104", // 👨 爸爸
+  "128147", // 💓 爱心
+  "128157", // 💝 礼物
+  "128164", // 💤 睡觉
+  "128166", // 💦 水
+  "128168", // 💨 吹气
+  "128170", // 💪 肌肉
+  "128235", // 📫 邮箱
+  "128293", // 🔥 火
+  "128513", // 😁 呲牙
+  "128514", // 😂 激动
+  "128516", // 😄 高兴
+  "128522", // 😊 嘿嘿
+  "128524", // 😌 羞涩
+  "128527", // 😏 哼哼
+  "128530", // 😒 不屑
+  "128531", // 😓 汗
+  "128532", // 😔 失落
+  "128536", // 😘 飞吻
+  "128538", // 😚 亲亲
+  "128540", // 😜 淘气
+  "128541", // 😝 吐舌
+  "128557", // 😭 大哭
+  "128560", // 😰 紧张
+  "128563", // 😳 瞪眼
+]);
+
+function extractSupportedUnicodeEmojiCodepoint(text: string): string | null {
   const base = text.replace(/\uFE0F$/u, "").replace(/\p{Emoji_Modifier}$/u, "");
 
   if (!SINGLE_UNICODE_EMOJI_RE.test(base)) {
@@ -18,8 +78,9 @@ function extractUnicodeEmojiCodepoint(text: string): string | null {
   }
 
   const cp = base.codePointAt(0);
+  const id = cp !== undefined && cp >= 0x20_00 ? String(cp) : null;
 
-  return cp !== undefined && cp >= 0x20_00 ? String(cp) : null;
+  return id && SUPPORTED_UNICODE_REACTION_IDS.has(id) ? id : null;
 }
 
 // Common colloquial aliases that differ from QQNT's official `describe` text.
@@ -122,13 +183,12 @@ function stripDecorators(raw: string): string {
  * Resolve any reaction input into the numeric `emoji_id` string expected by
  * NapCat `set_msg_emoji_like`:
  *
- * - Valid numeric IDs in the QQNT catalog (`"76"`, `"478"`) or valid single
- *   Unicode emoji codepoints (`"12951"`) pass through; unknown numeric IDs
- *   (like `"99999999"`) are rejected so NapCat won't emit blank ghost
- *   reactions.
- * - Single standard Unicode emojis (`"㊗️"`, `"🔥"`, `"👍"`, `"❤️"`) resolve to
- *   their decimal Unicode codepoint (`"12951"`, `"128293"`, `"128077"`,
- *   `"10084"`).
+ * - Valid numeric IDs in the QQNT catalog (`"76"`, `"478"`) or QQ's supported
+ *   Unicode reaction whitelist (`"12951"`, `"128077"`) pass through; unknown or
+ *   unsupported numeric IDs are rejected so QQ clients won't render blank
+ *   chips.
+ * - Supported single Unicode emojis (`"㊗️"`, `"🔥"`, `"👍"`, `"❤️"`) resolve to
+ *   their decimal Unicode codepoint.
  * - Official QQNT native face names & aliases (`"对的对的"`, `"吃瓜"`, `"狗头"`) resolve
  *   to their numeric QQ face ID (`"478"`, `"271"`, `"179"`).
  */
@@ -140,12 +200,12 @@ export function resolveReactionEmojiId(input: string): string {
   }
 
   if (/^\d+$/.test(cleaned)) {
-    if (BY_ID.has(cleaned) || decodeUnicodeEmojiId(cleaned) !== null) {
+    if (BY_ID.has(cleaned) || SUPPORTED_UNICODE_REACTION_IDS.has(cleaned)) {
       return cleaned;
     }
 
     throw new Error(
-      `未知的表情数字 ID "${cleaned}"：不在 QQNT 官方表情目录或标准 Unicode Emoji 码点范围内，请改传单个标准 Emoji 或先用 search_qq_emojis 查询有效 ID`,
+      `不支持的表情数字 ID "${cleaned}"：不在 QQNT 官方表情目录或 QQ 表情回应白名单内，请改用 QQ 原生表情（可用 search_qq_emojis 查询）或常用白名单 Emoji`,
     );
   }
 
@@ -155,14 +215,14 @@ export function resolveReactionEmojiId(input: string): string {
     return byName;
   }
 
-  const unicodeId = extractUnicodeEmojiCodepoint(cleaned);
+  const unicodeId = extractSupportedUnicodeEmojiCodepoint(cleaned);
 
   if (unicodeId) {
     return unicodeId;
   }
 
   throw new Error(
-    `无法识别的表情回应 "${input}"：请直接传入单个标准 Unicode Emoji（如 ㊗️、🔥）、QQ 官方表情名称（可用 search_qq_emojis 查询）或数字 ID`,
+    `不支持的表情回应 "${input}"：该表情不在 QQ 原生表情目录或 QQ 回应白名单内，请改用 QQ 原生表情名称（可用 search_qq_emojis 查询）或白名单常用 Emoji（如 ㊗️、🔥、👍、👌、🎉、❤️）`,
   );
 }
 
@@ -178,7 +238,7 @@ export function searchQFaceCatalog(
   const cleaned = stripDecorators(query);
 
   const resolvedUnicodeId = cleaned
-    ? (extractUnicodeEmojiCodepoint(cleaned) ?? undefined)
+    ? (extractSupportedUnicodeEmojiCodepoint(cleaned) ?? undefined)
     : undefined;
 
   const needle = cleaned.toLowerCase();

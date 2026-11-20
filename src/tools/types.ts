@@ -30,6 +30,8 @@ export interface ToolActor {
   actorSubject: string | null;
   actorName: string | null;
   actorIsAdmin: boolean;
+  actorIsManager: boolean;
+  actorAdmitted: boolean;
   triggerMessageId?: number | null;
 }
 

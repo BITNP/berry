@@ -1,13 +1,15 @@
 import { Type } from "typebox";
 
+import { parseChatKey } from "../types.ts";
+import { assertCanReadChat } from "./chat.ts";
 import { defineTool } from "./types.ts";
 
 export const memoryManageTool = defineTool({
   name: "memory_manage",
   description:
-    "读取、保存或删除长期记忆。scope 可选 global（全局共识/设定）、chat（指定或当前会话记忆）、user（特定成员偏好）。",
+    "读取、保存或删除长期记忆。scope 可选 global（全局共识/设定，仅管理员或部长级负责人可写删）、chat（当前会话记忆，仅网协在籍成员或管理员可写删且禁止跨群写删）、user（个人偏好，仅本人或管理员可写删）。",
   capability:
-    "- memory_manage: 读写 global（全局共识）、chat（会话级）或 user（个人偏好）长期记忆。",
+    "- memory_manage: 读写 global（全局共识）、chat（会话级）或 user（个人偏好）长期记忆（受身份权限约束）。",
   parameters: Type.Object(
     {
       action: Type.Union([
@@ -53,10 +55,42 @@ export const memoryManageTool = defineTool({
     }
 
     if (args.action === "read") {
+      if (args.scope === "chat") {
+        const parsed = parseChatKey(ownerId);
+
+        await assertCanReadChat(ctx, parsed.kind, parsed.chatId);
+      } else if (
+        args.scope === "user" &&
+        !actor.actorIsAdmin &&
+        ownerId !== actor.senderQQ
+      ) {
+        throw new Error("无权读取其他用户的个人记忆");
+      }
+
       return {
         mutated: false,
         memory: await services.store.memories.get(args.scope, ownerId, key),
       };
+    }
+
+    // Write / delete guards.
+    if (args.scope === "global") {
+      if (!actor.actorIsAdmin && !actor.actorIsManager) {
+        throw new Error("仅管理员或部长级负责人可修改或删除全局记忆");
+      }
+    } else if (args.scope === "chat") {
+      if (!actor.actorIsAdmin && ownerId !== actor.chatKey) {
+        throw new Error("禁止跨会话修改或删除其他会话的记忆");
+      }
+
+      if (!actor.actorIsAdmin && !actor.actorAdmitted) {
+        throw new Error("仅网协在籍成员或管理员可修改或删除会话记忆");
+      }
+    } else if (
+      !actor.actorIsAdmin &&
+      (!actor.senderQQ || ownerId !== actor.senderQQ)
+    ) {
+      throw new Error("仅可修改或删除本人的个人记忆");
     }
 
     if (args.action === "delete") {
