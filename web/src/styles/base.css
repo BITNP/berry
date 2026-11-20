@@ -439,3 +439,11 @@ body {
 .clickable-table .n-data-table-tr {
   cursor: pointer;
 }
+
+.context-vlist {
+  max-height: 64vh;
+}
+
+.context-vlist-item {
+  padding-bottom: 10px;
+}

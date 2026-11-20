@@ -23,8 +23,8 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, h, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { computed, h, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import { formatTime } from "../utils/format.ts";
@@ -76,6 +76,9 @@ interface ChatMessageView {
   reactions: ReactionAggregateView[];
 }
 
+const CHAT_DRAWER_TABS = new Set(["conversation", "inject", "messages"]);
+
+const route = useRoute();
 const router = useRouter();
 const message = useMessage();
 
@@ -280,11 +283,14 @@ async function handleDigest(row: ChatRow) {
   }
 }
 
-async function openChatDrawer(row: ChatRow) {
+async function openChatDrawer(row: ChatRow, tab?: string) {
   activeChat.value = row;
-  drawerTab.value = "messages";
+  drawerTab.value = tab && CHAT_DRAWER_TABS.has(tab) ? tab : "messages";
   messageSearch.value = "";
   drawerOpen.value = true;
+  await router.replace({
+    query: { ...route.query, chat: row.chatKey, tab: drawerTab.value },
+  });
   await loadMessages();
 }
 
@@ -497,8 +503,40 @@ const columns: DataTableColumns<ChatRow> = [
   },
 ];
 
-onMounted(() => {
-  void loadChats();
+watch(drawerTab, (tab) => {
+  if (drawerOpen.value && activeChat.value && route.query.tab !== tab) {
+    void router.replace({
+      query: { ...route.query, chat: activeChat.value.chatKey, tab },
+    });
+  }
+});
+
+watch(drawerOpen, (open) => {
+  if (!open && (route.query.chat || route.query.tab)) {
+    const rest = { ...route.query };
+
+    delete rest.chat;
+    delete rest.tab;
+    void router.replace({ query: rest });
+  }
+});
+
+onMounted(async () => {
+  await loadChats();
+
+  const chatParam =
+    typeof route.query.chat === "string" ? route.query.chat : "";
+
+  if (chatParam) {
+    const match = chats.value.find((c) => c.chatKey === chatParam);
+
+    if (match) {
+      const tabParam =
+        typeof route.query.tab === "string" ? route.query.tab : undefined;
+
+      await openChatDrawer(match, tabParam);
+    }
+  }
 });
 </script>
 

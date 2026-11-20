@@ -1,6 +1,13 @@
 <script setup lang="ts">
-import { Copy, Pause, Play, RefreshCw, RotateCcw } from "@lucide/vue";
-import type { DataTableColumns } from "naive-ui";
+import {
+  ArrowDownToLine,
+  Copy,
+  Pause,
+  Play,
+  RefreshCw,
+  RotateCcw,
+} from "@lucide/vue";
+import type { DataTableColumns, VirtualListInst } from "naive-ui";
 import {
   NAlert,
   NButton,
@@ -21,6 +28,7 @@ import {
   NTabs,
   NTag,
   NText,
+  NVirtualList,
   useMessage,
 } from "naive-ui";
 import { computed, h, onMounted, ref, watch } from "vue";
@@ -110,6 +118,63 @@ const filterSearch = ref("");
 
 const selectedCall = ref<LlmCallRow | null>(null);
 const detailOpen = ref(false);
+const contextListRef = ref<VirtualListInst | null>(null);
+const expandedTurns = ref<Record<string, boolean>>({});
+
+const TURN_PREVIEW_LIMIT = 900;
+
+interface ContextTurnItem {
+  key: string;
+  index: number;
+  role: string;
+  toolCallId?: string;
+  toolNames: string[];
+  body: string;
+  preview: string;
+  isLong: boolean;
+}
+
+const contextItems = computed<ContextTurnItem[]>(() => {
+  const list = conversation.value?.messages ?? [];
+
+  return list.map((turn, idx) => {
+    const body = turn.content
+      ? prettyMaybeJson(turn.content)
+      : turn.tool_calls?.length
+        ? JSON.stringify(
+            turn.tool_calls.map((c) => ({
+              tool: c.function.name,
+              args: prettyMaybeJson(c.function.arguments),
+            })),
+            null,
+            2,
+          )
+        : "(empty)";
+    const isLong = body.length > TURN_PREVIEW_LIMIT;
+
+    return {
+      key: `turn-${idx}`,
+      index: idx + 1,
+      role: turn.role,
+      toolCallId: turn.tool_call_id,
+      toolNames: (turn.tool_calls ?? []).map((c) => c.function.name),
+      body,
+      preview: isLong ? `${body.slice(0, TURN_PREVIEW_LIMIT)}\n…` : body,
+      isLong,
+    };
+  });
+});
+
+function toggleTurnExpand(key: string) {
+  expandedTurns.value = {
+    ...expandedTurns.value,
+    [key]: !expandedTurns.value[key],
+  };
+}
+
+function scrollContextToBottom() {
+  contextListRef.value?.scrollTo({ position: "bottom" });
+}
 
 const usageTotals30d = computed(() => {
   let totalCallCount = 0;
@@ -548,26 +613,40 @@ onMounted(() => {
           <NSpace v-if="conversation" :size="12" vertical>
             <div class="filter-bar space-between">
               <NText class="mono sub-note" depth="3">
-                session: {{ conversation.sessionId }} · afterMessageId:
+                session: {{ conversation.sessionId }} · 共
+                {{ contextItems.length }} 轮 · afterMessageId:
                 {{ conversation.afterMessageId }} · 更新于
                 {{ formatTime(conversation.updatedAt) }}
               </NText>
-              <NPopconfirm @positive-click="handleResetConversation">
-                <template #trigger>
-                  <NButton
-                    :loading="resettingContext"
-                    size="small"
-                    type="warning"
-                  >
-                    <template #icon>
-                      <RotateCcw :size="14" />
-                    </template>
-                    重置全局上下文
-                  </NButton>
-                </template>
-                将清空全局短期上下文轮次并刷新
-                sessionId，长期记忆保留不变。确认继续？
-              </NPopconfirm>
+              <NSpace :size="8">
+                <NButton
+                  v-if="contextItems.length > 0"
+                  secondary
+                  size="small"
+                  @click="scrollContextToBottom"
+                >
+                  <template #icon>
+                    <ArrowDownToLine :size="14" />
+                  </template>
+                  跳到底部
+                </NButton>
+                <NPopconfirm @positive-click="handleResetConversation">
+                  <template #trigger>
+                    <NButton
+                      :loading="resettingContext"
+                      size="small"
+                      type="warning"
+                    >
+                      <template #icon>
+                        <RotateCcw :size="14" />
+                      </template>
+                      重置全局上下文
+                    </NButton>
+                  </template>
+                  将清空全局短期上下文轮次并刷新
+                  sessionId，长期记忆保留不变。确认继续？
+                </NPopconfirm>
+              </NSpace>
             </div>
 
             <NCard
@@ -589,46 +668,59 @@ onMounted(() => {
             </NCard>
 
             <NEmpty
-              v-if="conversation.messages.length === 0"
+              v-if="contextItems.length === 0"
               description="全局上下文当前暂无短期轮次"
             />
 
-            <div
-              v-for="(turn, idx) in conversation.messages"
-              :key="idx"
-              class="turn-box"
+            <NVirtualList
+              v-else
+              ref="contextListRef"
+              class="context-vlist"
+              item-resizable
+              :item-size="140"
+              :items="contextItems"
+              key-field="key"
             >
-              <div class="turn-head">
-                <NTag size="tiny" :type="roleTagType(turn.role)">
-                  {{ turn.role }}
-                </NTag>
-                <NTag
-                  v-for="call in turn.tool_calls ?? []"
-                  :key="call.id"
-                  size="tiny"
-                  type="info"
-                >
-                  {{ call.function.name }}
-                </NTag>
-                <span v-if="turn.tool_call_id" class="mono turn-time">
-                  {{ turn.tool_call_id }}
-                </span>
-              </div>
-              <pre class="code-block mt-xs">{{
-                turn.content
-                  ? prettyMaybeJson(turn.content)
-                  : turn.tool_calls?.length
-                    ? JSON.stringify(
-                        turn.tool_calls.map((c) => ({
-                          tool: c.function.name,
-                          args: prettyMaybeJson(c.function.arguments),
-                        })),
-                        null,
-                        2,
-                      )
-                    : "(empty)"
-              }}</pre>
-            </div>
+              <template #default="{ item }">
+                <div class="context-vlist-item">
+                  <div class="turn-box">
+                    <div class="turn-head">
+                      <span class="mono turn-time">#{{ item.index }}</span>
+                      <NTag size="tiny" :type="roleTagType(item.role)">
+                        {{ item.role }}
+                      </NTag>
+                      <NTag
+                        v-for="(toolName, tIdx) in item.toolNames"
+                        :key="`${toolName}-${tIdx}`"
+                        size="tiny"
+                        type="info"
+                      >
+                        {{ toolName }}
+                      </NTag>
+                      <span v-if="item.toolCallId" class="mono turn-time">
+                        {{ item.toolCallId }}
+                      </span>
+                      <NButton
+                        v-if="item.isLong"
+                        class="ml-auto"
+                        quaternary
+                        size="tiny"
+                        @click="toggleTurnExpand(item.key)"
+                      >
+                        {{
+                          expandedTurns[item.key]
+                            ? "收起"
+                            : `展开全文 (${item.body.length.toLocaleString()} 字)`
+                        }}
+                      </NButton>
+                    </div>
+                    <pre class="code-block mt-xs">{{
+                      expandedTurns[item.key] ? item.body : item.preview
+                    }}</pre>
+                  </div>
+                </div>
+              </template>
+            </NVirtualList>
           </NSpace>
         </NTabPane>
 

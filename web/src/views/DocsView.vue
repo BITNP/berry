@@ -16,7 +16,8 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import MarkdownPreview from "../components/MarkdownPreview.vue";
@@ -29,13 +30,17 @@ interface DocFileRow {
   updatedAt: number;
 }
 
+const route = useRoute();
+const router = useRouter();
 const message = useMessage();
 
 const loadingList = ref(false);
 const loadingDoc = ref(false);
 const saving = ref(false);
 const files = ref<DocFileRow[]>([]);
-const activeScope = ref<"knowledge" | "notebook">("knowledge");
+const activeScope = ref<"knowledge" | "notebook">(
+  route.query.tab === "notebook" ? "notebook" : "knowledge",
+);
 const searchText = ref("");
 
 const selectedFile = ref<DocFileRow | null>(null);
@@ -197,6 +202,21 @@ async function handleCreateNote() {
     saving.value = false;
   }
 }
+
+watch(activeScope, (tab) => {
+  if (route.query.tab !== tab) {
+    void router.replace({ query: { ...route.query, tab } });
+  }
+});
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    if (tab === "knowledge" || tab === "notebook") {
+      activeScope.value = tab;
+    }
+  },
+);
 
 onMounted(async () => {
   await loadFiles();

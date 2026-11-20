@@ -17,7 +17,8 @@ import {
   NTag,
   useMessage,
 } from "naive-ui";
-import { h, onMounted, ref } from "vue";
+import { h, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import { useEventStream } from "../composables/useEventStream.ts";
@@ -70,10 +71,18 @@ interface DirectoryUserRow {
   };
 }
 
+const GUILD_TABS = new Set(["audit", "cursors", "directory"]);
+
+const route = useRoute();
+const router = useRouter();
 const message = useMessage();
 
 const loading = ref(false);
-const activeTab = ref("audit");
+const activeTab = ref(
+  typeof route.query.tab === "string" && GUILD_TABS.has(route.query.tab)
+    ? route.query.tab
+    : "audit",
+);
 const status = ref<GuildStatus | null>(null);
 const auditLogs = ref<GuildAuditRow[]>([]);
 const triggering = ref<string | null>(null);
@@ -299,6 +308,21 @@ useEventStream((type) => {
     void loadGuild();
   }
 });
+
+watch(activeTab, (tab) => {
+  if (route.query.tab !== tab) {
+    void router.replace({ query: { ...route.query, tab } });
+  }
+});
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    if (typeof tab === "string" && GUILD_TABS.has(tab)) {
+      activeTab.value = tab;
+    }
+  },
+);
 
 onMounted(() => {
   void loadGuild();
