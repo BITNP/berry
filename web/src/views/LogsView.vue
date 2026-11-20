@@ -96,6 +96,7 @@ interface DeliveryRow {
   attempts: number;
   error: string | null;
   onebotMessageId: string | null;
+  createdAt?: number;
   updatedAt: number;
 }
 
@@ -533,13 +534,43 @@ const jobRelatedDeliveries = computed(() => {
   });
 });
 
+function matchesJobPurpose(job: JobRow, purpose: string): boolean {
+  switch (job.kind) {
+    case "gate_batch": {
+      return purpose === "gate";
+    }
+
+    case "invoke": {
+      return purpose !== "gate";
+    }
+
+    case "memory_update": {
+      return purpose === "memory_update";
+    }
+
+    case "group_digest": {
+      return purpose.startsWith("subagent");
+    }
+
+    case "guild_task": {
+      return job.payload.task === "weekly" ? purpose === "report" : true;
+    }
+
+    default: {
+      return true;
+    }
+  }
+}
+
 async function loadJobTrace(job: JobRow) {
   jobTraceLoading.value = true;
   jobRelatedCalls.value = [];
   jobRelatedGate.value = [];
 
-  const startMs = job.createdAt - 2000;
-  const endMs = (job.state === "running" ? Date.now() : job.updatedAt) + 10_000;
+  const startMs = job.createdAt - (job.kind === "gate_batch" ? 1000 : 500);
+  const endMs =
+    (job.state === "running" ? Date.now() : job.updatedAt) +
+    (job.kind === "gate_batch" ? 2000 : 1500);
   const isChatTarget =
     job.chatKey.startsWith("group:") || job.chatKey.startsWith("private:");
 
@@ -560,7 +591,7 @@ async function loadJobTrace(job: JobRow) {
       );
     }
 
-    const cqs = new URLSearchParams({ limit: "20" });
+    const cqs = new URLSearchParams({ limit: "25" });
 
     if (isChatTarget) {
       cqs.set("chatKey", job.chatKey);
@@ -576,7 +607,12 @@ async function loadJobTrace(job: JobRow) {
           `/api/admin/llm-calls?${cqs.toString()}`,
         ).then((res) => {
           jobRelatedCalls.value = res.items
-            .filter((c) => c.createdAt >= startMs && c.createdAt <= endMs)
+            .filter(
+              (c) =>
+                c.createdAt >= startMs &&
+                c.createdAt <= endMs &&
+                matchesJobPurpose(job, c.purpose),
+            )
             .reverse();
         }),
       );
@@ -596,6 +632,57 @@ function openJobDetail(row: JobRow) {
   void loadJobTrace(row);
 }
 
+function selectTurnCallsForDelivery(
+  chronological: LlmCallRow[],
+  anchorMs: number,
+): LlmCallRow[] {
+  const candidates = chronological.filter(
+    (c) => c.createdAt <= anchorMs + 2000 && c.createdAt >= anchorMs - 90_000,
+  );
+
+  if (candidates.length === 0) {
+    return [];
+  }
+
+  // Walk backward from the call closest to delivery creation, stopping at an
+  // earlier finished dialog turn or a long idle gap so unrelated turns stay out.
+  const picked: LlmCallRow[] = [];
+  let sawFinalDialog = false;
+
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    const cur = candidates[i];
+    const next = picked[0];
+
+    if (next) {
+      const gapMs = next.createdAt - next.durationMs - cur.createdAt;
+
+      if (gapMs > 15_000) {
+        break;
+      }
+    }
+
+    if (
+      sawFinalDialog &&
+      cur.purpose === "dialog" &&
+      cur.toolCalls.length === 0
+    ) {
+      break;
+    }
+
+    picked.unshift(cur);
+
+    if (cur.purpose === "dialog" && cur.toolCalls.length === 0) {
+      sawFinalDialog = true;
+    }
+
+    if (cur.purpose === "gate") {
+      break;
+    }
+  }
+
+  return picked;
+}
+
 async function openDeliveryDetail(row: DeliveryRow) {
   selectedDelivery.value = row;
   deliveryDrawerOpen.value = true;
@@ -603,16 +690,17 @@ async function openDeliveryDetail(row: DeliveryRow) {
   deliveryRelatedCalls.value = [];
 
   try {
-    const qs = new URLSearchParams({ chatKey: row.chatKey, limit: "15" });
+    const qs = new URLSearchParams({ chatKey: row.chatKey, limit: "25" });
     const res = await apiFetch<{ items: LlmCallRow[] }>(
       `/api/admin/llm-calls?${qs.toString()}`,
     );
-    const startMs = row.updatedAt - 120_000;
-    const endMs = row.updatedAt + 5000;
+    const anchorMs = row.createdAt ?? row.updatedAt;
+    const chronological = [...res.items].reverse();
 
-    deliveryRelatedCalls.value = res.items
-      .filter((c) => c.createdAt >= startMs && c.createdAt <= endMs)
-      .reverse();
+    deliveryRelatedCalls.value = selectTurnCallsForDelivery(
+      chronological,
+      anchorMs,
+    );
   } catch {
     deliveryRelatedCalls.value = [];
   } finally {
@@ -1645,7 +1733,7 @@ onUnmounted(() => {
             </NSpace>
           </div>
 
-          <NCollapse>
+          <NCollapse class="drawer-collapse">
             <NCollapseItem name="payload" title="原始载荷（Payload）及元数据">
               <div class="sub-note mono break-all mb-sm">
                 dedupeKey: {{ selectedJob.dedupeKey }} / created:
@@ -1761,7 +1849,7 @@ onUnmounted(() => {
             />
           </div>
 
-          <NCollapse>
+          <NCollapse class="drawer-collapse">
             <NCollapseItem name="raw" title="原始投递载荷（JSON）">
               <pre class="code-block">{{
                 JSON.stringify(selectedDelivery.payload, null, 2)
@@ -2036,5 +2124,35 @@ onUnmounted(() => {
   overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.drawer-collapse {
+  border: 1px solid var(--berry-border);
+  border-radius: 6px;
+  background: var(--berry-surface);
+  overflow: hidden;
+}
+
+.drawer-collapse :deep(.n-collapse-item) {
+  margin: 0 !important;
+}
+
+.drawer-collapse :deep(.n-collapse-item__header) {
+  padding: 9px 12px !important;
+  font-size: 12px;
+  transition: background-color 0.14s ease;
+}
+
+.drawer-collapse :deep(.n-collapse-item__header:hover) {
+  background: var(--berry-inset);
+}
+
+.drawer-collapse :deep(.n-collapse-item__content-wrapper) {
+  border-top: 1px dashed var(--berry-border);
+  background: var(--berry-inset);
+}
+
+.drawer-collapse :deep(.n-collapse-item__content-inner) {
+  padding: 10px 12px !important;
 }
 </style>

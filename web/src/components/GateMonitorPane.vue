@@ -206,12 +206,22 @@ async function loadRelatedCalls(row: GateDecisionRow) {
     const res = await apiFetch<{ items: LlmCallRow[] }>(
       `/api/admin/llm-calls?${qs.toString()}`,
     );
-    const startMs = row.createdAt - 2000;
-    const endMs = row.createdAt + 120_000;
-
-    relatedCalls.value = res.items
+    const startMs = row.createdAt - 1000;
+    const endMs = row.createdAt + 60_000;
+    const chronological = res.items
       .filter((c) => c.createdAt >= startMs && c.createdAt <= endMs)
       .reverse();
+    const picked: LlmCallRow[] = [];
+
+    for (const call of chronological) {
+      if (picked.length > 0 && call.purpose === "gate") {
+        break;
+      }
+
+      picked.push(call);
+    }
+
+    relatedCalls.value = picked;
   } catch {
     relatedCalls.value = [];
   } finally {
