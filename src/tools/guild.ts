@@ -184,7 +184,7 @@ export const guildNodeProgressTool = defineTool({
 export const guildCreateNodeTool = defineTool({
   name: "guild_create_node",
   description:
-    "代表当前发言人在公会看板创建根节点或子节点。创建前应先确认父节点 ID 与成员 subject。",
+    "代表当前发言人在公会看板创建根节点或子节点。创建前应先通过 guild_list_tree 确认现有层级及父节点 ID（周报、纪要等周期性/归档型内容应挂在总归档父节点下，避免单期文档散落在顶层）以及成员 subject。",
   mutating: true,
   parameters: Type.Object(
     {
