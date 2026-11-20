@@ -38,7 +38,7 @@ export interface SubagentDefinition {
    */
   readonly tools: readonly ToolSource[];
   /**
-   * Maximum tool-calling rounds for this subagent (defaults to 8).
+   * Maximum tool-calling rounds for this subagent (defaults to 32).
    */
   readonly maxRounds?: number;
   /**

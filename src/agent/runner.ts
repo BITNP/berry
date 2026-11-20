@@ -303,7 +303,7 @@ export class BerryAgent {
       history: conversation.messages,
       userContent,
       tools,
-      maxRounds: 12,
+      maxRounds: 40,
       outputSchema: agentOutputSchema,
       thinkingEffort: settings.mainModel.thinkingEffort,
     });
@@ -412,7 +412,7 @@ export class BerryAgent {
         memoryIndex,
       }),
       tools: [memoryTool],
-      maxRounds: 4,
+      maxRounds: 12,
     });
   }
 
@@ -488,7 +488,7 @@ export class BerryAgent {
           archivedMessages: conversation.messages.slice(0, splitIndex),
         }),
         tools: [],
-        maxRounds: 2,
+        maxRounds: 3,
         outputSchema: compactionOutputSchema,
       });
 

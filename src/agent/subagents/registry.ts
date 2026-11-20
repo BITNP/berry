@@ -11,15 +11,15 @@ import type { SubagentDefinition, SubagentResult } from "./types.ts";
 
 const subagentOutputSchema = Type.Object(
   {
-    brief: Type.String({ minLength: 1, maxLength: 4000 }),
+    brief: Type.String({ minLength: 1, maxLength: 16_000 }),
     references: Type.Optional(Type.Array(Type.String())),
   },
   { additionalProperties: false },
 );
 
-const DEFAULT_SUBAGENT_MAX_ROUNDS = 8;
+const DEFAULT_SUBAGENT_MAX_ROUNDS = 32;
 const SUBAGENT_OUTPUT_SUFFIX =
-  '完成检索或操作后，最终只输出一个 JSON 对象：{"brief":"简练准确的结论（不超过 1200 字）","references":["可选引用来源、节点URL或m_*句柄"]}';
+  '完成检索或操作后，最终只输出一个 JSON 对象：{"brief":"准确清晰的结论（完整覆盖关键事实即可，避免照搬大段原始日志）","references":["可选引用来源、节点URL或m_*句柄"]}';
 
 export class SubagentRegistry {
   #definitions = new Map<string, SubagentDefinition>();
