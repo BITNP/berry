@@ -260,7 +260,10 @@ export class BerryApp {
       const srv = this.#server;
 
       this.#server = null;
-      await new Promise<void>((_resolve) => srv.close(() => _resolve()));
+      await new Promise<void>((_resolve) => {
+        srv.close(() => _resolve());
+        srv.closeAllConnections();
+      });
     }
 
     await this.store.close();

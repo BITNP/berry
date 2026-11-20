@@ -272,6 +272,14 @@ test("admin auth, CSRF, secret masking, TypeBox validation, and removed /api/web
   });
 
   assert.equal(invalidPurgeRes.status, 400);
+
+  // Leave an active SSE connection open to verify app.close() does not hang on shutdown.
+  const sseRes = await fetch(`${url}/api/admin/events`, {
+    headers: { Cookie: cookieHeader },
+  });
+
+  assert.equal(sseRes.status, 200);
+  assert.match(sseRes.headers.get("content-type") ?? "", /text\/event-stream/);
 });
 
 test("OIDC PKCE login and callback using openid-client and bitnp-authz", async (t) => {

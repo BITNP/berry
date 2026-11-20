@@ -475,9 +475,13 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
           data: JSON.stringify(payload.data),
         });
       });
+
+      void stream.push({ event: "ping", data: String(Date.now()) });
       const keepAlive = setInterval(() => {
         void stream.push({ event: "ping", data: String(Date.now()) });
       }, 25_000);
+
+      keepAlive.unref();
 
       stream.onClosed(async () => {
         clearInterval(keepAlive);
