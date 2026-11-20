@@ -29,10 +29,11 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, h, nextTick, onMounted, ref, watch } from "vue";
+import { computed, h, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
+import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useEventStream } from "../composables/useEventStream.ts";
 import { formatTime } from "../utils/format.ts";
 
@@ -52,6 +53,8 @@ interface JobRow {
   kind: string;
   dedupeKey: string;
   chatKey: string;
+  payload: Record<string, unknown>;
+  summary?: string;
   state: "pending" | "running" | "done" | "failed";
   attempts: number;
   lastError: string | null;
@@ -76,6 +79,7 @@ const MAX_LOG_ITEMS = 2000;
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
+const { chatOptions } = useChatOptions();
 
 function initialTab(): "logs" | "jobs" | "deliveries" {
   const q = route.query.tab;
@@ -102,14 +106,20 @@ const consoleRef = ref<HTMLElement | null>(null);
 // Jobs state
 const loadingJobs = ref(false);
 const jobs = ref<JobRow[]>([]);
+const filterJobKind = ref<string | null>(null);
 const filterJobState = ref<JobRow["state"] | null>(null);
+const filterJobChatKey = ref<string | null>(null);
 const retryingAll = ref(false);
 const busyJobId = ref<number | null>(null);
+const selectedJob = ref<JobRow | null>(null);
+const jobDrawerOpen = ref(false);
+const nowTick = ref(Date.now());
 
 // Deliveries state
 const loadingDeliveries = ref(false);
 const deliveries = ref<DeliveryRow[]>([]);
 const filterDeliveryStatus = ref<DeliveryRow["status"] | null>(null);
+const filterDeliveryChatKey = ref<string | null>(null);
 const selectedDelivery = ref<DeliveryRow | null>(null);
 const deliveryDrawerOpen = ref(false);
 
@@ -160,15 +170,38 @@ const visibleEntries = computed(() => {
 });
 
 const visibleJobs = computed(() =>
-  filterJobState.value
-    ? jobs.value.filter((j) => j.state === filterJobState.value)
-    : jobs.value,
+  jobs.value.filter((j) => {
+    if (filterJobKind.value && j.kind !== filterJobKind.value) {
+      return false;
+    }
+
+    if (filterJobState.value && j.state !== filterJobState.value) {
+      return false;
+    }
+
+    if (filterJobChatKey.value && j.chatKey !== filterJobChatKey.value) {
+      return false;
+    }
+
+    return true;
+  }),
 );
 
 const visibleDeliveries = computed(() =>
-  filterDeliveryStatus.value
-    ? deliveries.value.filter((d) => d.status === filterDeliveryStatus.value)
-    : deliveries.value,
+  deliveries.value.filter((d) => {
+    if (filterDeliveryStatus.value && d.status !== filterDeliveryStatus.value) {
+      return false;
+    }
+
+    if (
+      filterDeliveryChatKey.value &&
+      d.chatKey !== filterDeliveryChatKey.value
+    ) {
+      return false;
+    }
+
+    return true;
+  }),
 );
 
 const failedJobCount = computed(
@@ -389,6 +422,52 @@ function summarizePayload(
   return JSON.stringify(payload);
 }
 
+const jobKindLabel: Record<
+  string,
+  { text: string; type: "default" | "primary" | "info" | "success" | "warning" }
+> = {
+  invoke: { text: "对话应答", type: "primary" },
+  gate_batch: { text: "消息分流", type: "default" },
+  memory_update: { text: "记忆提炼", type: "success" },
+  group_digest: { text: "群聊摘要", type: "info" },
+  guild_task: { text: "公会任务", type: "warning" },
+};
+
+const deliveryKindLabel: Record<string, string> = {
+  qq_reply: "文本回复",
+  qq_forward: "合并转发",
+  qq_reaction: "表情回应",
+};
+
+function formatDurationMs(ms: number): string {
+  const safe = Math.max(0, ms);
+
+  if (safe < 1000) {
+    return `${safe} ms`;
+  }
+
+  if (safe < 60_000) {
+    return `${(safe / 1000).toFixed(1)} s`;
+  }
+
+  const mins = Math.floor(safe / 60_000);
+  const secs = Math.round((safe % 60_000) / 1000);
+
+  return `${mins}m ${secs}s`;
+}
+
+function jobDuration(row: JobRow): string {
+  if (row.state === "running") {
+    return formatDurationMs(nowTick.value - row.updatedAt);
+  }
+
+  if (row.state === "pending") {
+    return "等待中";
+  }
+
+  return formatDurationMs(row.updatedAt - row.createdAt);
+}
+
 const jobStateLabel: Record<
   JobRow["state"],
   { text: string; type: "default" | "info" | "success" | "error" }
@@ -400,19 +479,23 @@ const jobStateLabel: Record<
 };
 
 const jobColumns: DataTableColumns<JobRow> = [
-  { title: "ID", key: "id", width: 54 },
+  { title: "ID", key: "id", width: 56 },
   {
     title: "类型",
     key: "kind",
-    width: 112,
-    render: (row) => h("span", { class: "mono" }, row.kind),
-  },
-  {
-    title: "会话",
-    key: "chatKey",
-    width: 176,
-    ellipsis: { tooltip: true },
-    render: (row) => h("span", { class: "mono" }, row.chatKey),
+    width: 96,
+    render: (row) => {
+      const cfg = jobKindLabel[row.kind] ?? {
+        text: row.kind,
+        type: "default" as const,
+      };
+
+      return h(
+        NTag,
+        { size: "small", type: cfg.type },
+        { default: () => cfg.text },
+      );
+    },
   },
   {
     title: "状态",
@@ -428,13 +511,36 @@ const jobColumns: DataTableColumns<JobRow> = [
       );
     },
   },
-  { title: "重试", key: "attempts", width: 56, align: "right" },
   {
-    title: "错误信息",
-    key: "lastError",
-    minWidth: 160,
+    title: "会话 / 目标",
+    key: "chatKey",
+    width: 176,
     ellipsis: { tooltip: true },
-    render: (row) => row.lastError || "—",
+    render: (row) => h("span", { class: "mono" }, row.chatKey),
+  },
+  {
+    title: "任务内容 / 错误",
+    key: "summary",
+    minWidth: 240,
+    ellipsis: { tooltip: true },
+    render: (row) => {
+      if (row.lastError) {
+        return h(
+          NText,
+          { type: "error", class: "sub-note" },
+          { default: () => row.lastError },
+        );
+      }
+
+      return row.summary || "—";
+    },
+  },
+  {
+    title: "耗时",
+    key: "duration",
+    width: 84,
+    align: "right",
+    render: (row) => h("span", { class: "tabular" }, jobDuration(row)),
   },
   {
     title: "更新时间",
@@ -445,7 +551,7 @@ const jobColumns: DataTableColumns<JobRow> = [
   {
     title: "操作",
     key: "actions",
-    width: 76,
+    width: 72,
     render: (row) => {
       if (row.state === "failed") {
         return h(
@@ -454,7 +560,8 @@ const jobColumns: DataTableColumns<JobRow> = [
             size: "tiny",
             secondary: true,
             loading: busyJobId.value === row.id,
-            onClick: () => {
+            onClick: (e: MouseEvent) => {
+              e.stopPropagation();
               void handleRetryJob(row.id);
             },
           },
@@ -469,7 +576,8 @@ const jobColumns: DataTableColumns<JobRow> = [
             size: "tiny",
             quaternary: true,
             loading: busyJobId.value === row.id,
-            onClick: () => {
+            onClick: (e: MouseEvent) => {
+              e.stopPropagation();
               void handleCancelJob(row.id);
             },
           },
@@ -504,8 +612,13 @@ const deliveryColumns: DataTableColumns<DeliveryRow> = [
   {
     title: "类型",
     key: "kind",
-    width: 108,
-    render: (row) => h("span", { class: "mono" }, row.kind),
+    width: 96,
+    render: (row) =>
+      h(
+        NTag,
+        { size: "small" },
+        { default: () => deliveryKindLabel[row.kind] ?? row.kind },
+      ),
   },
   {
     title: "状态",
@@ -564,8 +677,21 @@ watch(
   },
 );
 
+let tickTimer: ReturnType<typeof setInterval> | null = null;
+
 onMounted(() => {
   void Promise.all([loadLogs(), loadJobs(), loadDeliveries()]);
+  tickTimer = setInterval(() => {
+    if (jobs.value.some((j) => j.state === "running")) {
+      nowTick.value = Date.now();
+    }
+  }, 1000);
+});
+
+onUnmounted(() => {
+  if (tickTimer) {
+    clearInterval(tickTimer);
+  }
 });
 </script>
 
@@ -689,8 +815,22 @@ onMounted(() => {
         >
           <div class="filter-bar">
             <NSelect
-              v-model:value="filterJobState"
+              v-model:value="filterJobKind"
               class="w-135"
+              clearable
+              :options="[
+                { label: '对话应答', value: 'invoke' },
+                { label: '消息分流', value: 'gate_batch' },
+                { label: '记忆提炼', value: 'memory_update' },
+                { label: '群聊摘要', value: 'group_digest' },
+                { label: '公会任务', value: 'guild_task' },
+              ]"
+              placeholder="全部类型"
+              size="small"
+            />
+            <NSelect
+              v-model:value="filterJobState"
+              class="w-120"
               clearable
               :options="[
                 { label: '排队中', value: 'pending' },
@@ -700,6 +840,16 @@ onMounted(() => {
               ]"
               placeholder="全部状态"
               size="small"
+            />
+            <NSelect
+              v-model:value="filterJobChatKey"
+              class="w-240"
+              clearable
+              filterable
+              :options="chatOptions"
+              placeholder="筛选会话（支持群名/群号）"
+              size="small"
+              tag
             />
             <NButton :loading="loadingJobs" size="small" @click="loadJobs">
               <template #icon>
@@ -722,11 +872,20 @@ onMounted(() => {
             </NButton>
           </div>
           <NDataTable
+            class="clickable-table"
             :columns="jobColumns"
             :data="visibleJobs"
             :loading="loadingJobs"
             :pagination="{ pageSize: 15 }"
-            :scroll-x="840"
+            :row-props="
+              (row: JobRow) => ({
+                onClick: () => {
+                  selectedJob = row;
+                  jobDrawerOpen = true;
+                },
+              })
+            "
+            :scroll-x="960"
             size="small"
           />
         </NTabPane>
@@ -735,7 +894,7 @@ onMounted(() => {
           <div class="filter-bar">
             <NSelect
               v-model:value="filterDeliveryStatus"
-              class="w-135"
+              class="w-120"
               clearable
               :options="[
                 { label: '已送达', value: 'sent' },
@@ -745,6 +904,16 @@ onMounted(() => {
               ]"
               placeholder="全部状态"
               size="small"
+            />
+            <NSelect
+              v-model:value="filterDeliveryChatKey"
+              class="w-240"
+              clearable
+              filterable
+              :options="chatOptions"
+              placeholder="筛选会话（支持群名/群号）"
+              size="small"
+              tag
             />
             <NButton
               :loading="loadingDeliveries"
@@ -777,6 +946,116 @@ onMounted(() => {
         </NTabPane>
       </NTabs>
     </NCard>
+
+    <NDrawer v-model:show="jobDrawerOpen" class="drawer-safe" :width="520">
+      <NDrawerContent v-if="selectedJob" closable title="任务详情">
+        <NSpace :size="12" vertical>
+          <NAlert v-if="selectedJob.lastError" title="执行失败" type="error">
+            {{ selectedJob.lastError }}
+          </NAlert>
+          <NDescriptions
+            bordered
+            :column="2"
+            label-placement="left"
+            size="small"
+          >
+            <NDescriptionsItem label="任务 ID">
+              #{{ selectedJob.id }}
+            </NDescriptionsItem>
+            <NDescriptionsItem label="类型">
+              <NTag
+                size="small"
+                :type="
+                  (jobKindLabel[selectedJob.kind] ?? { type: 'default' }).type
+                "
+              >
+                {{
+                  (jobKindLabel[selectedJob.kind] ?? { text: selectedJob.kind })
+                    .text
+                }}
+              </NTag>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="状态">
+              <NTag size="small" :type="jobStateLabel[selectedJob.state].type">
+                {{ jobStateLabel[selectedJob.state].text }}
+              </NTag>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="耗时">
+              <span class="tabular">{{ jobDuration(selectedJob) }}</span>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="会话 / 目标">
+              <span class="mono">{{ selectedJob.chatKey }}</span>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="尝试次数">
+              {{ selectedJob.attempts }}
+            </NDescriptionsItem>
+            <NDescriptionsItem label="创建时间">
+              {{ formatTime(selectedJob.createdAt) }}
+            </NDescriptionsItem>
+            <NDescriptionsItem label="更新时间">
+              {{ formatTime(selectedJob.updatedAt) }}
+            </NDescriptionsItem>
+          </NDescriptions>
+
+          <div v-if="selectedJob.summary">
+            <div class="section-title">任务内容</div>
+            <pre class="code-block">{{ selectedJob.summary }}</pre>
+          </div>
+
+          <div class="section-title">原始载荷（Payload）</div>
+          <pre class="code-block">{{
+            JSON.stringify(selectedJob.payload, null, 2)
+          }}</pre>
+
+          <NSpace :size="8" wrap>
+            <NButton
+              v-if="selectedJob.state === 'failed'"
+              :loading="busyJobId === selectedJob.id"
+              secondary
+              size="small"
+              type="warning"
+              @click="handleRetryJob(selectedJob.id)"
+            >
+              重新执行
+            </NButton>
+            <NButton
+              v-if="
+                selectedJob.chatKey.startsWith('group:') ||
+                selectedJob.chatKey.startsWith('private:')
+              "
+              secondary
+              size="small"
+              @click="
+                jobDrawerOpen = false;
+                router.push({
+                  path: '/ai',
+                  query: { chatKey: selectedJob.chatKey },
+                });
+              "
+            >
+              查看该会话 AI 调用
+            </NButton>
+            <NButton
+              v-if="
+                selectedJob.chatKey.startsWith('group:') ||
+                selectedJob.chatKey.startsWith('private:')
+              "
+              quaternary
+              size="small"
+              @click="
+                jobDrawerOpen = false;
+                router.push({
+                  path: '/chats',
+                  query: { chat: selectedJob.chatKey },
+                });
+              "
+            >
+              查看会话消息
+            </NButton>
+          </NSpace>
+        </NSpace>
+      </NDrawerContent>
+    </NDrawer>
 
     <NDrawer v-model:show="deliveryDrawerOpen" class="drawer-safe" :width="480">
       <NDrawerContent v-if="selectedDelivery" closable title="出站投递详情">
