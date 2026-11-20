@@ -44,6 +44,15 @@ export const scheduleSpecSchema = Type.Union([
   }),
 ]);
 
+export const thinkingEffortSchema = Type.Union([
+  Type.Literal("none"),
+  Type.Literal("low"),
+  Type.Literal("medium"),
+  Type.Literal("high"),
+]);
+
+export type ThinkingEffort = Static<typeof thinkingEffortSchema>;
+
 export const mcpServerSchema = Type.Object(
   {
     name: Type.String({ minLength: 1, pattern: "^[a-zA-Z0-9_-]+$" }),
@@ -90,6 +99,9 @@ export const runtimeSettingsSchema = Type.Object(
           ],
           { default: "none" },
         ),
+        taskThinkingEffort: Type.Record(Type.String(), thinkingEffortSchema, {
+          default: {},
+        }),
       },
       { default: {}, additionalProperties: false },
     ),
@@ -242,6 +254,39 @@ export function parseSettings(input: unknown): RuntimeSettings {
   defaulted.policy.allowedGroups = [...new Set(defaulted.policy.allowedGroups)];
 
   return defaulted;
+}
+
+export function resolveThinkingEffort(
+  settings: RuntimeSettings,
+  purpose: string,
+  fallback?: ThinkingEffort,
+): ThinkingEffort {
+  const overrides = settings.mainModel.taskThinkingEffort;
+  const exact = overrides[purpose];
+
+  if (exact) {
+    return exact;
+  }
+
+  if (purpose.startsWith("subagent:") && overrides.subagent) {
+    return overrides.subagent;
+  }
+
+  if (fallback) {
+    return fallback;
+  }
+
+  const base = settings.mainModel.thinkingEffort;
+
+  if (purpose === "memory_update" || purpose === "compaction") {
+    return "none";
+  }
+
+  if (purpose === "subagent" || purpose.startsWith("subagent:")) {
+    return base === "none" ? "none" : "low";
+  }
+
+  return base;
 }
 
 export function isGroupAllowed(

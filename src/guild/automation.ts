@@ -6,6 +6,7 @@ import { format, startOfWeek, subWeeks } from "date-fns";
 import { completeChat } from "../agent/llm.ts";
 import type { EnvConfig } from "../config/env.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
+import { resolveThinkingEffort } from "../config/settings.ts";
 import type { MessageGatewayClient } from "../gateway/client.ts";
 import type { IdentityDirectory } from "../identity/keycloak.ts";
 import type { KnowledgeBase } from "../knowledge/files.ts";
@@ -289,6 +290,7 @@ export class GuildAutomationRunner {
     let summary = "本周无新增自动化总结（主模型未配置）。";
 
     if (settings.mainModel.apiKey && settings.mainModel.model) {
+      const reportThinking = resolveThinkingEffort(settings, "report");
       const res = await completeChat({
         apiKey: settings.mainModel.apiKey,
         baseURL: settings.mainModel.baseURL,
@@ -301,6 +303,9 @@ export class GuildAutomationRunner {
         params: {
           temperature: 0.2,
           max_tokens: 2048,
+          ...(reportThinking === "none"
+            ? {}
+            : { reasoning_effort: reportThinking }),
           messages: [
             {
               role: "system",

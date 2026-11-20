@@ -4,6 +4,10 @@ import test from "node:test";
 import { Type } from "typebox";
 
 import { ModelIds } from "../src/agent/model-ids.ts";
+import {
+  parseSettings,
+  resolveThinkingEffort,
+} from "../src/config/settings.ts";
 import { defineTool } from "../src/tools/index.ts";
 import {
   chatReply,
@@ -478,4 +482,178 @@ test("extensible JobRegistry runs custom background jobs with dedupe and exposes
   assert.equal(item.lane, "background");
   assert.equal(item.summary, "重建 knowledge 索引");
   assert.deepEqual(item.links, [{ label: "查看资料库", to: "/docs" }]);
+});
+
+test("per-task thinkingEffort resolves defaults, category fallback, and exact overrides end-to-end", async (t) => {
+  // Pure precedence checks.
+  const baseNone = parseSettings({
+    mainModel: { thinkingEffort: "none" },
+  });
+
+  assert.equal(resolveThinkingEffort(baseNone, "dialog"), "none");
+  assert.equal(
+    resolveThinkingEffort(baseNone, "subagent:chat_analyst"),
+    "none",
+  );
+  assert.equal(resolveThinkingEffort(baseNone, "memory_update"), "none");
+  assert.equal(resolveThinkingEffort(baseNone, "compaction"), "none");
+
+  const baseMedium = parseSettings({
+    mainModel: {
+      thinkingEffort: "medium",
+      taskThinkingEffort: {
+        "subagent": "high",
+        "subagent:chat_analyst": "none",
+        "compaction": "low",
+      },
+    },
+  });
+
+  assert.equal(resolveThinkingEffort(baseMedium, "dialog"), "medium");
+  assert.equal(resolveThinkingEffort(baseMedium, "report"), "medium");
+  assert.equal(resolveThinkingEffort(baseMedium, "memory_update"), "none");
+  assert.equal(resolveThinkingEffort(baseMedium, "compaction"), "low");
+  assert.equal(
+    resolveThinkingEffort(baseMedium, "subagent:guild_operator"),
+    "high",
+  );
+  assert.equal(
+    resolveThinkingEffort(baseMedium, "subagent:chat_analyst"),
+    "none",
+  );
+  assert.equal(
+    resolveThinkingEffort(
+      parseSettings({ mainModel: { thinkingEffort: "medium" } }),
+      "subagent:custom",
+      "high",
+    ),
+    "high",
+  );
+
+  // End-to-end verification via /api/admin/settings and live LLM calls.
+  const observed: Record<string, string | undefined> = {};
+  const llmStub = await startStubServer((req, res, bodyText) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url !== "/v1/chat/completions") {
+      res.statusCode = 404;
+      res.end();
+
+      return;
+    }
+
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+      reasoning_effort?: string;
+    };
+    const sys = reqJson.messages[0]?.content ?? "";
+    const toolMsgs = reqJson.messages.filter((m) => m.role === "tool");
+
+    if (sys.includes("专项排查子代理")) {
+      observed.subagent = reqJson.reasoning_effort;
+      res.end(JSON.stringify(chatReply({ brief: "排查完成", references: [] })));
+
+      return;
+    }
+
+    observed.dialog = reqJson.reasoning_effort;
+    if (toolMsgs.length === 0) {
+      res.end(
+        JSON.stringify(
+          chatToolCalls([
+            {
+              id: "call-deep-check",
+              name: "delegate_subagent",
+              args: { kind: "deep_checker", task: "做一次深度排查" },
+            },
+          ]),
+        ),
+      );
+
+      return;
+    }
+
+    res.end(
+      JSON.stringify(
+        chatReply({ units: [{ kind: "qq_reply", text: "已处理" }] }),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      devAuthBypass: true,
+      mainBaseUrl: `${llmStub.url}/v1`,
+      gateBaseUrl: `${llmStub.url}/v1`,
+    },
+    {
+      mainModel: {
+        thinkingEffort: "low",
+      },
+    },
+    t,
+  );
+
+  app.subagents.register({
+    kind: "deep_checker",
+    title: "深度排查",
+    summary: "深度排查测试子代理",
+    describeCapability: () => "执行深度排查。",
+    systemPrompt: "你是专项排查子代理。",
+    tools: [],
+  });
+
+  const { url } = await app.listen();
+  const initialRes = (await (
+    await fetch(`${url}/api/admin/settings`)
+  ).json()) as {
+    settings: Record<string, unknown> & {
+      mainModel: Record<string, unknown>;
+    };
+    thinkingTasks: { key: string; label: string; fallback?: string }[];
+  };
+
+  assert.ok(initialRes.thinkingTasks.some((item) => item.key === "dialog"));
+  assert.ok(
+    initialRes.thinkingTasks.some(
+      (item) =>
+        item.key === "subagent:deep_checker" &&
+        item.label === "子代理 · 深度排查",
+    ),
+  );
+
+  const statusJson = (await (await fetch(`${url}/api/auth/status`)).json()) as {
+    csrfToken?: string;
+  };
+  const putRes = await fetch(`${url}/api/admin/settings`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": statusJson.csrfToken ?? "",
+    },
+    body: JSON.stringify({
+      ...initialRes.settings,
+      mainModel: {
+        ...initialRes.settings.mainModel,
+        thinkingEffort: "low",
+        taskThinkingEffort: {
+          "dialog": "none",
+          "subagent:deep_checker": "high",
+        },
+      },
+    }),
+  });
+
+  assert.equal(putRes.status, 200);
+
+  await app.agent.invoke({
+    source: "admin_inject",
+    chatKey: "private:888",
+    kind: "private",
+    chatId: "888",
+    triggerMessageIds: [],
+    content: "测试按任务覆盖思考强度",
+  });
+
+  assert.equal(observed.dialog, undefined);
+  assert.equal(observed.subagent, "high");
 });

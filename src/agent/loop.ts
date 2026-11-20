@@ -4,12 +4,14 @@ import type {
 } from "openai/resources/chat/completions";
 import type { Static, TSchema } from "typebox";
 
-import type { RuntimeSettings } from "../config/settings.ts";
+import type { RuntimeSettings, ThinkingEffort } from "../config/settings.ts";
 import type { Store } from "../store/index.ts";
 import type { TurnMessage } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
 import { completeChat, parseModelJson, validateModelJson } from "./llm.ts";
+
+export type { ThinkingEffort };
 
 export interface AgentTool {
   name: string;
@@ -18,8 +20,6 @@ export interface AgentTool {
   mutating?: boolean;
   execute: (args: Record<string, unknown>) => Promise<unknown>;
 }
-
-export type ThinkingEffort = RuntimeSettings["mainModel"]["thinkingEffort"];
 
 export interface ToolLoopResult<T> {
   text: string;

@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 
 import type { RuntimeSettings } from "../config/settings.ts";
+import { resolveThinkingEffort } from "../config/settings.ts";
 import { resolveReactionEmojiId } from "../gateway/qface.ts";
 import type {
   AgentServices,
@@ -306,7 +307,7 @@ export class BerryAgent {
       tools,
       maxRounds: 40,
       outputSchema: agentOutputSchema,
-      thinkingEffort: settings.mainModel.thinkingEffort,
+      thinkingEffort: resolveThinkingEffort(settings, "dialog"),
     });
 
     // Resolve opaque quote, reaction, and optional targetRef handles back to real OneBot IDs.
@@ -414,6 +415,7 @@ export class BerryAgent {
       }),
       tools: [memoryTool],
       maxRounds: 12,
+      thinkingEffort: resolveThinkingEffort(settings, "memory_update"),
     });
   }
 
@@ -491,6 +493,7 @@ export class BerryAgent {
         tools: [],
         maxRounds: 3,
         outputSchema: compactionOutputSchema,
+        thinkingEffort: resolveThinkingEffort(settings, "compaction"),
       });
 
       const summary = res.structured.summary.trim();

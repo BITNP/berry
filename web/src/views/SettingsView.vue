@@ -26,11 +26,19 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { h, onMounted, ref, watch } from "vue";
+import { computed, h, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import { formatBytes } from "../utils/format.ts";
+
+type ThinkingEffort = "none" | "low" | "medium" | "high";
+
+interface ThinkingTaskOption {
+  key: string;
+  label: string;
+  fallback?: ThinkingEffort;
+}
 
 interface WeeklySchedule {
   kind: "weekly";
@@ -65,7 +73,8 @@ interface RuntimeSettingsView {
     maxOutputTokens: number;
     temperature: number;
     timeoutMs: number;
-    thinkingEffort: "none" | "low" | "medium" | "high";
+    thinkingEffort: ThinkingEffort;
+    taskThinkingEffort: Record<string, ThinkingEffort>;
   };
   gateModel: {
     baseURL: string;
@@ -192,6 +201,7 @@ const activeTab = ref(
     : "bot",
 );
 const settings = ref<RuntimeSettingsView | null>(null);
+const thinkingTasks = ref<ThinkingTaskOption[]>([]);
 const envSummary = ref<EnvSummaryView | null>(null);
 const mcpStatuses = ref<McpStatusRow[]>([]);
 const mcpTools = ref<McpToolRow[]>([]);
@@ -236,21 +246,95 @@ const weekdayOptions = [
   { label: "周日", value: "sun" },
 ];
 
+const THINKING_EFFORT_OPTIONS: { label: string; value: ThinkingEffort }[] = [
+  { label: "关闭 (none)", value: "none" },
+  { label: "低 (low)", value: "low" },
+  { label: "中 (medium)", value: "medium" },
+  { label: "高 (high)", value: "high" },
+];
+
+const THINKING_SHORT_LABEL: Record<ThinkingEffort, string> = {
+  none: "关闭",
+  low: "低",
+  medium: "中",
+  high: "高",
+};
+
+const taskOverrideCount = computed(
+  () => Object.keys(settings.value?.mainModel.taskThinkingEffort ?? {}).length,
+);
+
+function defaultThinkingForTask(task: ThinkingTaskOption): ThinkingEffort {
+  const base = settings.value?.mainModel.thinkingEffort ?? "none";
+  const overrides = settings.value?.mainModel.taskThinkingEffort ?? {};
+
+  if (task.key.startsWith("subagent:") && overrides.subagent) {
+    return overrides.subagent;
+  }
+
+  if (task.fallback) {
+    return task.fallback;
+  }
+
+  if (task.key === "memory_update" || task.key === "compaction") {
+    return "none";
+  }
+
+  if (task.key === "subagent" || task.key.startsWith("subagent:")) {
+    return base === "none" ? "none" : "low";
+  }
+
+  return base;
+}
+
+function setTaskThinking(key: string, value: ThinkingEffort | null) {
+  if (!settings.value) {
+    return;
+  }
+
+  const next = { ...settings.value.mainModel.taskThinkingEffort };
+
+  if (value) {
+    next[key] = value;
+  } else {
+    delete next[key];
+  }
+
+  settings.value.mainModel.taskThinkingEffort = next;
+}
+
+function resetAllTaskThinking() {
+  if (!settings.value) {
+    return;
+  }
+
+  settings.value.mainModel.taskThinkingEffort = {};
+}
+
 async function loadSettings() {
   loading.value = true;
 
   try {
     const [cfgRes, mcpRes, ovRes] = await Promise.all([
-      apiFetch<{ settings: RuntimeSettingsView; envSummary: EnvSummaryView }>(
-        "/api/admin/settings",
-      ),
+      apiFetch<{
+        settings: RuntimeSettingsView;
+        thinkingTasks?: ThinkingTaskOption[];
+        envSummary: EnvSummaryView;
+      }>("/api/admin/settings"),
       apiFetch<{ statuses: McpStatusRow[]; tools: McpToolRow[] }>(
         "/api/admin/mcp",
       ),
       apiFetch<{ storage: StorageSummary }>("/api/admin/overview"),
     ]);
 
-    settings.value = cfgRes.settings;
+    settings.value = {
+      ...cfgRes.settings,
+      mainModel: {
+        ...cfgRes.settings.mainModel,
+        taskThinkingEffort: cfgRes.settings.mainModel.taskThinkingEffort ?? {},
+      },
+    };
+    thinkingTasks.value = cfgRes.thinkingTasks ?? [];
     envSummary.value = cfgRes.envSummary;
     mcpStatuses.value = mcpRes.statuses;
     mcpTools.value = mcpRes.tools;
@@ -710,15 +794,10 @@ onMounted(() => {
                 <NFormItem label="模型名">
                   <NInput v-model:value="settings.mainModel.model" />
                 </NFormItem>
-                <NFormItem label="思考强度（Thinking Effort）">
+                <NFormItem label="思考强度（默认）">
                   <NSelect
                     v-model:value="settings.mainModel.thinkingEffort"
-                    :options="[
-                      { label: '关闭（none）', value: 'none' },
-                      { label: '低（low）', value: 'low' },
-                      { label: '中（medium）', value: 'medium' },
-                      { label: '高（high）', value: 'high' },
-                    ]"
+                    :options="THINKING_EFFORT_OPTIONS"
                   />
                 </NFormItem>
                 <NFormItem label="上下文窗口（Tokens）">
@@ -755,6 +834,53 @@ onMounted(() => {
                   />
                 </NFormItem>
               </div>
+
+              <NCollapse
+                v-if="thinkingTasks.length > 0"
+                class="task-thinking-collapse"
+              >
+                <NCollapseItem name="task-thinking" title="按任务覆盖思考强度">
+                  <template #header-extra>
+                    <NTag v-if="taskOverrideCount > 0" size="small" type="info">
+                      已覆盖 {{ taskOverrideCount }} 项
+                    </NTag>
+                    <NText v-else class="sub-note" depth="3">全部默认</NText>
+                  </template>
+                  <div class="task-thinking-grid">
+                    <div
+                      v-for="task in thinkingTasks"
+                      :key="task.key"
+                      class="task-thinking-row"
+                    >
+                      <span class="task-thinking-label">{{ task.label }}</span>
+                      <NSelect
+                        class="w-145"
+                        clearable
+                        :options="THINKING_EFFORT_OPTIONS"
+                        :placeholder="`默认 (${THINKING_SHORT_LABEL[defaultThinkingForTask(task)]})`"
+                        size="small"
+                        :value="
+                          settings.mainModel.taskThinkingEffort[task.key] ??
+                          null
+                        "
+                        @update:value="
+                          (val: ThinkingEffort | null) =>
+                            setTaskThinking(task.key, val)
+                        "
+                      />
+                    </div>
+                  </div>
+                  <div v-if="taskOverrideCount > 0" class="task-thinking-foot">
+                    <NButton
+                      quaternary
+                      size="tiny"
+                      @click="resetAllTaskThinking"
+                    >
+                      全部恢复默认
+                    </NButton>
+                  </div>
+                </NCollapseItem>
+              </NCollapse>
             </NCard>
 
             <NCard size="small" title="分流小模型（无 @ 微批消息判定）">
@@ -1220,8 +1346,42 @@ onMounted(() => {
   gap: 0 14px;
 }
 
+.task-thinking-collapse {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--berry-border);
+}
+
+.task-thinking-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 18px;
+}
+
+.task-thinking-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.task-thinking-label {
+  font-size: 13px;
+  color: var(--berry-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-thinking-foot {
+  margin-top: 8px;
+  display: flex;
+  justify-content: flex-end;
+}
+
 @media (max-width: 700px) {
-  .form-grid-2 {
+  .form-grid-2,
+  .task-thinking-grid {
     grid-template-columns: 1fr;
   }
 }

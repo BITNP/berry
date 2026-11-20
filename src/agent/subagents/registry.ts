@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 
+import { resolveThinkingEffort } from "../../config/settings.ts";
 import type {
   AgentServices,
   DynamicToolSource,
@@ -77,9 +78,11 @@ export class SubagentRegistry {
       typeof def.systemPrompt === "function"
         ? def.systemPrompt(ctx)
         : def.systemPrompt;
-    const thinkingEffort =
-      def.thinkingEffort ??
-      (settings.mainModel.thinkingEffort === "none" ? "none" : "low");
+    const thinkingEffort = resolveThinkingEffort(
+      settings,
+      `subagent:${def.kind}`,
+      def.thinkingEffort,
+    );
 
     const result = await runChatToolLoop({
       purpose: `subagent:${def.kind}`,

@@ -1036,6 +1036,18 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
 
       return {
         settings: berry.settings,
+        thinkingTasks: [
+          { key: "dialog", label: "主对话" },
+          { key: "subagent", label: "子代理（默认）" },
+          ...berry.subagents.list().map((sub) => ({
+            key: `subagent:${sub.kind}`,
+            label: `子代理 · ${sub.title}`,
+            ...(sub.thinkingEffort ? { fallback: sub.thinkingEffort } : {}),
+          })),
+          { key: "report", label: "公会周报" },
+          { key: "memory_update", label: "记忆提炼" },
+          { key: "compaction", label: "摘要压缩" },
+        ],
         envSummary: {
           gatewayUrl: berry.env.gatewayUrl,
           gatewayAccount: berry.env.gatewayAccount,
