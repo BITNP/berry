@@ -1,6 +1,14 @@
+import { randomUUID } from "node:crypto";
+
 import type { Selectable } from "kysely";
 
-import type { ChatKey, JobKind, JobPayloads, JobRecord } from "../types.ts";
+import type {
+  ChatKey,
+  GuildTaskKind,
+  JobKind,
+  JobPayloads,
+  JobRecord,
+} from "../types.ts";
 import type { EventBus } from "../utils/logger.ts";
 import type { BerryDatabase } from "./database.ts";
 import type { BerryTables } from "./schema.ts";
@@ -71,6 +79,69 @@ export class JobsStore {
         .onConflict((oc) => oc.column("dedupe_key").doNothing())
         .execute();
     });
+  }
+
+  public async enqueueGuildTask(task: GuildTaskKind): Promise<{
+    job: JobRecord<"guild_task">;
+    alreadyActive: boolean;
+  }> {
+    const now = Date.now();
+    const chatKey = `guild:${task}`;
+
+    const result = await this.#database.writeTx(async (trx) => {
+      const existing = await trx
+        .selectFrom("jobs")
+        .selectAll()
+        .where("kind", "=", "guild_task")
+        .where("chat_key", "=", chatKey)
+        .where("state", "in", ["pending", "running"])
+        .orderBy("id", "desc")
+        .limit(1)
+        .executeTakeFirst();
+
+      if (existing) {
+        return {
+          job: decodeJob<"guild_task">(existing),
+          alreadyActive: true,
+        };
+      }
+
+      const created = await trx
+        .insertInto("jobs")
+        .values({
+          kind: "guild_task",
+          dedupe_key: `guild_task:${task}:${now}:${randomUUID().slice(0, 6)}`,
+          chat_key: chatKey,
+          payload_json: JSON.stringify({ task }),
+          state: "pending",
+          attempts: 0,
+          run_after: now,
+          last_error: null,
+          created_at: now,
+          updated_at: now,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+
+      return {
+        job: decodeJob<"guild_task">(created),
+        alreadyActive: false,
+      };
+    });
+
+    if (!result.alreadyActive) {
+      this.#events.emit({
+        type: "job_update",
+        data: {
+          id: result.job.id,
+          kind: "guild_task",
+          chatKey: result.job.chatKey,
+          state: result.job.state,
+        },
+      });
+    }
+
+    return result;
   }
 
   // Coalesce messages for the same chat within the fixed 1s window from first message.

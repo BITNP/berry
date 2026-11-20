@@ -171,7 +171,7 @@ export class BerryApp {
       getSettings,
     );
 
-    workerRef = new JobWorker(store, gate, agent, scheduler);
+    workerRef = new JobWorker(store, gate, agent, scheduler, guildAutomation);
     const auth = new AdminAuthService(env, store);
 
     const instance = new BerryApp({

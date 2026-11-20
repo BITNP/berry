@@ -17,7 +17,7 @@ import {
   NTag,
   useMessage,
 } from "naive-ui";
-import { h, onMounted, ref, watch } from "vue";
+import { computed, h, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
@@ -71,7 +71,22 @@ interface DirectoryUserRow {
   };
 }
 
+interface GuildJobRow {
+  id: number;
+  kind: string;
+  chatKey: string;
+  payload: { task?: "due" | "assignments" | "weekly" };
+  state: "pending" | "running" | "done" | "failed";
+  lastError: string | null;
+  updatedAt: number;
+}
+
 const GUILD_TABS = new Set(["audit", "cursors", "directory"]);
+const GUILD_TASK_LABELS: Record<"due" | "assignments" | "weekly", string> = {
+  due: "到期提醒",
+  assignments: "新指派通知",
+  weekly: "生成周报",
+};
 
 const route = useRoute();
 const router = useRouter();
@@ -85,7 +100,27 @@ const activeTab = ref(
 );
 const status = ref<GuildStatus | null>(null);
 const auditLogs = ref<GuildAuditRow[]>([]);
+const guildJobs = ref<GuildJobRow[]>([]);
 const triggering = ref<string | null>(null);
+
+const activeGuildJobs = computed(() =>
+  guildJobs.value.filter((j) => j.state === "pending" || j.state === "running"),
+);
+
+const activeJobFor = (
+  task: "due" | "assignments" | "weekly",
+): GuildJobRow | null =>
+  activeGuildJobs.value.find(
+    (j) => j.payload?.task === task || j.chatKey === `guild:${task}`,
+  ) ?? null;
+
+function taskLabelForJob(job: GuildJobRow): string {
+  const key =
+    job.payload?.task ??
+    (job.chatKey.replace(/^guild:/, "") as "due" | "assignments" | "weekly");
+
+  return GUILD_TASK_LABELS[key] ?? job.chatKey;
+}
 
 const detailOpen = ref(false);
 const selectedAudit = ref<GuildAuditRow | null>(null);
@@ -103,6 +138,18 @@ const actionLabels: Record<GuildAuditRow["action"], string> = {
   create_comment: "添加评论",
 };
 
+async function loadGuildJobs() {
+  try {
+    const res = await apiFetch<{ items: GuildJobRow[] }>(
+      "/api/admin/jobs?limit=30",
+    );
+
+    guildJobs.value = res.items.filter((j) => j.kind === "guild_task");
+  } catch {
+    // Keep last known job list on transient error.
+  }
+}
+
 async function loadGuild() {
   loading.value = true;
 
@@ -110,6 +157,7 @@ async function loadGuild() {
     const [st, logs] = await Promise.all([
       apiFetch<GuildStatus>("/api/admin/guild/status"),
       apiFetch<{ items: GuildAuditRow[] }>("/api/admin/guild/audit-logs"),
+      loadGuildJobs(),
     ]);
 
     status.value = st;
@@ -125,11 +173,25 @@ async function triggerTask(task: "due" | "assignments" | "weekly") {
   triggering.value = task;
 
   try {
-    await apiFetch(`/api/admin/guild/trigger/${task}`, { method: "POST" });
-    message.success("任务已触发执行");
-    await loadGuild();
+    const res = await apiFetch<{
+      queued: boolean;
+      alreadyActive: boolean;
+      jobId: number;
+      state: string;
+    }>(`/api/admin/guild/trigger/${task}`, { method: "POST" });
+    const label = GUILD_TASK_LABELS[task];
+
+    if (res.alreadyActive) {
+      message.info(`「${label}」已在后台执行中（任务 #${res.jobId}）`);
+    } else {
+      message.success(
+        `已加入后台任务队列（#${res.jobId} · ${label}），离开页面不影响执行`,
+      );
+    }
+
+    await loadGuildJobs();
   } catch (err) {
-    message.error(err instanceof Error ? err.message : "触发失败");
+    message.error(err instanceof Error ? err.message : "提交后台任务失败");
   } finally {
     triggering.value = null;
   }
@@ -303,9 +365,31 @@ const cursorColumns: DataTableColumns<CursorRow> = [
   },
 ];
 
-useEventStream((type) => {
+useEventStream((type, data) => {
   if (type === "guild_audit") {
     void loadGuild();
+  }
+
+  if (type === "job_update" && data && typeof data === "object") {
+    const ev = data as { kind?: string; state?: string; chatKey?: string };
+
+    if (ev.kind === "guild_task") {
+      void loadGuildJobs();
+
+      if (ev.state === "done" || ev.state === "failed") {
+        const taskKey = (ev.chatKey ?? "").replace(/^guild:/, "") as
+          "due" | "assignments" | "weekly";
+        const label = GUILD_TASK_LABELS[taskKey] ?? "公会任务";
+
+        if (ev.state === "done") {
+          message.success(`后台任务「${label}」已完成`);
+        } else {
+          message.error(`后台任务「${label}」执行失败，可在日志队列查看原因`);
+        }
+
+        void loadGuild();
+      }
+    }
   }
 });
 
@@ -349,25 +433,30 @@ onMounted(() => {
           打开公会看板
         </NButton>
         <NButton
+          :disabled="Boolean(activeJobFor('due'))"
           :loading="triggering === 'due'"
           size="small"
           @click="triggerTask('due')"
         >
-          到期提醒
+          {{ activeJobFor("due") ? "到期提醒（后台中）" : "到期提醒" }}
         </NButton>
         <NButton
+          :disabled="Boolean(activeJobFor('assignments'))"
           :loading="triggering === 'assignments'"
           size="small"
           @click="triggerTask('assignments')"
         >
-          新指派通知
+          {{
+            activeJobFor("assignments") ? "新指派通知（后台中）" : "新指派通知"
+          }}
         </NButton>
         <NButton
+          :disabled="Boolean(activeJobFor('weekly'))"
           :loading="triggering === 'weekly'"
           size="small"
           @click="triggerTask('weekly')"
         >
-          生成周报
+          {{ activeJobFor("weekly") ? "生成周报（后台中）" : "生成周报" }}
         </NButton>
         <NButton :loading size="small" @click="loadGuild">
           <template #icon>
@@ -400,6 +489,34 @@ onMounted(() => {
         <span class="metric-value">{{ status.cursors.length }}</span>
       </div>
     </div>
+
+    <NAlert v-if="activeGuildJobs.length > 0" class="mb-md" type="info">
+      <div class="feed-row-top">
+        <span>
+          后台任务运行中（离开或刷新页面不影响）：
+          {{
+            activeGuildJobs
+              .map(
+                (j) =>
+                  `${taskLabelForJob(j)} #${j.id}（${j.state === "running" ? "执行中" : "排队中"}）`,
+              )
+              .join("、")
+          }}
+        </span>
+        <NSpace :size="8">
+          <NButton
+            quaternary
+            size="tiny"
+            @click="router.push('/logs?tab=jobs')"
+          >
+            查看任务队列
+          </NButton>
+          <NButton quaternary size="tiny" @click="router.push('/ai')">
+            查看 AI 调用
+          </NButton>
+        </NSpace>
+      </div>
+    </NAlert>
 
     <NCard size="small">
       <NTabs v-model:value="activeTab" type="line">
@@ -462,7 +579,7 @@ onMounted(() => {
     </NCard>
 
     <NDrawer v-model:show="detailOpen" class="drawer-safe" :width="500">
-      <NDrawerContent v-if="selectedAudit" title="审计详情">
+      <NDrawerContent v-if="selectedAudit" closable title="审计详情">
         <NDescriptions bordered :column="1" label-placement="left" size="small">
           <NDescriptionsItem label="时间">
             {{ formatTime(selectedAudit.createdAt) }}

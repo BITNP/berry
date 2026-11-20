@@ -1,5 +1,6 @@
 import type { BerryAgent } from "./agent/runner.ts";
 import type { MessageGate } from "./gate/gate.ts";
+import type { GuildAutomationRunner } from "./guild/automation.ts";
 import type { ScheduleRunner } from "./scheduler/runner.ts";
 import type { Store } from "./store/index.ts";
 import type { JobKind, JobRecord } from "./types.ts";
@@ -11,6 +12,7 @@ export class JobWorker {
   #gate: MessageGate;
   #agent: BerryAgent;
   #scheduler: ScheduleRunner;
+  #guildAutomation: GuildAutomationRunner;
   #logger = new Logger("worker");
   #stopped = false;
   #running = new Map<string, number>();
@@ -23,11 +25,13 @@ export class JobWorker {
     gate: MessageGate,
     agent: BerryAgent,
     scheduler: ScheduleRunner,
+    guildAutomation: GuildAutomationRunner,
   ) {
     this.#store = store;
     this.#gate = gate;
     this.#agent = agent;
     this.#scheduler = scheduler;
+    this.#guildAutomation = guildAutomation;
   }
 
   public get running(): boolean {
@@ -51,14 +55,24 @@ export class JobWorker {
     // Single-consumer invoke lane enforces strict serialization of the global conversation.
     this.#spawnLane("gate_batch", ["gate_batch"], 2);
     this.#spawnLane("invoke", ["invoke"], 1);
-    this.#spawnLane("background", ["memory_update", "group_digest"], 1);
+    this.#spawnLane(
+      "background",
+      ["memory_update", "group_digest", "guild_task"],
+      1,
+    );
   }
 
   public async drainOnce(): Promise<void> {
     while (true) {
       const kinds: JobKind[] = this.#invokeActive
-        ? ["gate_batch", "memory_update", "group_digest"]
-        : ["gate_batch", "invoke", "memory_update", "group_digest"];
+        ? ["gate_batch", "memory_update", "group_digest", "guild_task"]
+        : [
+            "gate_batch",
+            "invoke",
+            "memory_update",
+            "group_digest",
+            "guild_task",
+          ];
       const job = await this.#store.jobs.claim(kinds, Date.now());
 
       if (!job) {
@@ -153,6 +167,20 @@ export class JobWorker {
           await this.#scheduler.runGroupDigest(
             job as JobRecord<"group_digest">,
           );
+
+          break;
+        }
+
+        case "guild_task": {
+          const { task } = (job as JobRecord<"guild_task">).payload;
+
+          if (task === "due") {
+            await this.#guildAutomation.runDueReminders();
+          } else if (task === "assignments") {
+            await this.#guildAutomation.runAssignments();
+          } else {
+            await this.#guildAutomation.runWeeklyReport();
+          }
 
           break;
         }

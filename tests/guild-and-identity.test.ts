@@ -1006,6 +1006,7 @@ test("GuildInternalClient.listNodeTree returns all roots and nested children bey
 
   const { app } = await createTestBerryApp(
     {
+      devAuthBypass: true,
       guildApiUrl: guildStub.url,
       guildInternalToken: "guild-sec",
       guildPublicUrl: "https://home.bitnp.net",
@@ -1026,4 +1027,35 @@ test("GuildInternalClient.listNodeTree returns all roots and nested children bey
   const searchAll = await app.guild.searchNodes("sub-admin", "");
 
   assert.equal(searchAll.length, 40);
+
+  // Triggering guild tasks via admin API enqueues a deduplicated background job immediately.
+  const { url } = await app.listen();
+  const authInfo = (await (await fetch(`${url}/api/auth/status`)).json()) as {
+    csrfToken: string;
+  };
+  const firstTrigger = (await (
+    await fetch(`${url}/api/admin/guild/trigger/weekly`, {
+      method: "POST",
+      headers: { "X-CSRF-Token": authInfo.csrfToken },
+    })
+  ).json()) as {
+    queued: boolean;
+    alreadyActive: boolean;
+    jobId: number;
+    state: string;
+  };
+
+  assert.equal(firstTrigger.queued, true);
+  assert.equal(firstTrigger.alreadyActive, false);
+  assert.equal(firstTrigger.state, "pending");
+
+  const dupTrigger = (await (
+    await fetch(`${url}/api/admin/guild/trigger/weekly`, {
+      method: "POST",
+      headers: { "X-CSRF-Token": authInfo.csrfToken },
+    })
+  ).json()) as { alreadyActive: boolean; jobId: number };
+
+  assert.equal(dupTrigger.alreadyActive, true);
+  assert.equal(dupTrigger.jobId, firstTrigger.jobId);
 });

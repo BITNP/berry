@@ -801,20 +801,18 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         guildTaskParamSchema,
         "未知公会任务类型",
       );
+      const { job, alreadyActive } =
+        await berry.store.jobs.enqueueGuildTask(task);
 
-      switch (task) {
-        case "due": {
-          return berry.guildAutomation.runDueReminders();
-        }
+      berry.worker.wake();
 
-        case "assignments": {
-          return berry.guildAutomation.runAssignments();
-        }
-
-        case "weekly": {
-          return berry.guildAutomation.runWeeklyReport();
-        }
-      }
+      return {
+        queued: true,
+        alreadyActive,
+        jobId: job.id,
+        state: job.state,
+        task,
+      };
     }),
   );
 

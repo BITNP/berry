@@ -143,8 +143,10 @@ export interface UnifiedInput {
   content?: string;
 }
 
+export type GuildTaskKind = "due" | "assignments" | "weekly";
+
 export type JobKind =
-  "gate_batch" | "invoke" | "memory_update" | "group_digest";
+  "gate_batch" | "invoke" | "memory_update" | "group_digest" | "guild_task";
 
 export interface JobPayloads {
   gate_batch: {
@@ -163,6 +165,9 @@ export interface JobPayloads {
     endTimeMs: number;
     prompt: string;
     uploadTool: string;
+  };
+  guild_task: {
+    task: GuildTaskKind;
   };
 }
 
