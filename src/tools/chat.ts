@@ -1,5 +1,6 @@
 import { Type } from "typebox";
 
+import { searchQFaceCatalog } from "../gateway/qface.ts";
 import type { ChatKey } from "../types.ts";
 import { makeChatKey, parseChatKey } from "../types.ts";
 import type { ToolActor, ToolContext, ToolDefinition } from "./types.ts";
@@ -417,6 +418,21 @@ export const qqDirectoryTool = defineTool({
   },
 });
 
+export const searchQqEmojisTool = defineTool({
+  name: "search_qq_emojis",
+  description:
+    "检索全部 380+ QQNT 官方原生表情（支持按中文名称、关键词联想词或数字 ID 搜索，也可传入单个 Unicode Emoji 查其 NapCat 回应码点）。",
+  parameters: Type.Object(
+    {
+      query: Type.Optional(Type.String()),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100 })),
+    },
+    { additionalProperties: false },
+  ),
+  execute: async (args) =>
+    searchQFaceCatalog(args.query ?? "", args.limit ?? 30),
+});
+
 export const chatTools: readonly ToolDefinition[] = [
   listChatsTool,
   searchChatMessagesTool,
@@ -424,4 +440,5 @@ export const chatTools: readonly ToolDefinition[] = [
   fetchOlderHistoryTool,
   inspectMediaTool,
   qqDirectoryTool,
+  searchQqEmojisTool,
 ];

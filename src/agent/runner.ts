@@ -1,6 +1,7 @@
 import { Type } from "typebox";
 
 import type { RuntimeSettings } from "../config/settings.ts";
+import { resolveReactionEmojiId } from "../gateway/qface.ts";
 import type {
   AgentServices,
   ToolContext,
@@ -616,14 +617,24 @@ export class BerryAgent {
         const resolvedMsg = resolveMsgHandle(unit.messageId);
 
         if (resolvedMsg) {
-          dispatches.push({
-            targetChatKey: resolvedMsg.chatKey,
-            unit: {
-              kind: "qq_reaction",
-              messageId: resolvedMsg.rawId,
+          try {
+            const resolvedEmojiId = resolveReactionEmojiId(unit.emojiId);
+
+            dispatches.push({
+              targetChatKey: resolvedMsg.chatKey,
+              unit: {
+                kind: "qq_reaction",
+                messageId: resolvedMsg.rawId,
+                emojiId: resolvedEmojiId,
+              },
+            });
+          } catch (error) {
+            logger.warn("Dropped qq_reaction with unrecognized emojiId", {
+              fromChatKey: input.chatKey,
               emojiId: unit.emojiId,
-            },
-          });
+              error: errorMessage(error),
+            });
+          }
         }
 
         continue;

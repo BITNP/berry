@@ -8,8 +8,8 @@ const BASE_PROTOCOL_PROMPT = `<protocol>
 {"units":[{"kind":"qq_reply","text":"要发送给 QQ 的文本","quoteMessageId":"可选 m_* 引用句柄","targetRef":"可选 g_*/u_* 投递目标"}]}
 或合并转发长文档：
 {"units":[{"kind":"qq_forward","title":"标题","items":[{"text":"分段文本"}],"targetRef":"可选 g_*/u_* 投递目标"}]}
-也可附带或单独发送 QQ 表情回应（如点赞 76、OK 124、爱心 66、狗头 277）：
-{"units":[{"kind":"qq_reaction","messageId":"m_* 引用句柄","emojiId":"76"}]}
+也可附带或单独发送 QQ 表情回应（emojiId 可直接填任意单个标准 Unicode Emoji 如 "㊗️"、"🔥"、"👍"、"😭"、"❤️"，系统会自动转为 NapCat 码点；也可直接填 QQ 原生表情中文名如 "赞"、"OK"、"爱心"、"doge"、"狗头"、"吃瓜"、"摸鱼"、"比心"、"庆祝"、"贴贴"、"对的对的" 等，或填数字 ID；若需查找某个不确定的 QQ 特有表情，可委派 chat_analyst 调用 search_qq_emojis 查询全部 380+ QQNT 官方表情）：
+{"units":[{"kind":"qq_reaction","messageId":"m_* 引用句柄","emojiId":"㊗️"}]}
 3. 若判断当前不需要向 QQ 发言（例如误唤醒、群友自行解决、或仅需静默更新记忆），最终返回 {"units":[]}。
 4. 默认省略 targetRef 时，消息会回复到当前输入所属的 chat；只有当用户明确要求跨会话代发、或在无目标的全局定时任务中定向投递时，才设置 targetRef（如已知群的 g_* 或用户的 u_* 句柄）。
 5. 推理过程本身产生的文字不会直接发往 QQ，只有 units 数组里的内容会被投递给 message-gateway。

@@ -1,112 +1,87 @@
-const QFACE_MAP: Record<string, string> = {
-  0: "惊讶",
-  1: "撇嘴",
-  2: "色",
-  4: "得意",
-  5: "流泪",
-  6: "害羞",
-  8: "睡",
-  9: "大哭",
-  10: "尴尬",
-  11: "发怒",
-  12: "调皮",
-  13: "呲牙",
-  14: "微笑",
-  15: "难过",
-  16: "酷",
-  18: "抓狂",
-  19: "吐",
-  20: "偷笑",
-  21: "可爱",
-  22: "白眼",
-  23: "傲慢",
-  26: "惊恐",
-  27: "流汗",
-  28: "憨笑",
-  30: "奋斗",
-  32: "疑问",
-  33: "嘘",
-  34: "晕",
-  36: "衰",
-  37: "骷髅",
-  38: "敲打",
-  39: "再见",
-  49: "拥抱",
-  53: "蛋糕",
-  60: "咖啡",
-  63: "玫瑰",
-  66: "爱心",
-  67: "心碎",
-  74: "太阳",
-  75: "月亮",
-  76: "赞",
-  77: "踩",
-  78: "握手",
-  79: "胜利",
-  89: "西瓜",
-  96: "冷汗",
-  97: "擦汗",
-  98: "抠鼻",
-  99: "鼓掌",
-  100: "糗大了",
-  101: "坏笑",
-  104: "哈欠",
-  105: "鄙视",
-  106: "委屈",
-  109: "左亲亲",
-  111: "可怜",
-  112: "菜刀",
-  116: "示爱",
-  118: "抱拳",
-  120: "拳头",
-  122: "爱你",
-  123: "NO",
-  124: "OK",
-  144: "喝彩",
-  147: "棒棒糖",
-  173: "泪奔",
-  174: "无奈",
-  175: "卖萌",
-  176: "小纠结",
-  178: "斜眼笑",
-  179: "doge",
-  181: "戳一戳",
-  182: "笑哭",
-  183: "我最美",
-  212: "托腮",
-  265: "辣眼睛",
-  277: "狗头",
-  281: "无眼笑",
-  284: "面无表情",
-  285: "摸鱼",
-  287: "哦",
-  289: "睁眼",
-  297: "拜谢",
-  298: "元宝",
-  305: "右亲亲",
-  307: "喵喵",
-  311: "打call",
-  312: "变形",
-  314: "仔细分析",
-  318: "崇拜",
-  319: "比心",
-  320: "庆祝",
-  323: "嫌弃",
-  324: "吃糖",
-  326: "生气",
-  332: "举牌牌",
-  337: "花朵脸",
-  339: "舔屏",
-  344: "大怨种",
-  128_077: "👍",
-  128_078: "👎",
-  128_516: "😄",
-  128_514: "😂",
-  10_084: "❤️",
-  128_293: "🔥",
-  127_881: "🎉",
-  128_064: "👀",
+import { QFACE_CATALOG } from "./qface-data.ts";
+
+export interface QFaceEntry {
+  id: string;
+  name: string;
+  associateWords: readonly string[];
+}
+
+const SINGLE_UNICODE_EMOJI_RE =
+  /^[\p{Extended_Pictographic}\p{Emoji_Presentation}]$/u;
+const EMOJI_PRESENTATION_RE = /\p{Emoji_Presentation}/u;
+
+function extractUnicodeEmojiCodepoint(text: string): string | null {
+  const base = text.replace(/\uFE0F$/u, "").replace(/\p{Emoji_Modifier}$/u, "");
+
+  if (!SINGLE_UNICODE_EMOJI_RE.test(base)) {
+    return null;
+  }
+
+  const cp = base.codePointAt(0);
+
+  return cp !== undefined && cp >= 0x20_00 ? String(cp) : null;
+}
+
+// Common colloquial aliases that differ from QQNT's official `describe` text.
+const QFACE_ALIASES: Record<string, string> = {
+  狗头: "179",
+  滑稽: "178",
+  大拇指: "76",
+  强: "76",
+  弱: "77",
+  好耶: "320",
+  鼓掌加油: "99",
+  感谢: "297",
+  谢谢: "297",
 };
+
+const BY_ID = new Map<string, QFaceEntry>();
+const BY_NAME = new Map<string, string>();
+
+for (const tuple of QFACE_CATALOG) {
+  const [id, name, words = []] = tuple;
+  const entry: QFaceEntry = { id, name, associateWords: words };
+
+  BY_ID.set(id, entry);
+
+  const normalized = name.toLowerCase();
+
+  if (!BY_NAME.has(normalized)) {
+    BY_NAME.set(normalized, id);
+  }
+}
+
+for (const [alias, id] of Object.entries(QFACE_ALIASES)) {
+  const normalized = alias.toLowerCase();
+
+  if (!BY_NAME.has(normalized) && BY_ID.has(id)) {
+    BY_NAME.set(normalized, id);
+  }
+}
+
+function decodeUnicodeEmojiId(id: string): string | null {
+  if (!/^\d+$/.test(id)) {
+    return null;
+  }
+
+  const cp = Number(id);
+
+  if (!Number.isInteger(cp) || cp < 0x20_00 || cp > 0x10_ff_ff) {
+    return null;
+  }
+
+  try {
+    const ch = String.fromCodePoint(cp);
+
+    if (!SINGLE_UNICODE_EMOJI_RE.test(ch)) {
+      return null;
+    }
+
+    return EMOJI_PRESENTATION_RE.test(ch) ? ch : `${ch}\uFE0F`;
+  } catch {
+    return null;
+  }
+}
 
 export function qfaceName(rawId: unknown): string {
   const key = String(rawId ?? "").trim();
@@ -115,5 +90,118 @@ export function qfaceName(rawId: unknown): string {
     return "表情";
   }
 
-  return QFACE_MAP[key] ?? `#${key}`;
+  const known = BY_ID.get(key);
+
+  if (known) {
+    return known.name;
+  }
+
+  const unicode = decodeUnicodeEmojiId(key);
+
+  if (unicode) {
+    return unicode;
+  }
+
+  return `#${key}`;
+}
+
+function stripDecorators(raw: string): string {
+  let text = raw.trim();
+
+  if (text.startsWith("[") && text.endsWith("]") && text.length > 2) {
+    text = text
+      .slice(1, -1)
+      .trim()
+      .replace(/^表情\s*[:：]\s*/, "");
+  }
+
+  return text.replace(/^\/+/, "").trim();
+}
+
+/**
+ * Resolve any reaction input into the numeric `emoji_id` string expected by
+ * NapCat `set_msg_emoji_like`:
+ *
+ * - Numeric IDs (`"76"`, `"478"`, `"12951"`) pass straight through.
+ * - Single standard Unicode emojis (`"㊗️"`, `"🔥"`, `"👍"`, `"❤️"`) resolve to
+ *   their decimal Unicode codepoint (`"12951"`, `"128293"`, `"128077"`,
+ *   `"10084"`).
+ * - Official QQNT native face names & aliases (`"对的对的"`, `"吃瓜"`, `"狗头"`) resolve
+ *   to their numeric QQ face ID (`"478"`, `"271"`, `"179"`).
+ */
+export function resolveReactionEmojiId(input: string): string {
+  const cleaned = stripDecorators(input);
+
+  if (!cleaned) {
+    throw new Error("emojiId 不能为空");
+  }
+
+  if (/^\d+$/.test(cleaned)) {
+    return cleaned;
+  }
+
+  const byName = BY_NAME.get(cleaned.toLowerCase());
+
+  if (byName) {
+    return byName;
+  }
+
+  const unicodeId = extractUnicodeEmojiCodepoint(cleaned);
+
+  if (unicodeId) {
+    return unicodeId;
+  }
+
+  throw new Error(
+    `无法识别的表情回应 "${input}"：请直接传入单个标准 Unicode Emoji（如 ㊗️、🔥）、QQ 官方表情名称（可用 search_qq_emojis 查询）或数字 ID`,
+  );
+}
+
+export function searchQFaceCatalog(
+  query = "",
+  limit = 30,
+): {
+  total: number;
+  resolvedUnicodeId?: string;
+  items: { id: string; name: string; associateWords?: readonly string[] }[];
+} {
+  const capped = Math.min(100, Math.max(1, limit));
+  const cleaned = stripDecorators(query);
+
+  const resolvedUnicodeId = cleaned
+    ? (extractUnicodeEmojiCodepoint(cleaned) ?? undefined)
+    : undefined;
+
+  const needle = cleaned.toLowerCase();
+  const aliasTargetId = needle ? BY_NAME.get(needle) : undefined;
+  const matched: QFaceEntry[] = [];
+
+  for (const entry of BY_ID.values()) {
+    if (!needle) {
+      matched.push(entry);
+
+      continue;
+    }
+
+    if (
+      entry.id === needle ||
+      entry.id === aliasTargetId ||
+      entry.name.toLowerCase().includes(needle) ||
+      entry.associateWords.some((w) => w.toLowerCase().includes(needle))
+    ) {
+      matched.push(entry);
+    }
+  }
+
+  return {
+    total: matched.length,
+    ...(resolvedUnicodeId ? { resolvedUnicodeId } : {}),
+    items: matched.slice(0, capped).map((entry) => ({
+      id: entry.id,
+      name: entry.name,
+      ...(entry.associateWords.length > 0
+        ? { associateWords: entry.associateWords }
+        : {}),
+    })),
+  };
 }

@@ -17,6 +17,7 @@ import type {
 import { makeChatKey, parseChatKey } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
+import { resolveReactionEmojiId } from "./qface.ts";
 import { parseOneBotSegments } from "./segments.ts";
 
 interface GatewayEnvelope<T = unknown> {
@@ -677,11 +678,13 @@ export class MessageGatewayClient {
       }
 
       if (unit.kind === "qq_reaction") {
+        const resolvedEmojiId = resolveReactionEmojiId(unit.emojiId);
+
         await this.callAction("set_msg_emoji_like", {
           message_id: Number.isFinite(Number(unit.messageId))
             ? Number(unit.messageId)
             : unit.messageId,
-          emoji_id: String(unit.emojiId),
+          emoji_id: resolvedEmojiId,
           set: true,
         });
 

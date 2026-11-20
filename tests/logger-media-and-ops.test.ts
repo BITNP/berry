@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import {
+  qfaceName,
+  resolveReactionEmojiId,
+  searchQFaceCatalog,
+} from "../src/gateway/qface.ts";
 import { parseOneBotSegments } from "../src/gateway/segments.ts";
 import { previousNaturalWeek } from "../src/guild/automation.ts";
 import { computeNextRunAt } from "../src/store/schedules.ts";
@@ -166,16 +171,35 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
     {
       kind: "qq_reaction",
       messageId: "ob-react-1",
-      emojiId: "76",
+      emojiId: "㊗️",
     },
     "999999",
   );
 
   assert.equal(delivery.status, "sent");
-  assert.equal(
-    gatewayCalls.some((c) => c.path.endsWith("/set_msg_emoji_like")),
-    true,
+  const reactionCall = gatewayCalls.find((c) =>
+    c.path.endsWith("/set_msg_emoji_like"),
   );
+
+  assert.ok(reactionCall);
+  assert.equal((reactionCall.body as { emoji_id?: string }).emoji_id, "12951");
+
+  // QQNT catalog & Unicode codepoint resolution.
+  assert.equal(qfaceName("12951"), "㊗️");
+  assert.equal(qfaceName("478"), "对的对的");
+  assert.equal(qfaceName("179"), "doge");
+  assert.equal(resolveReactionEmojiId("㊗️"), "12951");
+  assert.equal(resolveReactionEmojiId("❤️"), "10084");
+  assert.equal(resolveReactionEmojiId("👍"), "128077");
+  assert.equal(resolveReactionEmojiId("对的对的"), "478");
+  assert.equal(resolveReactionEmojiId("狗头"), "179");
+  assert.equal(resolveReactionEmojiId("76"), "76");
+  assert.throws(() => resolveReactionEmojiId("不存在的乱码文字"), /无法识别/);
+
+  const searchRes = searchQFaceCatalog("西格玛");
+
+  assert.ok(searchRes.items.some((item) => item.id === "469"));
+  assert.equal(searchQFaceCatalog("㊗️").resolvedUnicodeId, "12951");
 
   const { url } = await app.listen();
   const { csrfToken } = (await (
