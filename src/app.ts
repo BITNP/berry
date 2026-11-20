@@ -106,16 +106,16 @@ export class BerryApp {
 
     await store.jobs.recoverOnStartup();
 
-    const gateway = new MessageGatewayClient(env, store);
+    let activeSettings = settings;
+    const getSettings = () => activeSettings;
+
+    const gateway = new MessageGatewayClient(env, store, { getSettings });
     const avatars = new AvatarCache(store);
     const directory = new IdentityDirectory(env);
     const guild = new GuildInternalClient(env);
     const knowledge = new KnowledgeBase(store.knowledgeDir, store.notebookDir);
     const mcp = new McpHub();
     const classifier = new SmallModelClassifier(store);
-
-    let activeSettings = settings;
-    const getSettings = () => activeSettings;
 
     logs.setSecretProvider(() => [
       env.gatewayToken,

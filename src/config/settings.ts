@@ -127,6 +127,9 @@ export const runtimeSettingsSchema = Type.Object(
         adminQQs: Type.Array(Type.String({ pattern: "^\\d+$" }), {
           default: [],
         }),
+        allowedGroups: Type.Array(Type.String({ pattern: "^\\d+$" }), {
+          default: [],
+        }),
       },
       { default: {}, additionalProperties: false },
     ),
@@ -185,6 +188,9 @@ export const seedSettingsFromEnv = (env: EnvConfig): RuntimeSettings =>
     bot: {
       botQQ: env.botQQ,
     },
+    policy: {
+      allowedGroups: env.allowedGroups,
+    },
     mainModel: {
       baseURL: env.mainBaseUrl,
       apiKey: env.mainApiKey,
@@ -235,7 +241,18 @@ export function parseSettings(input: unknown): RuntimeSettings {
     );
   }
 
+  defaulted.policy.allowedGroups = [...new Set(defaulted.policy.allowedGroups)];
+
   return defaulted;
+}
+
+export function isGroupAllowed(
+  settings: Pick<RuntimeSettings, "policy">,
+  groupId: string,
+): boolean {
+  const allowlist = settings.policy.allowedGroups;
+
+  return allowlist.length === 0 || allowlist.includes(groupId);
 }
 
 export function maskSettings(settings: RuntimeSettings): RuntimeSettings {

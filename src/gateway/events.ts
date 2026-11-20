@@ -5,6 +5,7 @@ import WebSocket from "ws";
 
 import type { EnvConfig } from "../config/env.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
+import { isGroupAllowed } from "../config/settings.ts";
 import type { MessageGate } from "../gate/gate.ts";
 import type { MediaProcessor } from "../media/processor.ts";
 import type { Store } from "../store/index.ts";
@@ -154,6 +155,13 @@ export class GatewayEventSubscriber {
   }> {
     if (payload.post_type === "meta_event") {
       return { accepted: true, reason: "meta_event" };
+    }
+
+    const eventGroupId =
+      payload.group_id === undefined ? "" : String(payload.group_id);
+
+    if (eventGroupId && !isGroupAllowed(this.#getSettings(), eventGroupId)) {
+      return { accepted: true, reason: "group_restricted" };
     }
 
     if (

@@ -1,6 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { EnvConfig } from "../config/env.ts";
+import type { RuntimeSettings } from "../config/settings.ts";
+import { isGroupAllowed } from "../config/settings.ts";
 import type { Store } from "../store/index.ts";
 import type {
   ChatKey,
@@ -53,6 +55,7 @@ const DEFAULT_MAX_TRACK_MS = 10 * 60 * 1000;
 export interface GatewayClientOptions {
   pollDelaysMs?: number[];
   maxTrackMs?: number;
+  getSettings?: () => RuntimeSettings;
 }
 
 export class MessageGatewayClient {
@@ -65,6 +68,7 @@ export class MessageGatewayClient {
   #abort = new AbortController();
   #pollDelaysMs: number[];
   #maxTrackMs: number;
+  #getSettings?: () => RuntimeSettings;
 
   constructor(
     env: Pick<EnvConfig, "gatewayUrl" | "gatewayAccount" | "gatewayToken">,
@@ -79,6 +83,7 @@ export class MessageGatewayClient {
       ? options.pollDelaysMs
       : DEFAULT_POLL_DELAYS_MS;
     this.#maxTrackMs = options.maxTrackMs ?? DEFAULT_MAX_TRACK_MS;
+    this.#getSettings = options.getSettings;
   }
 
   public get configured(): boolean {
@@ -169,8 +174,15 @@ export class MessageGatewayClient {
     }
 
     const { body } = await this.callAction<GroupInfo[]>("get_group_list");
+    const groups = Array.isArray(body.data) ? body.data : [];
 
-    return Array.isArray(body.data) ? body.data : [];
+    return groups.filter((group) =>
+      this.#isGroupAllowed(String(group.group_id)),
+    );
+  }
+
+  #isGroupAllowed(groupId: string): boolean {
+    return !this.#getSettings || isGroupAllowed(this.#getSettings(), groupId);
   }
 
   public async getGroupMemberList(
@@ -252,6 +264,10 @@ export class MessageGatewayClient {
     const { kind, chatId } = parseChatKey(chatKey);
 
     try {
+      if (kind === "group" && !this.#isGroupAllowed(chatId)) {
+        throw new Error(`群聊 ${chatId} 不在允许群聊白名单内，已拦截发送`);
+      }
+
       if (!this.configured) {
         throw new Error("message-gateway 未配置，无法投递消息");
       }
@@ -307,11 +323,11 @@ export class MessageGatewayClient {
       });
     } catch (error) {
       const detail = errorMessage(error);
-
-      await this.#store.deliveries.updateStatus(delivery.id, {
+      const updated = await this.#store.deliveries.updateStatus(delivery.id, {
         status: "failed",
         error: detail,
       });
+
       await this.#store.conversations.pushOutputResult({
         module: "qq_gateway",
         status: "error",
@@ -324,7 +340,7 @@ export class MessageGatewayClient {
         error: detail,
       });
 
-      return delivery;
+      return updated ?? delivery;
     }
   }
 

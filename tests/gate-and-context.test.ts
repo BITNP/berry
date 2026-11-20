@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { loadEnvConfig } from "../src/config/env.ts";
 import {
   captureText,
   chatReply,
@@ -234,4 +235,178 @@ test("mention_only vs smart_observe micro-batch, confidence threshold, and anti-
   await delay(140);
   await app.worker.drainOnce();
   assert.equal(mainCalls.length, 2);
+});
+
+test("BERRY_ALLOWED_GROUPS restricts group events, group listing, and outbound group dispatch at the gateway boundary", async (t) => {
+  assert.deepEqual(
+    loadEnvConfig({ BERRY_ALLOWED_GROUPS: "100, 200, 100" }).allowedGroups,
+    ["100", "200"],
+  );
+  assert.throws(
+    () => loadEnvConfig({ BERRY_ALLOWED_GROUPS: "100,abc" }),
+    /Invalid numeric ID/,
+  );
+
+  const gatewayCalls: string[] = [];
+
+  const gwStub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    gatewayCalls.push(req.url ?? "");
+
+    if (req.url === "/api/v1/accounts/qq/get_group_list") {
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: [
+            { group_id: 100, group_name: "白名单群" },
+            { group_id: 200, group_name: "未授权群" },
+          ],
+        }),
+      );
+
+      return;
+    }
+
+    res.end(
+      JSON.stringify({
+        status: "ok",
+        retcode: 0,
+        data: { message_id: "msg-allowed-1" },
+      }),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      allowedGroups: ["100"],
+      gatewayUrl: gwStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+    },
+    {},
+    t,
+  );
+
+  // Non-whitelisted group events are rejected at the gateway ingress before touching storage.
+  for (const event of [
+    {
+      post_type: "message",
+      message_type: "group",
+      group_id: 200,
+      user_id: 3001,
+      message_id: "m-200-1",
+      time: Math.floor(Date.now() / 1000),
+      message: "[CQ:at,qq=999999] 在吗",
+      sender: { nickname: "群友甲" },
+    },
+    {
+      post_type: "notice",
+      notice_type: "group_recall",
+      group_id: 200,
+      user_id: 3001,
+      message_id: "m-200-1",
+      time: Math.floor(Date.now() / 1000),
+    },
+    {
+      post_type: "notice",
+      notice_type: "group_msg_emoji_like",
+      group_id: 200,
+      user_id: 3001,
+      message_id: "m-200-1",
+      likes: [{ emoji_id: "76", count: 1 }],
+    },
+  ]) {
+    assert.deepEqual(await app.gatewayEvents.handleEvent(event), {
+      accepted: true,
+      reason: "group_restricted",
+    });
+  }
+
+  assert.equal(await app.store.chats.get("group:200"), null);
+  assert.equal(
+    (await app.store.messages.search("group:200", { limit: 10 })).length,
+    0,
+  );
+
+  // Whitelisted group and private messages still enter normally.
+  const allowedMsg = await app.gatewayEvents.handleEvent({
+    post_type: "message",
+    message_type: "group",
+    group_id: 100,
+    user_id: 3001,
+    message_id: "m-100-1",
+    time: Math.floor(Date.now() / 1000),
+    message: "[CQ:at,qq=999999] 你好",
+    sender: { nickname: "群友甲" },
+  });
+  const privateMsg = await app.gatewayEvents.handleEvent({
+    post_type: "message",
+    message_type: "private",
+    user_id: 555,
+    message_id: "m-priv-1",
+    time: Math.floor(Date.now() / 1000),
+    message: "私聊测试",
+    sender: { nickname: "私聊用户" },
+  });
+
+  assert.ok(allowedMsg.accepted && allowedMsg.messageId);
+  assert.ok(privateMsg.accepted && privateMsg.messageId);
+
+  // getGroupList filters to allowedGroups.
+  const groups = await app.gateway.getGroupList();
+
+  assert.deepEqual(groups, [{ group_id: 100, group_name: "白名单群" }]);
+
+  // Outbound dispatch is blocked locally for non-whitelisted groups and allowed for whitelisted groups.
+  const callsBeforeDispatch = gatewayCalls.length;
+  const blockedDispatch = await app.gateway.dispatchUnit(
+    "group:200",
+    { kind: "qq_reply", text: "不应发出" },
+    "999999",
+  );
+
+  assert.equal(blockedDispatch.status, "failed");
+  assert.match(blockedDispatch.error ?? "", /白名单/);
+  assert.equal(gatewayCalls.length, callsBeforeDispatch);
+
+  const allowedDispatch = await app.gateway.dispatchUnit(
+    "group:100",
+    { kind: "qq_reply", text: "允许群回复" },
+    "999999",
+  );
+
+  assert.equal(allowedDispatch.status, "sent");
+  assert.equal(gatewayCalls.length, callsBeforeDispatch + 1);
+
+  // Hot-clearing policy.allowedGroups immediately lifts the restriction without restart.
+  await app.updateSettings({
+    ...app.settings,
+    policy: { ...app.settings.policy, allowedGroups: [] },
+  });
+
+  const liftedMsg = await app.gatewayEvents.handleEvent({
+    post_type: "message",
+    message_type: "group",
+    group_id: 200,
+    user_id: 3001,
+    message_id: "m-200-2",
+    time: Math.floor(Date.now() / 1000),
+    message: "[CQ:at,qq=999999] 放开了吗",
+    sender: { nickname: "群友甲" },
+  });
+
+  assert.ok(liftedMsg.accepted && liftedMsg.messageId);
+  assert.deepEqual(await app.gateway.getGroupList(), [
+    { group_id: 100, group_name: "白名单群" },
+    { group_id: 200, group_name: "未授权群" },
+  ]);
+
+  const liftedDispatch = await app.gateway.dispatchUnit(
+    "group:200",
+    { kind: "qq_reply", text: "放开后群回复" },
+    "999999",
+  );
+
+  assert.equal(liftedDispatch.status, "sent");
 });

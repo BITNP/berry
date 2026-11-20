@@ -79,6 +79,7 @@ interface RuntimeSettingsView {
     groupDefaultMode: "off" | "mention_only" | "smart_observe";
     adminBypassGate: boolean;
     adminQQs: string[];
+    allowedGroups: string[];
   };
   guildAutomation: {
     enabled: boolean;
@@ -230,6 +231,14 @@ async function handleSave() {
     }
   }
 
+  for (const gid of settings.value.policy.allowedGroups) {
+    if (!/^\d+$/.test(gid)) {
+      message.warning(`白名单群号「${gid}」必须为纯数字`);
+
+      return;
+    }
+  }
+
   for (const gid of settings.value.groupDigest.groups) {
     if (!/^\d+$/.test(gid)) {
       message.warning(`摘要监听群号「${gid}」必须为纯数字`);
@@ -247,15 +256,19 @@ async function handleSave() {
   saving.value = true;
 
   try {
-    const payload: RuntimeSettingsView = structuredClone(settings.value);
-
-    payload.guildAutomation.weeklySchedule = customWeeklyEnabled.value
-      ? {
-          kind: "weekly",
-          weekdays: [...weeklyDays.value],
-          time: weeklyTime.value.trim() || "20:00",
-        }
-      : null;
+    const payload: RuntimeSettingsView = {
+      ...settings.value,
+      guildAutomation: {
+        ...settings.value.guildAutomation,
+        weeklySchedule: customWeeklyEnabled.value
+          ? {
+              kind: "weekly",
+              weekdays: [...weeklyDays.value],
+              time: weeklyTime.value.trim() || "20:00",
+            }
+          : null,
+      },
+    };
 
     await apiFetch<{ settings: RuntimeSettingsView }>("/api/admin/settings", {
       method: "PUT",
@@ -788,6 +801,11 @@ onMounted(() => {
             </div>
             <NFormItem label="管理员 QQ 列表">
               <NDynamicTags v-model:value="settings.policy.adminQQs" />
+            </NFormItem>
+            <NFormItem
+              label="允许群聊白名单（留空不限制，填写后仅监听和响应指定群号）"
+            >
+              <NDynamicTags v-model:value="settings.policy.allowedGroups" />
             </NFormItem>
           </NForm>
         </NTabPane>

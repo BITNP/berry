@@ -22,6 +22,7 @@ export interface EnvConfig {
   guildInternalToken: string;
   guildPublicUrl: string;
   botQQ: string;
+  allowedGroups: string[];
   mainBaseUrl: string;
   mainApiKey: string;
   mainModel: string;
@@ -70,6 +71,30 @@ function readPort(
   return parsed;
 }
 
+function readDigitList(
+  env: Record<string, string | undefined>,
+  key: string,
+): string[] {
+  const raw = readEnv(env, key);
+
+  if (!raw) {
+    return [];
+  }
+
+  const values = raw
+    .split(/[\s,]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  for (const item of values) {
+    if (!/^\d+$/.test(item)) {
+      throw new Error(`Invalid numeric ID in ${key}: ${item}`);
+    }
+  }
+
+  return [...new Set(values)];
+}
+
 export function loadEnvConfig(
   env: Record<string, string | undefined> = process.env,
 ): EnvConfig {
@@ -111,6 +136,7 @@ export function loadEnvConfig(
     guildInternalToken: readEnv(env, "BERRY_GUILD_INTERNAL_TOKEN"),
     guildPublicUrl: readEnv(env, "BERRY_GUILD_PUBLIC_URL").replace(/\/+$/, ""),
     botQQ: readEnv(env, "BERRY_BOT_QQ"),
+    allowedGroups: readDigitList(env, "BERRY_ALLOWED_GROUPS"),
     mainBaseUrl: readEnv(
       env,
       "BERRY_MAIN_BASE_URL",
