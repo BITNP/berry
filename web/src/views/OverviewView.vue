@@ -70,6 +70,7 @@ interface OverviewResponse {
   botQQ: string;
   botAccount: { user_id: string; nickname: string } | null;
   gatewayHealth: { configured: boolean; reachable: boolean; error?: string };
+  gatewayStreamConnected: boolean;
   pendingJobs: number;
   gate24h: { reply: number; memory: number; ignore: number };
   chatCount: number;
@@ -659,6 +660,14 @@ onMounted(() => {
               : overview.gatewayHealth.configured
                 ? "不可达"
                 : "未配置"
+          }}
+        </NTag>
+        <NTag
+          size="small"
+          :type="overview.gatewayStreamConnected ? 'success' : 'default'"
+        >
+          网关事件流：{{
+            overview.gatewayStreamConnected ? "已连接" : "未连接"
           }}
         </NTag>
         <NTag

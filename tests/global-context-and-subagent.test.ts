@@ -442,7 +442,7 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
   const beforeReset = await app.store.conversations.get();
 
   assert.ok(beforeReset && beforeReset.messages.length > 0);
-  await app.webhook.handle({
+  await app.gatewayEvents.handleEvent({
     post_type: "message",
     message_type: "private",
     user_id: 20_002,
@@ -456,7 +456,7 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
     beforeReset.sessionId,
   );
 
-  await app.webhook.handle({
+  await app.gatewayEvents.handleEvent({
     post_type: "message",
     message_type: "private",
     user_id: 10_001,

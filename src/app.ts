@@ -11,7 +11,7 @@ import type { RuntimeSettings } from "./config/settings.ts";
 import { SmallModelClassifier } from "./gate/classifier.ts";
 import { MessageGate } from "./gate/gate.ts";
 import { MessageGatewayClient } from "./gateway/client.ts";
-import { OneBotWebhookHandler } from "./gateway/webhook.ts";
+import { GatewayEventSubscriber } from "./gateway/events.ts";
 import { GuildAutomationRunner } from "./guild/automation.ts";
 import { GuildInternalClient } from "./guild/client.ts";
 import { IdentityDirectory } from "./identity/keycloak.ts";
@@ -40,7 +40,7 @@ export class BerryApp {
   public readonly mcp: McpHub;
   public readonly classifier: SmallModelClassifier;
   public readonly gate: MessageGate;
-  public readonly webhook: OneBotWebhookHandler;
+  public readonly gatewayEvents: GatewayEventSubscriber;
   public readonly agent: BerryAgent;
   public readonly scheduler: ScheduleRunner;
   public readonly guildAutomation: GuildAutomationRunner;
@@ -66,7 +66,7 @@ export class BerryApp {
     mcp: McpHub;
     classifier: SmallModelClassifier;
     gate: MessageGate;
-    webhook: OneBotWebhookHandler;
+    gatewayEvents: GatewayEventSubscriber;
     agent: BerryAgent;
     scheduler: ScheduleRunner;
     guildAutomation: GuildAutomationRunner;
@@ -87,7 +87,7 @@ export class BerryApp {
     this.mcp = options.mcp;
     this.classifier = options.classifier;
     this.gate = options.gate;
-    this.webhook = options.webhook;
+    this.gatewayEvents = options.gatewayEvents;
     this.agent = options.agent;
     this.scheduler = options.scheduler;
     this.guildAutomation = options.guildAutomation;
@@ -118,7 +118,6 @@ export class BerryApp {
     const getSettings = () => activeSettings;
 
     logs.setSecretProvider(() => [
-      env.webhookToken,
       env.gatewayToken,
       env.guildInternalToken,
       env.oidcClientSecret,
@@ -153,7 +152,13 @@ export class BerryApp {
       getSettings,
       () => workerRef.wake(),
     );
-    const webhook = new OneBotWebhookHandler(store, gate, media, getSettings);
+    const gatewayEvents = new GatewayEventSubscriber(
+      env,
+      store,
+      gate,
+      media,
+      getSettings,
+    );
     const scheduler = new ScheduleRunner(services, () => workerRef.wake());
     const guildAutomation = new GuildAutomationRunner(
       env,
@@ -184,7 +189,7 @@ export class BerryApp {
       mcp,
       classifier,
       gate,
-      webhook,
+      gatewayEvents,
       agent,
       scheduler,
       guildAutomation,
@@ -205,6 +210,7 @@ export class BerryApp {
 
     if (options.startBackground !== false) {
       await mcp.sync(settings.mcpServers);
+      gatewayEvents.start();
       workerRef.start();
       scheduler.start();
       guildAutomation.start();
@@ -241,6 +247,7 @@ export class BerryApp {
   }
 
   public async close(): Promise<void> {
+    await this.gatewayEvents.stop();
     this.scheduler.stop();
     await this.guildAutomation.stop();
     await this.worker.stop();

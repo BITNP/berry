@@ -1,14 +1,187 @@
 import assert from "node:assert/strict";
-import { createHash, createHmac, generateKeyPairSync, sign } from "node:crypto";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { createServer } from "node:http";
 import test from "node:test";
 
-import { SECRET_MASK } from "../src/config/settings.ts";
-import { createTestBerryApp, startStubServer } from "./helpers.ts";
+import { WebSocketServer } from "ws";
 
-test("webhook auth (Bearer + HMAC-SHA1), admin CSRF, secret masking, and TypeBox validation", async (t) => {
+import { SECRET_MASK } from "../src/config/settings.ts";
+import { createTestBerryApp, startStubServer, waitUntil } from "./helpers.ts";
+
+test("GatewayEventSubscriber connects to /ws/event with Bearer auth, ingests events, and reconnects after 503 and disconnect", async (t) => {
+  const authHeaders: (string | undefined)[] = [];
+  let attempts = 0;
+
+  const wss = new WebSocketServer({ noServer: true });
+  const gwServer = createServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/healthz") {
+      res.end(JSON.stringify({ status: "ok" }));
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  });
+
+  gwServer.on("upgrade", (req, socket, head) => {
+    const reqUrl = new URL(req.url ?? "/", "http://127.0.0.1");
+
+    if (reqUrl.pathname !== "/api/v1/accounts/qq/ws/event") {
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+
+      return;
+    }
+
+    authHeaders.push(req.headers.authorization);
+    if (req.headers.authorization !== "Bearer gw-ws-secret") {
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+
+      return;
+    }
+
+    attempts++;
+
+    if (attempts === 1) {
+      socket.write(
+        "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n",
+      );
+      socket.destroy();
+
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.send(
+        JSON.stringify({
+          time: 1_700_000_000,
+          self_id: 999_999,
+          post_type: "meta_event",
+          meta_event_type: "lifecycle",
+          sub_type: "connect",
+        }),
+      );
+
+      if (attempts === 2) {
+        ws.send(
+          JSON.stringify({
+            post_type: "message",
+            message_type: "group",
+            group_id: 777,
+            user_id: 888,
+            self_id: 999_999,
+            message_id: "ob-ws-1",
+            time: 1_700_000_001,
+            message: "[CQ:at,qq=999999] 你好",
+            sender: { card: "群成员" },
+          }),
+        );
+        ws.send(
+          JSON.stringify({
+            post_type: "notice",
+            notice_type: "group_recall",
+            group_id: 777,
+            user_id: 888,
+            message_id: "ob-ws-1",
+            time: 1_700_000_010,
+          }),
+        );
+        setTimeout(() => {
+          ws.close(1012, "upstream restart");
+        }, 50);
+
+        return;
+      }
+
+      ws.send(
+        JSON.stringify({
+          post_type: "message",
+          message_type: "private",
+          user_id: 30_001,
+          self_id: 999_999,
+          message_id: "ob-ws-dm-1",
+          time: 1_700_000_020,
+          message: "断线重连后的私聊",
+          sender: { nickname: "私聊同学" },
+        }),
+      );
+    });
+  });
+
+  await new Promise<void>((resolve) => {
+    gwServer.listen(0, "127.0.0.1", () => resolve());
+  });
+  t.after(async () => {
+    for (const client of wss.clients) {
+      client.terminate();
+    }
+
+    await new Promise<void>((resolve) => wss.close(() => resolve()));
+    await new Promise<void>((resolve) => gwServer.close(() => resolve()));
+  });
+
+  const addr = gwServer.address();
+  const port = addr && typeof addr === "object" ? addr.port : 0;
+
   const { app } = await createTestBerryApp(
     {
-      webhookToken: "wh-secret-123",
+      gatewayUrl: `http://127.0.0.1:${port}`,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-ws-secret",
+    },
+    {},
+    t,
+  );
+  const { url } = await app.listen();
+
+  app.gatewayEvents.start();
+
+  await waitUntil(async () => {
+    if (attempts < 3 || !app.gatewayEvents.connected) {
+      return false;
+    }
+
+    const groupMsg = await app.store.messages.findByOnebotId(
+      "group:777",
+      "ob-ws-1",
+    );
+    const dmMsg = await app.store.messages.findByOnebotId(
+      "private:30001",
+      "ob-ws-dm-1",
+    );
+
+    return Boolean(
+      groupMsg?.mentionedBot &&
+      groupMsg.recalledAt !== null &&
+      dmMsg?.text === "断线重连后的私聊",
+    );
+  }, 6000);
+
+  assert.equal(authHeaders.length >= 3, true);
+  assert.ok(authHeaders.every((h) => h === "Bearer gw-ws-secret"));
+
+  const health = (await (await fetch(`${url}/api/healthz`)).json()) as {
+    gatewayStreamConnected: boolean;
+  };
+
+  assert.equal(health.gatewayStreamConnected, true);
+
+  await app.gatewayEvents.stop();
+  assert.equal(app.gatewayEvents.connected, false);
+
+  const healthAfter = (await (await fetch(`${url}/api/healthz`)).json()) as {
+    gatewayStreamConnected: boolean;
+  };
+
+  assert.equal(healthAfter.gatewayStreamConnected, false);
+});
+
+test("admin auth, CSRF, secret masking, TypeBox validation, and removed /api/webhooks/onebot", async (t) => {
+  const { app } = await createTestBerryApp(
+    {
       devAuthBypass: false,
     },
     {},
@@ -16,52 +189,13 @@ test("webhook auth (Bearer + HMAC-SHA1), admin CSRF, secret masking, and TypeBox
   );
   const { url } = await app.listen();
 
-  const unauthWebhook = await fetch(`${url}/api/webhooks/onebot`, {
+  const legacyWebhookRes = await fetch(`${url}/api/webhooks/onebot`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ post_type: "meta_event" }),
   });
 
-  assert.equal(unauthWebhook.status, 401);
-
-  const bearerRes = await fetch(`${url}/api/webhooks/onebot`, {
-    method: "POST",
-    headers: {
-      "Authorization": "Bearer wh-secret-123",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ post_type: "meta_event" }),
-  });
-
-  assert.equal(bearerRes.status, 200);
-
-  const msgPayload = JSON.stringify({
-    post_type: "message",
-    message_type: "group",
-    group_id: 777,
-    user_id: 888,
-    message_id: "ob-1",
-    time: 1_700_000_000,
-    message: "[CQ:at,qq=999999] 你好",
-    sender: { card: "群成员" },
-  });
-  const sig = createHmac("sha1", "wh-secret-123")
-    .update(msgPayload)
-    .digest("hex");
-
-  const hmacRes = await fetch(`${url}/api/webhooks/onebot`, {
-    method: "POST",
-    headers: {
-      "X-Signature": `sha1=${sig}`,
-      "Content-Type": "application/json",
-    },
-    body: msgPayload,
-  });
-
-  assert.equal(hmacRes.status, 200);
-  const saved = await app.store.messages.findByOnebotId("group:777", "ob-1");
-
-  assert.equal(saved?.mentionedBot, true);
+  assert.equal(legacyWebhookRes.status, 404);
 
   assert.equal((await fetch(`${url}/api/admin/settings`)).status, 401);
 

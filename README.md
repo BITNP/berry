@@ -1,6 +1,6 @@
 # berry
 
-网协 QQ 助手「树莓娘」及 Web 管理台。通过 `BITNP/message-gateway` 接收 OneBot 11 HTTP Webhook 并投递回复，集成小模型群聊分流、全局单上下文及子代理任务委派、Keycloak 实名身份解析、公会看板（Guild）内部接口协作及定时任务。
+网协 QQ 助手「树莓娘」及 Web 管理台。通过 `BITNP/message-gateway` 正向 WebSocket 事件流接收 OneBot 11 入站消息并经 HTTP 队列投递回复，集成小模型群聊分流、全局单上下文及子代理任务委派、Keycloak 实名身份解析、公会看板（Guild）内部接口协作及定时任务。
 
 ## 部署
 
@@ -16,8 +16,7 @@ docker compose up -d --build
 | 变量                                                                      | 说明                                                                                                       |
 | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `BERRY_PUBLIC_URL`                                                        | 对外访问地址，例如 `https://berry.example.com`                                                             |
-| `BERRY_WEBHOOK_TOKEN`                                                     | 入站 `POST /api/webhooks/onebot` 鉴权密钥（支持 Bearer 或 `X-Signature`）                                  |
-| `BERRY_GATEWAY_URL` / `BERRY_GATEWAY_ACCOUNT` / `BERRY_GATEWAY_TOKEN`     | `message-gateway` 地址、账号标识及调用令牌                                                                 |
+| `BERRY_GATEWAY_URL` / `BERRY_GATEWAY_ACCOUNT` / `BERRY_GATEWAY_TOKEN`     | `message-gateway` 地址、账号标识及客户端令牌（同时用于 `/ws/event` 订阅及 HTTP 出站队列）                  |
 | `BERRY_BOT_QQ`                                                            | 机器人 QQ 号                                                                                               |
 | `BERRY_MAIN_*` / `BERRY_GATE_*`                                           | 主模型及门控小模型的初始配置（首次启动写入 SQLite，后续可在管理台调整）                                    |
 | `BERRY_OIDC_ISSUER` / `BERRY_OIDC_CLIENT_ID` / `BERRY_OIDC_CLIENT_SECRET` | 管理台 Keycloak OIDC 登录配置（回调 `{BERRY_PUBLIC_URL}/api/auth/callback`，需 `permission-system-admin`） |

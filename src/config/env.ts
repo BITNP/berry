@@ -5,7 +5,6 @@ export interface EnvConfig {
   port: number;
   publicUrl: string;
   dataDir: string;
-  webhookToken: string;
   gatewayUrl: string;
   gatewayAccount: string;
   gatewayToken: string;
@@ -92,7 +91,6 @@ export function loadEnvConfig(
     port: readPort(env, "BERRY_PORT", 3220),
     publicUrl,
     dataDir: resolve(readEnv(env, "BERRY_DATA_DIR", "./data")),
-    webhookToken: readEnv(env, "BERRY_WEBHOOK_TOKEN"),
     gatewayUrl: readEnv(env, "BERRY_GATEWAY_URL").replace(/\/+$/, ""),
     gatewayAccount: readEnv(env, "BERRY_GATEWAY_ACCOUNT", "qq"),
     gatewayToken: readEnv(env, "BERRY_GATEWAY_TOKEN"),

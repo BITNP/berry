@@ -130,7 +130,7 @@ test("mention_only vs smart_observe micro-batch, confidence threshold, and anti-
     triggerMode: "mention_only",
   });
 
-  await app.webhook.handle({
+  await app.gatewayEvents.handleEvent({
     post_type: "message",
     message_type: "group",
     group_id: 100,
@@ -159,7 +159,7 @@ test("mention_only vs smart_observe micro-batch, confidence threshold, and anti-
     ["m-2", 2001, "群友A", "低置信度的一句话"],
     ["m-3", 2002, "群友B", "树莓娘在吗，帮忙查一下昨天的事"],
   ] as const) {
-    await app.webhook.handle({
+    await app.gatewayEvents.handleEvent({
       post_type: "message",
       message_type: "group",
       group_id: 100,
@@ -221,7 +221,7 @@ test("mention_only vs smart_observe micro-batch, confidence threshold, and anti-
 
   // 4) failClosed: true drops messages when gate endpoint errors.
   gateShouldFail = true;
-  await app.webhook.handle({
+  await app.gatewayEvents.handleEvent({
     post_type: "message",
     message_type: "group",
     group_id: 100,

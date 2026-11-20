@@ -118,7 +118,6 @@ interface EnvSummaryView {
   oidcIssuer: string;
   guildApiUrl: string;
   guildPublicUrl: string;
-  webhookConfigured: boolean;
 }
 
 interface McpStatusRow {
@@ -550,8 +549,8 @@ onMounted(() => {
             <NDescriptionsItem label="公会内部地址">
               <span class="mono">{{ envSummary.guildApiUrl || "未设置" }}</span>
             </NDescriptionsItem>
-            <NDescriptionsItem label="Webhook 校验">
-              {{ envSummary.webhookConfigured ? "已配置密钥" : "免校验模式" }}
+            <NDescriptionsItem label="OIDC 发行方">
+              <span class="mono">{{ envSummary.oidcIssuer || "未设置" }}</span>
             </NDescriptionsItem>
           </NDescriptions>
         </NCollapseItem>

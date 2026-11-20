@@ -47,6 +47,7 @@ interface ShellStatus {
   botQQ: string;
   botAccount: { user_id: string; nickname: string } | null;
   gatewayHealth: { configured: boolean; reachable: boolean };
+  gatewayStreamConnected: boolean;
   pendingJobs: number;
 }
 
@@ -332,18 +333,32 @@ onUnmounted(() => {
             <template #trigger>
               <NTag
                 size="small"
-                :type="status.gatewayHealth.reachable ? 'success' : 'error'"
+                :type="
+                  status.gatewayHealth.reachable
+                    ? status.gatewayStreamConnected
+                      ? 'success'
+                      : 'warning'
+                    : 'error'
+                "
               >
                 <span
                   class="dot"
-                  :class="{ ok: status.gatewayHealth.reachable }"
+                  :class="
+                    status.gatewayHealth.reachable
+                      ? status.gatewayStreamConnected
+                        ? 'ok'
+                        : 'warn'
+                      : ''
+                  "
                 />
                 网关
               </NTag>
             </template>
             {{
               status.gatewayHealth.reachable
-                ? "Message Gateway 在线"
+                ? status.gatewayStreamConnected
+                  ? "Message Gateway 在线，事件流已连接"
+                  : "Message Gateway 在线，事件流未连接"
                 : status.gatewayHealth.configured
                   ? "Message Gateway 不可达"
                   : "未配置 Gateway URL"
@@ -531,6 +546,10 @@ onUnmounted(() => {
 
 .dot.ok {
   background: #15803d;
+}
+
+.dot.warn {
+  background: #d97706;
 }
 
 .sse-badge .dot {

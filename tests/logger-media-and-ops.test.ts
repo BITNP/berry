@@ -11,7 +11,7 @@ test("Pino LogHub redaction, level/scope filtering, and clear endpoint", async (
   const { app } = await createTestBerryApp(
     {
       devAuthBypass: true,
-      webhookToken: "wh-super-secret-xyz",
+      gatewayToken: "gw-super-secret-xyz",
     },
     {},
     t,
@@ -20,7 +20,7 @@ test("Pino LogHub redaction, level/scope filtering, and clear endpoint", async (
   app.logs.clear();
   const logger = new Logger("ops-test");
 
-  logger.info("Connected with token wh-super-secret-xyz", {
+  logger.info("Connected with token gw-super-secret-xyz", {
     apiKey: "test-main-key",
     host: "127.0.0.1",
   });
@@ -29,7 +29,7 @@ test("Pino LogHub redaction, level/scope filtering, and clear endpoint", async (
   const { items } = app.logs.list({ scope: "ops-test" });
 
   assert.equal(items.length, 2);
-  assert.equal(items[0]!.message.includes("wh-super-secret-xyz"), false);
+  assert.equal(items[0]!.message.includes("gw-super-secret-xyz"), false);
   assert.ok(items[0]!.message.includes("[已脱敏]"));
   assert.equal(items[0]!.context.apiKey, "[已脱敏]");
 
@@ -133,7 +133,7 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
     text: "好耶",
   });
 
-  await app.webhook.handle({
+  await app.gatewayEvents.handleEvent({
     post_type: "notice",
     notice_type: "group_msg_emoji_like",
     group_id: 555_666,
@@ -186,7 +186,7 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   assert.equal(pauseRes.status, 200);
   assert.equal(app.settings.bot.paused, true);
 
-  const pausedWebhook = await app.webhook.handle({
+  const pausedEvent = await app.gatewayEvents.handleEvent({
     post_type: "message",
     message_type: "group",
     group_id: 555_666,
@@ -197,7 +197,7 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
     sender: { card: "小王" },
   });
 
-  assert.equal(pausedWebhook.accepted, true);
+  assert.equal(pausedEvent.accepted, true);
   assert.ok(
     await app.store.messages.findByOnebotId("group:555666", "ob-paused-1"),
   );

@@ -8,9 +8,7 @@ import {
   createEventStream,
   createRouter,
   defineEventHandler,
-  getHeader,
   readBody,
-  readRawBody,
   serveStatic,
   setHeader,
   setResponseStatus,
@@ -25,8 +23,6 @@ import {
   mergeMaskedSettings,
   scheduleSpecSchema,
 } from "../config/settings.ts";
-import type { OneBotWebhookEvent } from "../gateway/webhook.ts";
-import { verifyWebhookSignature } from "../gateway/webhook.ts";
 import { errorMessage } from "../utils/time.ts";
 import {
   idParamSchema,
@@ -264,41 +260,11 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     defineEventHandler(async () => ({
       status: "ok",
       gatewayConfigured: berry.gateway.configured,
+      gatewayStreamConnected: berry.gatewayEvents.connected,
       workerRunning: berry.worker.running,
       devAuthBypass: berry.auth.devBypass,
       oidcConfigured: berry.auth.oidcConfigured,
     })),
-  );
-
-  // TODO: 待上游 message-gateway 支持 WebSocket 事件推送后，改为通过 WS 订阅事件并移除此临时 Webhook 路由与 BERRY_WEBHOOK_TOKEN。
-  router.post(
-    "/api/webhooks/onebot",
-    defineEventHandler(async (event) => {
-      const rawBody = (await readRawBody(event, "utf8")) ?? "";
-      const authorized = verifyWebhookSignature(
-        berry.env.webhookToken,
-        rawBody,
-        getHeader(event, "authorization"),
-        getHeader(event, "x-signature"),
-      );
-
-      if (!authorized) {
-        throw createError({
-          statusCode: 401,
-          message: "Invalid webhook signature or token",
-        });
-      }
-
-      let payload: OneBotWebhookEvent;
-
-      try {
-        payload = JSON.parse(rawBody || "{}") as OneBotWebhookEvent;
-      } catch {
-        throw createError({ statusCode: 400, message: "Malformed JSON body" });
-      }
-
-      return berry.webhook.handle(payload);
-    }),
   );
 
   router.get(
@@ -394,6 +360,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         botQQ: berry.settings.bot.botQQ,
         botAccount,
         gatewayHealth,
+        gatewayStreamConnected: berry.gatewayEvents.connected,
         pendingJobs,
         gate24h,
         chatCount: chats.length,
@@ -683,7 +650,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       const { count } = await parseBody(event, backfillBodySchema);
       const rawMessages = await berry.gateway.getGroupMsgHistory(chatId, count);
 
-      return berry.webhook.ingestHistoryBatch(chatId, rawMessages);
+      return berry.gatewayEvents.ingestHistoryBatch(chatId, rawMessages);
     }),
   );
 
@@ -981,7 +948,6 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
           oidcIssuer: berry.env.oidcIssuer,
           guildApiUrl: berry.env.guildApiUrl,
           guildPublicUrl: berry.env.guildPublicUrl,
-          webhookConfigured: Boolean(berry.env.webhookToken),
         },
       };
     }),
