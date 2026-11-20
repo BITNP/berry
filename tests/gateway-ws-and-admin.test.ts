@@ -6,6 +6,7 @@ import test from "node:test";
 import { WebSocketServer } from "ws";
 
 import { SECRET_MASK } from "../src/config/settings.ts";
+import { MessageGatewayClient } from "../src/gateway/client.ts";
 import { createTestBerryApp, startStubServer, waitUntil } from "./helpers.ts";
 
 test("GatewayEventSubscriber connects to /ws/event with Bearer auth, ingests events, and reconnects after 503 and disconnect", async (t) => {
@@ -434,4 +435,193 @@ test("OIDC PKCE login and callback using openid-client and bitnp-authz", async (
   assert.deepEqual(statusJson.user?.permissions.accessDepartments, [
     "techdept",
   ]);
+});
+
+test("MessageGatewayClient polls message-status past backoff ramp until terminal state, times out safely, and aborts on close", async (t) => {
+  let slowPolls = 0;
+
+  const stub = await startStubServer((req, res, bodyText) => {
+    res.setHeader("Content-Type", "application/json");
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+    if (
+      url.pathname === "/api/v1/accounts/qq/send_group_msg_async" &&
+      req.method === "POST"
+    ) {
+      const payload = JSON.parse(bodyText) as {
+        message?: { data?: { text?: string } }[];
+      };
+      const text = payload.message?.[0]?.data?.text ?? "";
+      let deliveryId = "del-shutdown";
+
+      if (text.includes("慢速")) {
+        deliveryId = "del-slow";
+      } else if (text.includes("卡住")) {
+        deliveryId = "del-stuck";
+      }
+
+      res.statusCode = 202;
+      res.end(
+        JSON.stringify({
+          status: "async",
+          retcode: 1,
+          data: { delivery_id: deliveryId },
+        }),
+      );
+
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/qq/message-status/del-slow") {
+      slowPolls++;
+
+      if (slowPolls <= 2) {
+        res.end(JSON.stringify({ id: "del-slow", status: "queued" }));
+
+        return;
+      }
+
+      if (slowPolls === 3) {
+        res.statusCode = 503;
+        res.end(JSON.stringify({ error: "temporary unavailable" }));
+
+        return;
+      }
+
+      if (slowPolls === 4) {
+        res.end(
+          JSON.stringify({
+            id: "del-slow",
+            status: "retrying",
+            attempts: 2,
+            error: "rate limited",
+          }),
+        );
+
+        return;
+      }
+
+      res.end(
+        JSON.stringify({
+          id: "del-slow",
+          status: "sent",
+          receipt: { message_id: "ob-slow-555" },
+        }),
+      );
+
+      return;
+    }
+
+    if (url.pathname === "/api/v1/accounts/qq/message-status/del-stuck") {
+      res.end(JSON.stringify({ id: "del-stuck", status: "queued" }));
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  }, t);
+
+  const { app } = await createTestBerryApp({}, {}, t);
+  const client = new MessageGatewayClient(
+    {
+      gatewayUrl: stub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+    },
+    app.store,
+    { pollDelaysMs: [10, 20], maxTrackMs: 5000 },
+  );
+
+  t.after(() => client.close());
+
+  // 1. Continues past [10, 20] ramp and recovers from HTTP 503 until terminal "sent".
+  const slowDelivery = await client.dispatchUnit(
+    "group:100",
+    { kind: "qq_reply", text: "慢速队列回复" },
+    "999999",
+  );
+
+  await client.waitForPendingTracks();
+
+  const slowRecord = (await app.store.deliveries.list()).find(
+    (d) => d.id === slowDelivery.id,
+  );
+
+  assert.equal(slowPolls, 5);
+  assert.equal(slowRecord?.status, "sent");
+  assert.equal(slowRecord?.onebotMessageId, "ob-slow-555");
+
+  const capturedReply = await app.store.messages.findByOnebotId(
+    "group:100",
+    "ob-slow-555",
+  );
+
+  assert.equal(capturedReply?.isBot, true);
+  assert.equal(capturedReply?.text, "慢速队列回复");
+
+  // 2. Marks failed with warn log when maxTrackMs deadline expires.
+  app.logs.clear();
+  const timeoutClient = new MessageGatewayClient(
+    {
+      gatewayUrl: stub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+    },
+    app.store,
+    { pollDelaysMs: [15], maxTrackMs: 65 },
+  );
+
+  t.after(() => timeoutClient.close());
+
+  const stuckDelivery = await timeoutClient.dispatchUnit(
+    "group:100",
+    { kind: "qq_reply", text: "卡住的消息" },
+    "999999",
+  );
+
+  await timeoutClient.waitForPendingTracks();
+
+  const stuckRecord = (await app.store.deliveries.list()).find(
+    (d) => d.id === stuckDelivery.id,
+  );
+
+  assert.equal(stuckRecord?.status, "failed");
+  assert.match(stuckRecord?.error ?? "", /timed out/);
+
+  const warnLogs = app.logs.list({ level: "warn", scope: "gateway" }).items;
+
+  assert.ok(
+    warnLogs.some((entry) =>
+      entry.message.includes("Delivery status tracking timed out"),
+    ),
+  );
+
+  // 3. close() aborts active backoff sleep immediately without waiting for pollDelaysMs.
+  const shutdownClient = new MessageGatewayClient(
+    {
+      gatewayUrl: stub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+    },
+    app.store,
+    { pollDelaysMs: [10_000], maxTrackMs: 60_000 },
+  );
+
+  const shutdownDelivery = await shutdownClient.dispatchUnit(
+    "group:100",
+    { kind: "qq_reply", text: "关闭中断消息" },
+    "999999",
+  );
+
+  const closeStartedAt = Date.now();
+
+  await shutdownClient.close();
+  assert.ok(Date.now() - closeStartedAt < 1000);
+
+  const shutdownRecord = (await app.store.deliveries.list()).find(
+    (d) => d.id === shutdownDelivery.id,
+  );
+
+  assert.equal(shutdownRecord?.status, "queued");
 });

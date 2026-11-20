@@ -47,6 +47,14 @@ interface SentMessageContext {
   botQQ: string;
 }
 
+const DEFAULT_POLL_DELAYS_MS = [350, 700, 1200, 2000, 3000, 4000, 5000];
+const DEFAULT_MAX_TRACK_MS = 10 * 60 * 1000;
+
+export interface GatewayClientOptions {
+  pollDelaysMs?: number[];
+  maxTrackMs?: number;
+}
+
 export class MessageGatewayClient {
   #baseUrl: string;
   #account: string;
@@ -54,19 +62,23 @@ export class MessageGatewayClient {
   #store: Store;
   #logger = new Logger("gateway");
   #pendingTracks = new Set<Promise<void>>();
-  #closed = false;
+  #abort = new AbortController();
   #pollDelaysMs: number[];
+  #maxTrackMs: number;
 
   constructor(
     env: Pick<EnvConfig, "gatewayUrl" | "gatewayAccount" | "gatewayToken">,
     store: Store,
-    pollDelaysMs = [350, 700, 1200, 2000, 3000, 4000, 5000, 5000],
+    options: GatewayClientOptions = {},
   ) {
     this.#baseUrl = env.gatewayUrl.replace(/\/+$/, "");
     this.#account = env.gatewayAccount || "qq";
     this.#token = env.gatewayToken;
     this.#store = store;
-    this.#pollDelaysMs = pollDelaysMs;
+    this.#pollDelaysMs = options.pollDelaysMs?.length
+      ? options.pollDelaysMs
+      : DEFAULT_POLL_DELAYS_MS;
+    this.#maxTrackMs = options.maxTrackMs ?? DEFAULT_MAX_TRACK_MS;
   }
 
   public get configured(): boolean {
@@ -436,21 +448,63 @@ export class MessageGatewayClient {
     ctx: SentMessageContext,
   ): Promise<void> {
     const url = `${this.#baseUrl}/api/v1/accounts/${encodeURIComponent(this.#account)}/message-status/${encodeURIComponent(gatewayDeliveryId)}`;
+    const startedAt = Date.now();
+    const deadline = startedAt + this.#maxTrackMs;
+    let attempt = 0;
 
-    for (const delayMs of this.#pollDelaysMs) {
-      if (this.#closed) {
-        return;
+    while (!this.#abort.signal.aborted) {
+      const remainingMs = deadline - Date.now();
+
+      if (remainingMs <= 0) {
+        break;
       }
 
-      await delay(delayMs);
-      if (this.#closed) {
-        return;
+      const nextDelayMs =
+        this.#pollDelaysMs[Math.min(attempt, this.#pollDelaysMs.length - 1)] ??
+        5000;
+      const waitMs = Math.min(nextDelayMs, remainingMs);
+
+      try {
+        await delay(waitMs, undefined, { signal: this.#abort.signal });
+      } catch (error) {
+        if (this.#abort.signal.aborted) {
+          return;
+        }
+
+        throw error;
       }
 
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${this.#token}` },
-        signal: AbortSignal.timeout(10_000),
-      });
+      attempt++;
+
+      let res: Response;
+      let state: GatewayStatusResponse | null = null;
+
+      try {
+        res = await fetch(url, {
+          headers: { Authorization: `Bearer ${this.#token}` },
+          signal: AbortSignal.any([
+            AbortSignal.timeout(10_000),
+            this.#abort.signal,
+          ]),
+        });
+
+        if (res.ok) {
+          state = (await res.json()) as GatewayStatusResponse;
+        }
+      } catch (error) {
+        if (this.#abort.signal.aborted) {
+          return;
+        }
+
+        this.#logger.debug("Delivery status poll request failed; retrying", {
+          deliveryId: ctx.delivery.id,
+          gatewayDeliveryId,
+          attempt,
+          error: errorMessage(error),
+        });
+
+        continue;
+      }
 
       if (res.status === 404) {
         await this.#markFailed(
@@ -462,11 +516,9 @@ export class MessageGatewayClient {
         return;
       }
 
-      if (!res.ok) {
+      if (!state) {
         continue;
       }
-
-      const state = (await res.json()) as GatewayStatusResponse;
 
       if (state.status === "sent") {
         await this.#markSent(
@@ -493,6 +545,24 @@ export class MessageGatewayClient {
         ...(state.error ? { error: state.error } : {}),
       });
     }
+
+    if (this.#abort.signal.aborted) {
+      return;
+    }
+
+    const elapsedMs = Date.now() - startedAt;
+
+    this.#logger.warn("Delivery status tracking timed out", {
+      deliveryId: ctx.delivery.id,
+      gatewayDeliveryId,
+      attempts: attempt,
+      elapsedMs,
+    });
+    await this.#markFailed(
+      ctx.delivery.id,
+      ctx.chatKey,
+      `Gateway delivery status tracking timed out after ${Math.round(elapsedMs / 1000)}s`,
+    );
   }
 
   async #markSent(
@@ -550,7 +620,7 @@ export class MessageGatewayClient {
   }
 
   public async close(): Promise<void> {
-    this.#closed = true;
+    this.#abort.abort();
     await this.waitForPendingTracks();
   }
 }
