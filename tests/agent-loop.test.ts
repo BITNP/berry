@@ -656,4 +656,21 @@ test("per-task thinkingEffort resolves defaults, category fallback, and exact ov
 
   assert.equal(observed.dialog, undefined);
   assert.equal(observed.subagent, "high");
+
+  // excludePurpose=gate keeps core LLM calls separated from gate classifier calls.
+  await app.store.usage.record({
+    purpose: "gate",
+    model: "qwen3.8-flash-next",
+    chatKey: "group:123",
+    inputTokens: 100,
+    cachedInputTokens: 0,
+    outputTokens: 12,
+    durationMs: 80,
+  });
+  const coreCalls = (await (
+    await fetch(`${url}/api/admin/llm-calls?excludePurpose=gate`)
+  ).json()) as { items: { purpose: string }[] };
+
+  assert.ok(coreCalls.items.length > 0);
+  assert.ok(coreCalls.items.every((item) => item.purpose !== "gate"));
 });

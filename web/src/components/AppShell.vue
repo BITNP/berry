@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {
-  Activity,
   BookOpen,
   Brain,
   Clock,
@@ -80,9 +79,8 @@ const menuOptions: MenuOption[] = [
     key: "grp-monitor",
     children: [
       { key: "/overview", label: "概览", icon: renderIcon(LayoutDashboard) },
-      { key: "/ai", label: "AI 调用", icon: renderIcon(Cpu) },
-      { key: "/gate", label: "分流", icon: renderIcon(Activity) },
-      { key: "/logs", label: "日志队列", icon: renderIcon(ScrollText) },
+      { key: "/logs", label: "运行监控", icon: renderIcon(ScrollText) },
+      { key: "/ai", label: "AI 追踪", icon: renderIcon(Cpu) },
     ],
   },
   {

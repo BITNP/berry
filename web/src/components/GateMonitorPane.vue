@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { FlaskConical, Pause, Play, RefreshCw } from "@lucide/vue";
 import type { DataTableColumns } from "naive-ui";
 import {
   NButton,
@@ -20,12 +19,12 @@ import {
   useMessage,
 } from "naive-ui";
 import { h, onMounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import { useChatOptions } from "../composables/useChatOptions.ts";
-import { useEventStream } from "../composables/useEventStream.ts";
+import type { LlmCallRow } from "../utils/ai.ts";
 import { formatTime } from "../utils/format.ts";
+import InlineAiCallsList from "./InlineAiCallsList.vue";
 
 interface GateDecisionRow {
   id: number;
@@ -54,7 +53,15 @@ interface DryRunResponse {
   durationMs: number;
 }
 
-const router = useRouter();
+const emit = defineEmits<{
+  "inspectChatCalls": [chatKey: string];
+  "update:total": [total: number];
+}>();
+
+const props = defineProps<{
+  chatKey?: string | null;
+}>();
+
 const message = useMessage();
 const { chatOptions } = useChatOptions();
 
@@ -63,11 +70,13 @@ const items = ref<GateDecisionRow[]>([]);
 const total = ref(0);
 const filterAction = ref<string | null>(null);
 const filterStage = ref<string | null>(null);
-const filterChatKey = ref<string | null>(null);
+const filterChatKey = ref<string | null>(props.chatKey ?? null);
 const filterSearch = ref("");
 
 const selectedRow = ref<GateDecisionRow | null>(null);
 const detailOpen = ref(false);
+const relatedCalls = ref<LlmCallRow[]>([]);
+const loadingRelatedCalls = ref(false);
 
 const dryRunOpen = ref(false);
 const dryRunBusy = ref(false);
@@ -110,12 +119,6 @@ const stageLabelMap: Record<GateDecisionRow["stage"], string> = {
   dry_run: "沙盒试跑",
 };
 
-const { paused: streamPaused, togglePause } = useEventStream((type) => {
-  if (type === "gate_decision") {
-    void loadDecisions();
-  }
-});
-
 async function loadDecisions() {
   loading.value = true;
 
@@ -146,6 +149,7 @@ async function loadDecisions() {
 
     items.value = res.items;
     total.value = res.total;
+    emit("update:total", res.total);
   } catch (err) {
     message.error(err instanceof Error ? err.message : "加载分流记录失败");
   } finally {
@@ -190,10 +194,45 @@ async function handleDryRun() {
   }
 }
 
+async function loadRelatedCalls(row: GateDecisionRow) {
+  loadingRelatedCalls.value = true;
+  relatedCalls.value = [];
+
+  try {
+    const qs = new URLSearchParams({
+      chatKey: row.chatKey,
+      limit: "20",
+    });
+    const res = await apiFetch<{ items: LlmCallRow[] }>(
+      `/api/admin/llm-calls?${qs.toString()}`,
+    );
+    const startMs = row.createdAt - 2000;
+    const endMs = row.createdAt + 120_000;
+
+    relatedCalls.value = res.items
+      .filter((c) => c.createdAt >= startMs && c.createdAt <= endMs)
+      .reverse();
+  } catch {
+    relatedCalls.value = [];
+  } finally {
+    loadingRelatedCalls.value = false;
+  }
+}
+
 function openDetail(row: GateDecisionRow) {
   selectedRow.value = row;
   detailOpen.value = true;
+  void loadRelatedCalls(row);
 }
+
+function openDryRun() {
+  dryRunOpen.value = true;
+}
+
+defineExpose({
+  loadDecisions,
+  openDryRun,
+});
 
 const columns: DataTableColumns<GateDecisionRow> = [
   {
@@ -222,7 +261,7 @@ const columns: DataTableColumns<GateDecisionRow> = [
   {
     title: "消息内容",
     key: "messageText",
-    minWidth: 130,
+    minWidth: 140,
     ellipsis: { tooltip: true },
     render: (row) => row.messageText || "（演练或关联消息已清理）",
   },
@@ -267,20 +306,18 @@ const columns: DataTableColumns<GateDecisionRow> = [
     align: "right",
     render: (row) => h("span", { class: "tabular" }, `${row.durationMs} ms`),
   },
-  {
-    title: "操作",
-    key: "ops",
-    width: 62,
-    render: (row) =>
-      h(
-        NButton,
-        { size: "tiny", quaternary: true, onClick: () => openDetail(row) },
-        { default: () => "详情" },
-      ),
-  },
 ];
 
 let filterTimer: ReturnType<typeof setTimeout> | null = null;
+
+watch(
+  () => props.chatKey,
+  (next) => {
+    if (next !== undefined && next !== filterChatKey.value) {
+      filterChatKey.value = next ?? null;
+    }
+  },
+);
 
 watch([filterAction, filterStage, filterChatKey], () => {
   void loadDecisions();
@@ -303,28 +340,6 @@ onMounted(() => {
 
 <template>
   <div>
-    <div class="page-bar">
-      <NSpace align="center" :size="10">
-        <h1 class="page-title">消息分流</h1>
-        <NText class="sub-note" depth="3">共 {{ total }} 条</NText>
-      </NSpace>
-      <NSpace :size="8">
-        <NButton size="small" @click="togglePause">
-          <template #icon>
-            <Play v-if="streamPaused" :size="14" />
-            <Pause v-else :size="14" />
-          </template>
-          {{ streamPaused ? "恢复实时流" : "暂停实时流" }}
-        </NButton>
-        <NButton size="small" type="primary" @click="dryRunOpen = true">
-          <template #icon>
-            <FlaskConical :size="14" />
-          </template>
-          沙盒试跑
-        </NButton>
-      </NSpace>
-    </div>
-
     <div class="filter-bar">
       <NSelect
         v-model:value="filterAction"
@@ -360,32 +375,24 @@ onMounted(() => {
         size="small"
         @keyup.enter="loadDecisions"
       />
-      <NButton :loading size="small" @click="loadDecisions">
-        <template #icon>
-          <RefreshCw :size="14" />
-        </template>
-        查询
-      </NButton>
     </div>
 
-    <NCard size="small">
-      <NDataTable
-        class="clickable-table"
-        :columns
-        :data="items"
-        :loading
-        :pagination="{ pageSize: 20 }"
-        :row-props="
-          (row: GateDecisionRow) => ({
-            onClick: () => openDetail(row),
-          })
-        "
-        :scroll-x="900"
-        size="small"
-      />
-    </NCard>
+    <NDataTable
+      class="clickable-table"
+      :columns
+      :data="items"
+      :loading
+      :pagination="{ pageSize: 20 }"
+      :row-props="
+        (row: GateDecisionRow) => ({
+          onClick: () => openDetail(row),
+        })
+      "
+      :scroll-x="900"
+      size="small"
+    />
 
-    <NDrawer v-model:show="detailOpen" class="drawer-safe" :width="440">
+    <NDrawer v-model:show="detailOpen" class="drawer-safe" :width="520">
       <NDrawerContent v-if="selectedRow" closable title="判定详情">
         <NDescriptions bordered :column="1" label-placement="left" size="small">
           <NDescriptionsItem label="记录编号">
@@ -424,20 +431,26 @@ onMounted(() => {
         <div class="section-title">判断理由</div>
         <pre class="code-block">{{ selectedRow.reason }}</pre>
 
+        <div class="section-title">
+          关联 AI 调用（{{ relatedCalls.length }}）
+        </div>
+        <InlineAiCallsList
+          :calls="relatedCalls"
+          empty-text="该判定后未触发 AI 调用"
+          :loading="loadingRelatedCalls"
+        />
+
         <NButton
           block
           class="mt-lg"
-          secondary
+          quaternary
           size="small"
           @click="
             detailOpen = false;
-            router.push({
-              path: '/ai',
-              query: { chatKey: selectedRow.chatKey },
-            });
+            emit('inspectChatCalls', selectedRow.chatKey);
           "
         >
-          查看该会话 AI 调用
+          在调用明细中筛选该会话
         </NButton>
       </NDrawerContent>
     </NDrawer>

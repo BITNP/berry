@@ -2,6 +2,7 @@
 import {
   ArrowDownToLine,
   Copy,
+  FlaskConical,
   Pause,
   Play,
   RefreshCw,
@@ -22,6 +23,8 @@ import {
   NEmpty,
   NInput,
   NPopconfirm,
+  NRadioButton,
+  NRadioGroup,
   NSelect,
   NSpace,
   NTabPane,
@@ -35,6 +38,7 @@ import { computed, h, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
+import GateMonitorPane from "../components/GateMonitorPane.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useEventStream } from "../composables/useEventStream.ts";
 import type { LlmCallRow } from "../utils/ai.ts";
@@ -84,21 +88,26 @@ const router = useRouter();
 const message = useMessage();
 const { chatOptions } = useChatOptions();
 
-function initialTab(): "calls" | "context" | "usage" {
+type AiTab = "calls" | "gate" | "context" | "usage";
+type CallScope = "core" | "all" | "error";
+
+function initialTab(): AiTab {
   const q = route.query.tab;
 
-  if (q === "context" || q === "usage") {
+  if (q === "gate" || q === "context" || q === "usage") {
     return q;
   }
 
   return "calls";
 }
 
-const activeTab = ref<"calls" | "context" | "usage">(initialTab());
+const activeTab = ref<AiTab>(initialTab());
 const loadingCalls = ref(false);
 const loadingMeta = ref(false);
 const calls = ref<LlmCallRow[]>([]);
 const totalCalls = ref(0);
+const gateTotal = ref<number | null>(null);
+const gatePaneRef = ref<InstanceType<typeof GateMonitorPane> | null>(null);
 const usageBuckets = ref<UsageBucket[]>([]);
 const conversation = ref<ConversationView | null>(null);
 const resettingContext = ref(false);
@@ -108,10 +117,12 @@ const filterPurpose = ref<string | null>(
     ? route.query.purpose
     : null,
 );
-const filterStatus = ref<"ok" | "error" | null>(
-  route.query.status === "ok" || route.query.status === "error"
-    ? route.query.status
-    : null,
+const callScope = ref<CallScope>(
+  route.query.status === "error"
+    ? "error"
+    : filterPurpose.value === "gate"
+      ? "all"
+      : "core",
 );
 const filterChatKey = ref<string | null>(
   typeof route.query.chatKey === "string" && route.query.chatKey
@@ -210,10 +221,12 @@ async function loadCalls() {
 
     if (filterPurpose.value) {
       qs.set("purpose", filterPurpose.value);
+    } else if (callScope.value === "core") {
+      qs.set("excludePurpose", "gate");
     }
 
-    if (filterStatus.value) {
-      qs.set("status", filterStatus.value);
+    if (callScope.value === "error") {
+      qs.set("status", "error");
     }
 
     if (filterChatKey.value?.trim()) {
@@ -256,7 +269,16 @@ async function loadMeta() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadCalls(), loadMeta()]);
+  await Promise.all([
+    loadCalls(),
+    loadMeta(),
+    gatePaneRef.value?.loadDecisions(),
+  ]);
+}
+
+function inspectChatCalls(chatKey: string) {
+  filterChatKey.value = chatKey;
+  activeTab.value = "calls";
 }
 
 function openDetail(row: LlmCallRow) {
@@ -293,15 +315,23 @@ const { paused: streamPaused, togglePause } = useEventStream((type) => {
   if (type === "llm_call") {
     void loadCalls();
 
-    if (activeTab.value !== "calls") {
+    if (activeTab.value === "context" || activeTab.value === "usage") {
       void loadMeta();
     }
+  } else if (type === "gate_decision") {
+    void gatePaneRef.value?.loadDecisions();
   }
 });
 
 let filterTimer: ReturnType<typeof setTimeout> | null = null;
 
-watch([filterPurpose, filterStatus, filterChatKey], () => {
+watch(filterPurpose, (purpose) => {
+  if (purpose === "gate" && callScope.value === "core") {
+    callScope.value = "all";
+  }
+});
+
+watch([callScope, filterPurpose, filterChatKey], () => {
   void loadCalls();
 });
 
@@ -326,10 +356,23 @@ watch(activeTab, (tab) => {
 });
 
 watch(
-  () => route.query.tab,
-  (tab) => {
-    if (tab === "calls" || tab === "context" || tab === "usage") {
-      activeTab.value = tab;
+  () => route.query,
+  (q) => {
+    if (
+      q.tab === "calls" ||
+      q.tab === "gate" ||
+      q.tab === "context" ||
+      q.tab === "usage"
+    ) {
+      activeTab.value = q.tab;
+    }
+
+    if (typeof q.chatKey === "string" && q.chatKey !== filterChatKey.value) {
+      filterChatKey.value = q.chatKey || null;
+    }
+
+    if (typeof q.purpose === "string" && q.purpose !== filterPurpose.value) {
+      filterPurpose.value = q.purpose || null;
     }
   },
 );
@@ -534,10 +577,30 @@ onMounted(() => {
   <div>
     <div class="page-bar">
       <NSpace align="center" :size="10">
-        <h1 class="page-title">AI 调用</h1>
-        <NText class="sub-note" depth="3">共 {{ totalCalls }} 条记录</NText>
+        <h1 class="page-title">AI 追踪</h1>
+        <NText v-if="activeTab === 'calls'" class="sub-note" depth="3">
+          共 {{ totalCalls }} 条调用
+        </NText>
+        <NText
+          v-else-if="activeTab === 'gate' && gateTotal !== null"
+          class="sub-note"
+          depth="3"
+        >
+          共 {{ gateTotal }} 条分流
+        </NText>
       </NSpace>
-      <NSpace :size="8">
+      <NSpace :size="8" wrap>
+        <NButton
+          v-if="activeTab === 'gate'"
+          size="small"
+          type="primary"
+          @click="gatePaneRef?.openDryRun()"
+        >
+          <template #icon>
+            <FlaskConical :size="14" />
+          </template>
+          沙盒试跑
+        </NButton>
         <NButton size="small" @click="togglePause">
           <template #icon>
             <Play v-if="streamPaused" :size="14" />
@@ -562,23 +625,17 @@ onMounted(() => {
       <NTabs v-model:value="activeTab" type="line">
         <NTabPane name="calls" tab="调用明细">
           <div class="filter-bar">
+            <NRadioGroup v-model:value="callScope" size="small">
+              <NRadioButton value="core">核心调用</NRadioButton>
+              <NRadioButton value="all">全部</NRadioButton>
+              <NRadioButton value="error">仅失败</NRadioButton>
+            </NRadioGroup>
             <NSelect
               v-model:value="filterPurpose"
               class="w-175"
               clearable
               :options="PURPOSE_FILTER_OPTIONS"
               placeholder="全部用途"
-              size="small"
-            />
-            <NSelect
-              v-model:value="filterStatus"
-              class="w-115"
-              clearable
-              :options="[
-                { label: '成功', value: 'ok' },
-                { label: '失败', value: 'error' },
-              ]"
-              placeholder="全部状态"
               size="small"
             />
             <NSelect
@@ -613,6 +670,15 @@ onMounted(() => {
             "
             :scroll-x="1080"
             size="small"
+          />
+        </NTabPane>
+
+        <NTabPane name="gate" tab="消息分流">
+          <GateMonitorPane
+            ref="gatePaneRef"
+            :chat-key="filterChatKey"
+            @inspect-chat-calls="inspectChatCalls"
+            @update:total="(n: number) => (gateTotal = n)"
           />
         </NTabPane>
 

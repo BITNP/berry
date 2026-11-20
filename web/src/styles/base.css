@@ -447,3 +447,9 @@ body {
 .context-vlist-item {
   padding-bottom: 10px;
 }
+
+@media (max-width: 600px) {
+  .n-tabs .n-tabs-tab-pad {
+    width: 16px;
+  }
+}

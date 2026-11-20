@@ -41,7 +41,7 @@ interface PendingLogin {
 
 function safeReturnTo(raw: string | undefined): string {
   if (!raw || !raw.startsWith("/") || raw.startsWith("//")) {
-    return "/gate";
+    return "/overview";
   }
 
   return raw;

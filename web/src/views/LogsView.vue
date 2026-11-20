@@ -12,6 +12,8 @@ import {
   NAlert,
   NButton,
   NCard,
+  NCollapse,
+  NCollapseItem,
   NDataTable,
   NDescriptions,
   NDescriptionsItem,
@@ -35,8 +37,10 @@ import { computed, h, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
+import InlineAiCallsList from "../components/InlineAiCallsList.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useEventStream } from "../composables/useEventStream.ts";
+import type { LlmCallRow } from "../utils/ai.ts";
 import { formatTime } from "../utils/format.ts";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
@@ -111,14 +115,14 @@ const router = useRouter();
 const message = useMessage();
 const { chatOptions } = useChatOptions();
 
-function initialTab(): "logs" | "jobs" | "deliveries" {
+function initialTab(): "jobs" | "deliveries" | "logs" {
   const q = route.query.tab;
 
-  if (q === "jobs" || q === "deliveries") {
+  if (q === "logs" || q === "deliveries") {
     return q;
   }
 
-  return "logs";
+  return "jobs";
 }
 
 function initialJobLane(): JobLaneFilter {
@@ -131,7 +135,7 @@ function initialJobLane(): JobLaneFilter {
   return "all";
 }
 
-const activeTab = ref<"logs" | "jobs" | "deliveries">(initialTab());
+const activeTab = ref<"jobs" | "deliveries" | "logs">(initialTab());
 
 // Logs state
 const loadingLogs = ref(false);
@@ -171,8 +175,33 @@ const filterJobChatKey = ref<string | null>(null);
 const filterJobSearch = ref("");
 const retryingAll = ref(false);
 const busyJobId = ref<number | null>(null);
+interface GateDecisionBrief {
+  id: number;
+  action: "reply" | "memory" | "ignore";
+  stage: "l0_rule" | "l1_classifier" | "dry_run";
+  confidence: number;
+  reason: string;
+  model: string;
+  durationMs: number;
+  createdAt: number;
+  senderName: string | null;
+  messageText: string | null;
+}
+
+const gateActionLabel: Record<
+  GateDecisionBrief["action"],
+  { text: string; type: "success" | "info" | "default" }
+> = {
+  reply: { text: "回复", type: "success" },
+  memory: { text: "记入记忆", type: "info" },
+  ignore: { text: "忽略", type: "default" },
+};
+
 const selectedJob = ref<JobRow | null>(null);
 const jobDrawerOpen = ref(false);
+const jobTraceLoading = ref(false);
+const jobRelatedCalls = ref<LlmCallRow[]>([]);
+const jobRelatedGate = ref<GateDecisionBrief[]>([]);
 const nowTick = ref(Date.now());
 
 // Deliveries state
@@ -182,6 +211,8 @@ const filterDeliveryStatus = ref<DeliveryRow["status"] | null>(null);
 const filterDeliveryChatKey = ref<string | null>(null);
 const selectedDelivery = ref<DeliveryRow | null>(null);
 const deliveryDrawerOpen = ref(false);
+const deliveryCallsLoading = ref(false);
+const deliveryRelatedCalls = ref<LlmCallRow[]>([]);
 
 const levelPriority: Record<LogLevel, number> = {
   debug: 10,
@@ -357,6 +388,114 @@ const visibleDeliveries = computed(() =>
 );
 
 const failedJobCount = computed(() => jobCounts.value.failed);
+
+const jobRelatedDeliveries = computed(() => {
+  const job = selectedJob.value;
+
+  if (!job) {
+    return [];
+  }
+
+  const startMs = job.createdAt - 2000;
+  const endMs = (job.state === "running" ? Date.now() : job.updatedAt) + 15_000;
+  const matchChat =
+    job.chatKey.startsWith("group:") || job.chatKey.startsWith("private:");
+
+  return deliveries.value.filter((d) => {
+    if (d.updatedAt < startMs || d.updatedAt > endMs) {
+      return false;
+    }
+
+    return matchChat ? d.chatKey === job.chatKey : job.kind === "guild_task";
+  });
+});
+
+async function loadJobTrace(job: JobRow) {
+  jobTraceLoading.value = true;
+  jobRelatedCalls.value = [];
+  jobRelatedGate.value = [];
+
+  const startMs = job.createdAt - 2000;
+  const endMs = (job.state === "running" ? Date.now() : job.updatedAt) + 10_000;
+  const isChatTarget =
+    job.chatKey.startsWith("group:") || job.chatKey.startsWith("private:");
+
+  try {
+    const reqs: Promise<void>[] = [];
+
+    if (job.kind === "gate_batch" && isChatTarget) {
+      const gqs = new URLSearchParams({ chatKey: job.chatKey, limit: "15" });
+
+      reqs.push(
+        apiFetch<{ items: GateDecisionBrief[] }>(
+          `/api/admin/gate-decisions?${gqs.toString()}`,
+        ).then((res) => {
+          jobRelatedGate.value = res.items
+            .filter((d) => d.createdAt >= startMs && d.createdAt <= endMs)
+            .reverse();
+        }),
+      );
+    }
+
+    const cqs = new URLSearchParams({ limit: "20" });
+
+    if (isChatTarget) {
+      cqs.set("chatKey", job.chatKey);
+    } else if (job.kind === "guild_task" && job.payload.task === "weekly") {
+      cqs.set("purpose", "report");
+    } else {
+      cqs.set("limit", "0");
+    }
+
+    if (cqs.get("limit") !== "0") {
+      reqs.push(
+        apiFetch<{ items: LlmCallRow[] }>(
+          `/api/admin/llm-calls?${cqs.toString()}`,
+        ).then((res) => {
+          jobRelatedCalls.value = res.items
+            .filter((c) => c.createdAt >= startMs && c.createdAt <= endMs)
+            .reverse();
+        }),
+      );
+    }
+
+    await Promise.all(reqs);
+  } catch {
+    // Non-critical inline trace; keep core job metadata visible.
+  } finally {
+    jobTraceLoading.value = false;
+  }
+}
+
+function openJobDetail(row: JobRow) {
+  selectedJob.value = row;
+  jobDrawerOpen.value = true;
+  void loadJobTrace(row);
+}
+
+async function openDeliveryDetail(row: DeliveryRow) {
+  selectedDelivery.value = row;
+  deliveryDrawerOpen.value = true;
+  deliveryCallsLoading.value = true;
+  deliveryRelatedCalls.value = [];
+
+  try {
+    const qs = new URLSearchParams({ chatKey: row.chatKey, limit: "15" });
+    const res = await apiFetch<{ items: LlmCallRow[] }>(
+      `/api/admin/llm-calls?${qs.toString()}`,
+    );
+    const startMs = row.updatedAt - 120_000;
+    const endMs = row.updatedAt + 5000;
+
+    deliveryRelatedCalls.value = res.items
+      .filter((c) => c.createdAt >= startMs && c.createdAt <= endMs)
+      .reverse();
+  } catch {
+    deliveryRelatedCalls.value = [];
+  } finally {
+    deliveryCallsLoading.value = false;
+  }
+}
 
 function toggleJobStateFilter(state: JobRow["state"]) {
   filterJobState.value = filterJobState.value === state ? null : state;
@@ -918,7 +1057,7 @@ onUnmounted(() => {
 <template>
   <div>
     <div class="page-bar">
-      <h1 class="page-title">日志队列</h1>
+      <h1 class="page-title">运行监控</h1>
       <NSpace :size="8" wrap>
         <NButton size="small" @click="togglePause">
           <template #icon>
@@ -949,82 +1088,6 @@ onUnmounted(() => {
 
     <NCard size="small">
       <NTabs v-model:value="activeTab" type="line">
-        <NTabPane name="logs" :tab="`实时日志 (${visibleEntries.length})`">
-          <div class="filter-bar">
-            <NSelect
-              v-model:value="filterLevel"
-              class="w-135"
-              clearable
-              :options="[
-                { label: 'DEBUG 以上', value: 'debug' },
-                { label: 'INFO 以上', value: 'info' },
-                { label: 'WARN 以上', value: 'warn' },
-                { label: '仅 ERROR', value: 'error' },
-              ]"
-              placeholder="全部级别"
-              size="small"
-            />
-            <NSelect
-              v-model:value="filterScope"
-              class="w-155"
-              clearable
-              filterable
-              :options="scopeOptions"
-              placeholder="全部模块"
-              size="small"
-            />
-            <NInput
-              v-model:value="filterSearch"
-              class="w-240"
-              clearable
-              placeholder="过滤消息、模块或附带字段"
-              size="small"
-              @keyup.enter="loadLogs"
-            />
-            <NButton :loading="loadingLogs" size="small" @click="loadLogs">
-              <template #icon>
-                <RefreshCw :size="14" />
-              </template>
-              刷新
-            </NButton>
-            <NSpace align="center" class="ml-auto" :size="6">
-              <NSwitch v-model:value="autoScroll" size="small" />
-              <NText class="sub-note" depth="2">自动滚动</NText>
-            </NSpace>
-          </div>
-
-          <div ref="consoleRef" class="log-console">
-            <NEmpty
-              v-if="visibleEntries.length === 0"
-              class="py-empty"
-              description="当前筛选下暂无日志"
-            />
-            <div
-              v-for="entry in visibleEntries"
-              :key="entry.id"
-              class="log-line"
-              :class="`lvl-${entry.level}`"
-            >
-              <span class="log-time tabular">{{ formatTime(entry.time) }}</span>
-              <NTag
-                class="log-lvl"
-                size="tiny"
-                :type="levelTagType[entry.level]"
-              >
-                {{ entry.level.toUpperCase() }}
-              </NTag>
-              <span class="log-scope mono">[{{ entry.scope }}]</span>
-              <span class="log-msg">{{ entry.message }}</span>
-              <span
-                v-if="Object.keys(entry.context).length > 0"
-                class="log-ctx mono"
-              >
-                {{ formatContext(entry.context) }}
-              </span>
-            </div>
-          </div>
-        </NTabPane>
-
         <NTabPane
           name="jobs"
           :tab="
@@ -1044,7 +1107,7 @@ onUnmounted(() => {
                   ({{ jobCounts.backgroundActive }})
                 </template>
               </NRadioButton>
-              <NRadioButton value="realtime">对话与分流</NRadioButton>
+              <NRadioButton value="realtime">实时调度</NRadioButton>
             </NRadioGroup>
 
             <NSpace align="center" :size="6" wrap>
@@ -1147,10 +1210,7 @@ onUnmounted(() => {
             :pagination="{ pageSize: 15 }"
             :row-props="
               (row: JobRow) => ({
-                onClick: () => {
-                  selectedJob = row;
-                  jobDrawerOpen = true;
-                },
+                onClick: () => openJobDetail(row),
               })
             "
             :scroll-x="960"
@@ -1202,20 +1262,93 @@ onUnmounted(() => {
             :pagination="{ pageSize: 15 }"
             :row-props="
               (row: DeliveryRow) => ({
-                onClick: () => {
-                  selectedDelivery = row;
-                  deliveryDrawerOpen = true;
-                },
+                onClick: () => openDeliveryDetail(row),
               })
             "
             :scroll-x="840"
             size="small"
           />
         </NTabPane>
+
+        <NTabPane name="logs" :tab="`实时日志 (${visibleEntries.length})`">
+          <div class="filter-bar">
+            <NSelect
+              v-model:value="filterLevel"
+              class="w-135"
+              clearable
+              :options="[
+                { label: 'DEBUG 以上', value: 'debug' },
+                { label: 'INFO 以上', value: 'info' },
+                { label: 'WARN 以上', value: 'warn' },
+                { label: '仅 ERROR', value: 'error' },
+              ]"
+              placeholder="全部级别"
+              size="small"
+            />
+            <NSelect
+              v-model:value="filterScope"
+              class="w-155"
+              clearable
+              filterable
+              :options="scopeOptions"
+              placeholder="全部模块"
+              size="small"
+            />
+            <NInput
+              v-model:value="filterSearch"
+              class="w-240"
+              clearable
+              placeholder="过滤消息、模块或附带字段"
+              size="small"
+              @keyup.enter="loadLogs"
+            />
+            <NButton :loading="loadingLogs" size="small" @click="loadLogs">
+              <template #icon>
+                <RefreshCw :size="14" />
+              </template>
+              刷新
+            </NButton>
+            <NSpace align="center" class="ml-auto" :size="6">
+              <NSwitch v-model:value="autoScroll" size="small" />
+              <NText class="sub-note" depth="2">自动滚动</NText>
+            </NSpace>
+          </div>
+
+          <div ref="consoleRef" class="log-console">
+            <NEmpty
+              v-if="visibleEntries.length === 0"
+              class="py-empty"
+              description="当前筛选下暂无日志"
+            />
+            <div
+              v-for="entry in visibleEntries"
+              :key="entry.id"
+              class="log-line"
+              :class="`lvl-${entry.level}`"
+            >
+              <span class="log-time tabular">{{ formatTime(entry.time) }}</span>
+              <NTag
+                class="log-lvl"
+                size="tiny"
+                :type="levelTagType[entry.level]"
+              >
+                {{ entry.level.toUpperCase() }}
+              </NTag>
+              <span class="log-scope mono">[{{ entry.scope }}]</span>
+              <span class="log-msg">{{ entry.message }}</span>
+              <span
+                v-if="Object.keys(entry.context).length > 0"
+                class="log-ctx mono"
+              >
+                {{ formatContext(entry.context) }}
+              </span>
+            </div>
+          </div>
+        </NTabPane>
       </NTabs>
     </NCard>
 
-    <NDrawer v-model:show="jobDrawerOpen" class="drawer-safe" :width="520">
+    <NDrawer v-model:show="jobDrawerOpen" class="drawer-safe" :width="560">
       <NDrawerContent v-if="selectedJob" closable title="任务详情">
         <NSpace :size="12" vertical>
           <NAlert v-if="selectedJob.lastError" title="执行失败" type="error">
@@ -1253,12 +1386,6 @@ onUnmounted(() => {
             <NDescriptionsItem label="尝试次数">
               {{ selectedJob.attempts }}
             </NDescriptionsItem>
-            <NDescriptionsItem label="去重键">
-              <span class="mono break-all">{{ selectedJob.dedupeKey }}</span>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="创建时间">
-              {{ formatTime(selectedJob.createdAt) }}
-            </NDescriptionsItem>
             <NDescriptionsItem label="更新时间">
               {{ formatTime(selectedJob.updatedAt) }}
             </NDescriptionsItem>
@@ -1269,10 +1396,101 @@ onUnmounted(() => {
             <pre class="code-block">{{ selectedJob.summary }}</pre>
           </div>
 
-          <div class="section-title">原始载荷（Payload）</div>
-          <pre class="code-block">{{
-            JSON.stringify(selectedJob.payload, null, 2)
-          }}</pre>
+          <div
+            v-if="
+              selectedJob.kind === 'gate_batch' && jobRelatedGate.length > 0
+            "
+          >
+            <div class="section-title">
+              关联分流判定（{{ jobRelatedGate.length }}）
+            </div>
+            <NSpace :size="8" vertical>
+              <div
+                v-for="item in jobRelatedGate"
+                :key="item.id"
+                class="turn-box"
+              >
+                <div class="turn-head">
+                  <NTag size="tiny" :type="gateActionLabel[item.action].type">
+                    {{ gateActionLabel[item.action].text }}
+                  </NTag>
+                  <NText class="tabular sub-note" depth="3">
+                    {{ Math.round(item.confidence * 100) }}% /
+                    {{ item.durationMs }} ms
+                  </NText>
+                </div>
+                <div v-if="item.messageText" class="sub-note mt-xs">
+                  {{ item.senderName ? `${item.senderName}：` : ""
+                  }}{{ item.messageText }}
+                </div>
+                <div class="sub-note mt-xs">{{ item.reason }}</div>
+              </div>
+            </NSpace>
+          </div>
+
+          <div
+            v-if="
+              jobTraceLoading ||
+              jobRelatedCalls.length > 0 ||
+              selectedJob.kind === 'invoke' ||
+              selectedJob.kind === 'memory_update' ||
+              selectedJob.kind === 'group_digest'
+            "
+          >
+            <div class="section-title">
+              关联 AI 调用（{{ jobRelatedCalls.length }}）
+            </div>
+            <InlineAiCallsList
+              :calls="jobRelatedCalls"
+              :loading="jobTraceLoading"
+            />
+          </div>
+
+          <div v-if="jobRelatedDeliveries.length > 0">
+            <div class="section-title">
+              关联出站投递（{{ jobRelatedDeliveries.length }}）
+            </div>
+            <NSpace :size="8" vertical>
+              <div
+                v-for="del in jobRelatedDeliveries"
+                :key="del.id"
+                class="turn-box"
+              >
+                <div class="turn-head">
+                  <NTag
+                    size="tiny"
+                    :type="deliveryStatusLabel[del.status].type"
+                  >
+                    {{ deliveryStatusLabel[del.status].text }}
+                  </NTag>
+                  <NTag size="tiny">
+                    {{ deliveryKindLabel[del.kind] ?? del.kind }}
+                  </NTag>
+                  <span class="tabular sub-note ml-auto">
+                    {{ formatTime(del.updatedAt) }}
+                  </span>
+                </div>
+                <div class="sub-note mt-xs">
+                  {{ summarizePayload(del.payload, del.kind) || "—" }}
+                </div>
+                <NText v-if="del.error" class="sub-note" type="error">
+                  {{ del.error }}
+                </NText>
+              </div>
+            </NSpace>
+          </div>
+
+          <NCollapse>
+            <NCollapseItem name="payload" title="原始载荷（Payload）及元数据">
+              <div class="sub-note mono break-all mb-sm">
+                dedupeKey: {{ selectedJob.dedupeKey }} / created:
+                {{ formatTime(selectedJob.createdAt) }}
+              </div>
+              <pre class="code-block">{{
+                JSON.stringify(selectedJob.payload, null, 2)
+              }}</pre>
+            </NCollapseItem>
+          </NCollapse>
 
           <NSpace :size="8" wrap>
             <NButton
@@ -1298,7 +1516,7 @@ onUnmounted(() => {
             <NButton
               v-for="link in selectedJob.links ?? []"
               :key="link.to"
-              secondary
+              quaternary
               size="small"
               @click="
                 jobDrawerOpen = false;
@@ -1312,7 +1530,7 @@ onUnmounted(() => {
       </NDrawerContent>
     </NDrawer>
 
-    <NDrawer v-model:show="deliveryDrawerOpen" class="drawer-safe" :width="480">
+    <NDrawer v-model:show="deliveryDrawerOpen" class="drawer-safe" :width="540">
       <NDrawerContent v-if="selectedDelivery" closable title="出站投递详情">
         <NSpace :size="12" vertical>
           <NAlert v-if="selectedDelivery.error" title="投递失败" type="error">
@@ -1332,7 +1550,10 @@ onUnmounted(() => {
               <span class="mono">{{ selectedDelivery.chatKey }}</span>
             </NDescriptionsItem>
             <NDescriptionsItem label="类型">
-              <span class="mono">{{ selectedDelivery.kind }}</span>
+              {{
+                deliveryKindLabel[selectedDelivery.kind] ??
+                selectedDelivery.kind
+              }}
             </NDescriptionsItem>
             <NDescriptionsItem label="状态">
               <NTag
@@ -1354,10 +1575,34 @@ onUnmounted(() => {
               {{ formatTime(selectedDelivery.updatedAt) }}
             </NDescriptionsItem>
           </NDescriptions>
-          <div class="section-title">投递内容</div>
-          <pre class="code-block">{{
-            JSON.stringify(selectedDelivery.payload, null, 2)
-          }}</pre>
+
+          <div>
+            <div class="section-title">投递正文</div>
+            <pre class="code-block">{{
+              summarizePayload(
+                selectedDelivery.payload,
+                selectedDelivery.kind,
+              ) || "—"
+            }}</pre>
+          </div>
+
+          <div>
+            <div class="section-title">
+              关联 AI 调用（{{ deliveryRelatedCalls.length }}）
+            </div>
+            <InlineAiCallsList
+              :calls="deliveryRelatedCalls"
+              :loading="deliveryCallsLoading"
+            />
+          </div>
+
+          <NCollapse>
+            <NCollapseItem name="raw" title="原始投递载荷（JSON）">
+              <pre class="code-block">{{
+                JSON.stringify(selectedDelivery.payload, null, 2)
+              }}</pre>
+            </NCollapseItem>
+          </NCollapse>
         </NSpace>
       </NDrawerContent>
     </NDrawer>

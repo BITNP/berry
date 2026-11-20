@@ -80,6 +80,7 @@ const gateQuerySchema = Type.Object({
 
 const llmCallsQuerySchema = Type.Object({
   purpose: Type.Optional(Type.String()),
+  excludePurpose: Type.Optional(Type.String()),
   status: Type.Optional(
     Type.Union([Type.Literal("ok"), Type.Literal("error")]),
   ),

@@ -44,6 +44,21 @@ export const createDefaultJobRegistry = (deps: {
 
         return ids.length > 1 ? `${head}（共 ${ids.length} 条）` : head;
       },
+      links: (job) => {
+        if (
+          !job.chatKey.startsWith("group:") &&
+          !job.chatKey.startsWith("private:")
+        ) {
+          return [];
+        }
+
+        const encoded = encodeURIComponent(job.chatKey);
+
+        return [
+          { label: "查看分流记录", to: `/ai?tab=gate&chatKey=${encoded}` },
+          { label: "查看会话记录", to: `/chats?chatKey=${encoded}` },
+        ];
+      },
     })
     .register({
       kind: "invoke",

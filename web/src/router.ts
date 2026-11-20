@@ -21,12 +21,22 @@ export const router = createRouter({
     {
       path: "/ai",
       component: () => import("./views/AiCallsView.vue"),
-      meta: { title: "AI 调用" },
+      meta: {
+        title: "AI 追踪",
+        tabTitles: {
+          calls: "AI 追踪",
+          gate: "消息分流",
+          context: "全局上下文",
+          usage: "用量统计",
+        },
+      },
     },
     {
       path: "/gate",
-      component: () => import("./views/GateView.vue"),
-      meta: { title: "消息分流" },
+      redirect: (to) => ({
+        path: "/ai",
+        query: { ...to.query, tab: "gate" },
+      }),
     },
     {
       path: "/chats",
@@ -57,7 +67,14 @@ export const router = createRouter({
     {
       path: "/logs",
       component: () => import("./views/LogsView.vue"),
-      meta: { title: "日志队列" },
+      meta: {
+        title: "运行监控",
+        tabTitles: {
+          jobs: "任务队列",
+          deliveries: "出站投递",
+          logs: "实时日志",
+        },
+      },
     },
     {
       path: "/settings",
@@ -84,7 +101,11 @@ router.beforeEach(async (to) => {
 });
 
 router.afterEach((to) => {
-  const title = typeof to.meta.title === "string" ? to.meta.title : "";
+  const tab = typeof to.query.tab === "string" ? to.query.tab : "";
+  const tabTitles = to.meta.tabTitles as Record<string, string> | undefined;
+  const title =
+    (tab && tabTitles?.[tab]) ||
+    (typeof to.meta.title === "string" ? to.meta.title : "");
 
   document.title = title ? `${title} - ${APP_TITLE}` : APP_TITLE;
 });

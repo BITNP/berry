@@ -257,7 +257,11 @@ onMounted(() => {
         </span>
       </button>
 
-      <button class="metric-card" type="button" @click="router.push('/gate')">
+      <button
+        class="metric-card"
+        type="button"
+        @click="router.push('/ai?tab=gate')"
+      >
         <div class="metric-card-top">
           <span class="metric-label">24 小时分流</span>
           <ArrowRight class="metric-arrow" :size="13" />
@@ -349,7 +353,7 @@ onMounted(() => {
           class="status-link"
           size="small"
           :type="overview.gatewayHealth.reachable ? 'success' : 'warning'"
-          @click="router.push('/logs')"
+          @click="router.push('/logs?tab=logs')"
         >
           Message Gateway：{{
             overview.gatewayHealth.reachable
@@ -363,7 +367,7 @@ onMounted(() => {
           class="status-link"
           size="small"
           :type="overview.gatewayStreamConnected ? 'success' : 'default'"
-          @click="router.push('/logs')"
+          @click="router.push('/logs?tab=logs')"
         >
           网关事件流：{{
             overview.gatewayStreamConnected ? "已连接" : "未连接"

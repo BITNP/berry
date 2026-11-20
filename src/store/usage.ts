@@ -153,6 +153,7 @@ export class UsageStore {
   public async listRecent(
     filter: {
       purpose?: string;
+      excludePurpose?: string;
       status?: "ok" | "error";
       chatKey?: string;
       search?: string;
@@ -174,6 +175,9 @@ export class UsageStore {
         listQuery = listQuery.where("purpose", "=", filter.purpose);
         countQuery = countQuery.where("purpose", "=", filter.purpose);
       }
+    } else if (filter.excludePurpose) {
+      listQuery = listQuery.where("purpose", "!=", filter.excludePurpose);
+      countQuery = countQuery.where("purpose", "!=", filter.excludePurpose);
     }
 
     if (filter.status) {
