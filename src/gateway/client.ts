@@ -714,7 +714,7 @@ export class MessageGatewayClient {
             ? Number(unit.messageId)
             : unit.messageId,
           emoji_id: resolvedEmojiId,
-          set: true,
+          set: !unit.remove,
         });
 
         return (

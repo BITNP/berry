@@ -180,7 +180,9 @@ function summarizePayload(
   }
 
   if (kind === "qq_reaction") {
-    return `表情回应 #${String(payload.emojiId ?? "")}`;
+    const verb = payload.remove ? "取消表情回应" : "表情回应";
+
+    return `${verb} #${String(payload.emojiId ?? "")}`;
   }
 
   return JSON.stringify(payload);

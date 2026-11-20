@@ -201,6 +201,27 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
 
   assert.ok(reactionCall);
   assert.equal((reactionCall.body as { emoji_id?: string }).emoji_id, "12951");
+  assert.equal((reactionCall.body as { set?: boolean }).set, true);
+
+  const removeDelivery = await app.gateway.dispatchUnit(
+    "group:555666",
+    {
+      kind: "qq_reaction",
+      messageId: "ob-react-1",
+      emojiId: "㊗️",
+      remove: true,
+    },
+    "999999",
+  );
+
+  assert.equal(removeDelivery.status, "sent");
+  const removeCall = gatewayCalls.findLast((c) =>
+    c.path.endsWith("/set_msg_emoji_like"),
+  );
+
+  assert.ok(removeCall);
+  assert.equal((removeCall.body as { emoji_id?: string }).emoji_id, "12951");
+  assert.equal((removeCall.body as { set?: boolean }).set, false);
 
   // QQNT catalog & Unicode codepoint resolution.
   assert.equal(qfaceName("12951"), "㊗️");

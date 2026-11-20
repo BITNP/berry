@@ -130,6 +130,7 @@ export type OutputUnit =
       kind: "qq_reaction";
       messageId: string;
       emojiId: string;
+      remove?: boolean;
     };
 
 export interface UnifiedInput {

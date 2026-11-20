@@ -58,6 +58,7 @@ const outputUnitSchema = Type.Union([
       kind: Type.Literal("qq_reaction"),
       messageId: Type.String({ minLength: 1 }),
       emojiId: Type.String({ minLength: 1 }),
+      remove: Type.Optional(Type.Boolean()),
     },
     { additionalProperties: false },
   ),
@@ -643,6 +644,7 @@ export class BerryAgent {
                 kind: "qq_reaction",
                 messageId: resolvedMsg.rawId,
                 emojiId: resolvedEmojiId,
+                ...(unit.remove ? { remove: true } : {}),
               },
             });
           } catch (error) {
