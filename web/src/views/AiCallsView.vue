@@ -35,6 +35,7 @@ import { computed, h, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
+import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useEventStream } from "../composables/useEventStream.ts";
 import type { LlmCallRow } from "../utils/ai.ts";
 import {
@@ -81,6 +82,7 @@ interface ConversationView {
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
+const { chatOptions } = useChatOptions();
 
 function initialTab(): "calls" | "context" | "usage" {
   const q = route.query.tab;
@@ -111,8 +113,10 @@ const filterStatus = ref<"ok" | "error" | null>(
     ? route.query.status
     : null,
 );
-const filterChatKey = ref(
-  typeof route.query.chatKey === "string" ? route.query.chatKey : "",
+const filterChatKey = ref<string | null>(
+  typeof route.query.chatKey === "string" && route.query.chatKey
+    ? route.query.chatKey
+    : null,
 );
 const filterSearch = ref("");
 
@@ -212,7 +216,7 @@ async function loadCalls() {
       qs.set("status", filterStatus.value);
     }
 
-    if (filterChatKey.value.trim()) {
+    if (filterChatKey.value?.trim()) {
       qs.set("chatKey", filterChatKey.value.trim());
     }
 
@@ -297,11 +301,11 @@ const { paused: streamPaused, togglePause } = useEventStream((type) => {
 
 let filterTimer: ReturnType<typeof setTimeout> | null = null;
 
-watch([filterPurpose, filterStatus], () => {
+watch([filterPurpose, filterStatus, filterChatKey], () => {
   void loadCalls();
 });
 
-watch([filterChatKey, filterSearch], () => {
+watch(filterSearch, () => {
   if (filterTimer) {
     clearTimeout(filterTimer);
   }
@@ -436,7 +440,7 @@ const callColumns: DataTableColumns<LlmCallRow> = [
   {
     title: "耗时",
     key: "durationMs",
-    width: 82,
+    width: 96,
     align: "right",
     render: (row) => h("span", { class: "tabular" }, `${row.durationMs} ms`),
   },
@@ -577,12 +581,15 @@ onMounted(() => {
               placeholder="全部状态"
               size="small"
             />
-            <NInput
+            <NSelect
               v-model:value="filterChatKey"
-              class="w-190"
+              class="w-240"
               clearable
-              placeholder="会话键，例如 group:1054204419"
+              filterable
+              :options="chatOptions"
+              placeholder="选择或输入会话（支持名称/群号）"
               size="small"
+              tag
             />
             <NInput
               v-model:value="filterSearch"

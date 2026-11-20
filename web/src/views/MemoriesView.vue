@@ -16,9 +16,10 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, h, onMounted, ref } from "vue";
+import { computed, h, onMounted, ref, watch } from "vue";
 
 import { apiFetch } from "../api/client.ts";
+import { useChatOptions } from "../composables/useChatOptions.ts";
 import { formatTime } from "../utils/format.ts";
 
 type MemoryScope = "global" | "chat" | "user";
@@ -44,13 +45,19 @@ const SCOPE_META: Record<
 };
 
 const message = useMessage();
+const { chatOptions } = useChatOptions();
 
 const loading = ref(false);
 const saving = ref(false);
 const items = ref<MemoryRow[]>([]);
 const filterScope = ref<MemoryScope | null>(null);
-const filterOwnerId = ref("");
+const filterOwnerId = ref<string | null>(null);
 const filterSearch = ref("");
+
+const ownerFilterOptions = computed(() => [
+  { label: "全局 (global)", value: "global" },
+  ...chatOptions.value,
+]);
 
 const modalOpen = ref(false);
 const isEdit = ref(false);
@@ -94,7 +101,7 @@ async function loadMemories() {
       qs.set("scope", filterScope.value);
     }
 
-    if (filterOwnerId.value.trim()) {
+    if (filterOwnerId.value?.trim()) {
       qs.set("ownerId", filterOwnerId.value.trim());
     }
 
@@ -281,6 +288,10 @@ const columns: DataTableColumns<MemoryRow> = [
   },
 ];
 
+watch([filterScope, filterOwnerId], () => {
+  void loadMemories();
+});
+
 onMounted(() => {
   void loadMemories();
 });
@@ -314,13 +325,15 @@ onMounted(() => {
         placeholder="全部范围"
         size="small"
       />
-      <NInput
+      <NSelect
         v-model:value="filterOwnerId"
-        class="w-210"
+        class="w-240"
         clearable
-        placeholder="归属 ID，例如 group:10248888"
+        filterable
+        :options="ownerFilterOptions"
+        placeholder="选择或输入归属（支持群名/QQ）"
         size="small"
-        @keyup.enter="loadMemories"
+        tag
       />
       <NInput
         v-model:value="filterSearch"
@@ -370,7 +383,16 @@ onMounted(() => {
         <NFormItem
           label="归属 ID（全局固定 global，群聊用 group:群号，成员用 QQ 号）"
         >
+          <NSelect
+            v-if="form.scope === 'chat' && !isEdit"
+            v-model:value="form.ownerId"
+            filterable
+            :options="chatOptions"
+            placeholder="选择群聊或输入 group:群号"
+            tag
+          />
           <NInput
+            v-else
             v-model:value="form.ownerId"
             :disabled="isEdit || form.scope === 'global'"
           />

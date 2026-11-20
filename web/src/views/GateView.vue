@@ -23,6 +23,7 @@ import { h, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
+import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useEventStream } from "../composables/useEventStream.ts";
 import { formatTime } from "../utils/format.ts";
 
@@ -55,13 +56,14 @@ interface DryRunResponse {
 
 const router = useRouter();
 const message = useMessage();
+const { chatOptions } = useChatOptions();
 
 const loading = ref(false);
 const items = ref<GateDecisionRow[]>([]);
 const total = ref(0);
 const filterAction = ref<string | null>(null);
 const filterStage = ref<string | null>(null);
-const filterChatKey = ref("");
+const filterChatKey = ref<string | null>(null);
 const filterSearch = ref("");
 
 const selectedRow = ref<GateDecisionRow | null>(null);
@@ -128,7 +130,7 @@ async function loadDecisions() {
       params.set("stage", filterStage.value);
     }
 
-    if (filterChatKey.value.trim()) {
+    if (filterChatKey.value?.trim()) {
       params.set("chatKey", filterChatKey.value.trim());
     }
 
@@ -280,11 +282,11 @@ const columns: DataTableColumns<GateDecisionRow> = [
 
 let filterTimer: ReturnType<typeof setTimeout> | null = null;
 
-watch([filterAction, filterStage], () => {
+watch([filterAction, filterStage, filterChatKey], () => {
   void loadDecisions();
 });
 
-watch([filterChatKey, filterSearch], () => {
+watch(filterSearch, () => {
   if (filterTimer) {
     clearTimeout(filterTimer);
   }
@@ -340,13 +342,15 @@ onMounted(() => {
         placeholder="全部阶段"
         size="small"
       />
-      <NInput
+      <NSelect
         v-model:value="filterChatKey"
-        class="w-200"
+        class="w-240"
         clearable
-        placeholder="会话键，例如 group:10248888"
+        filterable
+        :options="chatOptions"
+        placeholder="选择或输入会话（支持名称/群号）"
         size="small"
-        @keyup.enter="loadDecisions"
+        tag
       />
       <NInput
         v-model:value="filterSearch"
@@ -442,7 +446,13 @@ onMounted(() => {
       <NDrawerContent closable title="小模型分流沙盒">
         <NForm label-placement="top" size="small">
           <NFormItem label="模拟会话标识">
-            <NInput v-model:value="dryRunForm.chatKey" />
+            <NSelect
+              v-model:value="dryRunForm.chatKey"
+              filterable
+              :options="chatOptions"
+              placeholder="选择已有会话或输入 group:群号"
+              tag
+            />
           </NFormItem>
           <NFormItem label="群触发模式">
             <NSelect
