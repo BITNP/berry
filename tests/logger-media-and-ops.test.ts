@@ -212,6 +212,9 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   assert.equal(resolveReactionEmojiId("对的对的"), "478");
   assert.equal(resolveReactionEmojiId("狗头"), "179");
   assert.equal(resolveReactionEmojiId("76"), "76");
+  assert.equal(resolveReactionEmojiId("12951"), "12951");
+  assert.throws(() => resolveReactionEmojiId("99999999"), /未知的表情数字 ID/);
+  assert.throws(() => resolveReactionEmojiId("99999"), /未知的表情数字 ID/);
   assert.throws(() => resolveReactionEmojiId("不存在的乱码文字"), /无法识别/);
 
   const searchRes = searchQFaceCatalog("西格玛");

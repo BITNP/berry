@@ -311,13 +311,23 @@ export class BerryAgent {
     });
 
     // Resolve opaque quote, reaction, and optional targetRef handles back to real OneBot IDs.
-    const plannedDispatches = this.#resolveDispatches(result.structured.units, {
-      ids,
-      input,
-      requestMessages,
-      speakerQQ,
-      actorIsAdmin,
-    });
+    const { dispatches: plannedDispatches, errors: dispatchErrors } =
+      this.#resolveDispatches(result.structured.units, {
+        ids,
+        input,
+        requestMessages,
+        speakerQQ,
+        actorIsAdmin,
+      });
+
+    for (const detail of dispatchErrors) {
+      await store.conversations.pushOutputResult({
+        module: "qq_reaction",
+        status: "error",
+        detail,
+        createdAt: Date.now(),
+      });
+    }
 
     for (const dispatch of plannedDispatches) {
       await gateway.dispatchUnit(
@@ -533,7 +543,10 @@ export class BerryAgent {
       speakerQQ: string | null;
       actorIsAdmin: boolean;
     },
-  ): { targetChatKey: ChatKey; unit: OutputUnit }[] {
+  ): {
+    dispatches: { targetChatKey: ChatKey; unit: OutputUnit }[];
+    errors: string[];
+  } {
     const logger = this.#logger;
     const { ids, input, requestMessages, speakerQQ, actorIsAdmin } = ctx;
 
@@ -597,6 +610,7 @@ export class BerryAgent {
     }
 
     const dispatches: { targetChatKey: ChatKey; unit: OutputUnit }[] = [];
+    const errors: string[] = [];
 
     for (const unit of rawUnits) {
       if (unit.kind === "qq_forward") {
@@ -632,11 +646,14 @@ export class BerryAgent {
               },
             });
           } catch (error) {
+            const msg = errorMessage(error);
+
             logger.warn("Dropped qq_reaction with unrecognized emojiId", {
               fromChatKey: input.chatKey,
               emojiId: unit.emojiId,
-              error: errorMessage(error),
+              error: msg,
             });
+            errors.push(msg);
           }
         }
 
@@ -667,6 +684,6 @@ export class BerryAgent {
       });
     }
 
-    return dispatches;
+    return { dispatches, errors };
   }
 }

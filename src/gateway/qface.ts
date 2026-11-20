@@ -122,7 +122,10 @@ function stripDecorators(raw: string): string {
  * Resolve any reaction input into the numeric `emoji_id` string expected by
  * NapCat `set_msg_emoji_like`:
  *
- * - Numeric IDs (`"76"`, `"478"`, `"12951"`) pass straight through.
+ * - Valid numeric IDs in the QQNT catalog (`"76"`, `"478"`) or valid single
+ *   Unicode emoji codepoints (`"12951"`) pass through; unknown numeric IDs
+ *   (like `"99999999"`) are rejected so NapCat won't emit blank ghost
+ *   reactions.
  * - Single standard Unicode emojis (`"㊗️"`, `"🔥"`, `"👍"`, `"❤️"`) resolve to
  *   their decimal Unicode codepoint (`"12951"`, `"128293"`, `"128077"`,
  *   `"10084"`).
@@ -137,7 +140,13 @@ export function resolveReactionEmojiId(input: string): string {
   }
 
   if (/^\d+$/.test(cleaned)) {
-    return cleaned;
+    if (BY_ID.has(cleaned) || decodeUnicodeEmojiId(cleaned) !== null) {
+      return cleaned;
+    }
+
+    throw new Error(
+      `未知的表情数字 ID "${cleaned}"：不在 QQNT 官方表情目录或标准 Unicode Emoji 码点范围内，请改传单个标准 Emoji 或先用 search_qq_emojis 查询有效 ID`,
+    );
   }
 
   const byName = BY_NAME.get(cleaned.toLowerCase());
