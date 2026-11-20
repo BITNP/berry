@@ -151,6 +151,8 @@ test("agent loop: ModelIds isolation, one-shot OutputResult feed, compaction, an
 
 test("extensible tool and subagent registries wire prompts, schemas, isolation, and duplicate guards", async (t) => {
   let seenMainSystem = "";
+  let seenMainReasoning: string | undefined;
+  let seenSubagentReasoning: string | undefined;
   let seenDelegateSchema: Record<string, unknown> | undefined;
   let seenMainToolNames: string[] = [];
   let customMainToolCalled = false;
@@ -167,6 +169,7 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
 
     const reqJson = JSON.parse(bodyText) as {
       messages: { role: string; content: string | null }[];
+      reasoning_effort?: string;
       tools?: {
         function: {
           name: string;
@@ -178,6 +181,7 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
     const toolMsgs = reqJson.messages.filter((m) => m.role === "tool");
 
     if (sys.includes("运维诊断子代理")) {
+      seenSubagentReasoning = reqJson.reasoning_effort;
       if (toolMsgs.length === 0) {
         res.end(
           JSON.stringify(
@@ -207,6 +211,7 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
     }
 
     seenMainSystem = sys;
+    seenMainReasoning = reqJson.reasoning_effort;
     seenMainToolNames = (reqJson.tools ?? []).map((item) => item.function.name);
     seenDelegateSchema = reqJson.tools?.find(
       (item) => item.function.name === "delegate_subagent",
@@ -250,7 +255,11 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
       mainBaseUrl: `${llmStub.url}/v1`,
       gateBaseUrl: `${llmStub.url}/v1`,
     },
-    {},
+    {
+      mainModel: {
+        thinkingEffort: "medium",
+      },
+    },
     t,
   );
 
@@ -332,6 +341,8 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
   assert.equal(result.units.length, 1);
   assert.equal(customMainToolCalled, true);
   assert.equal(customSubagentToolCalled, true);
+  assert.equal(seenMainReasoning, "medium");
+  assert.equal(seenSubagentReasoning, "low");
   assert.ok(seenMainToolNames.includes("custom_echo"));
   assert.match(seenMainSystem, /- custom_echo: 自定义扩展主工具。/);
   assert.match(seenMainSystem, /\* ops_inspector: 执行自定义运维连通性检查。/);

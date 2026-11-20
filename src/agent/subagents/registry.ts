@@ -71,16 +71,20 @@ export class SubagentRegistry {
       };
     }
 
+    const settings = ctx.services.getSettings();
     const tools = resolveTools(def.tools, ctx);
     const rolePrompt =
       typeof def.systemPrompt === "function"
         ? def.systemPrompt(ctx)
         : def.systemPrompt;
+    const thinkingEffort =
+      def.thinkingEffort ??
+      (settings.mainModel.thinkingEffort === "none" ? "none" : "low");
 
     const result = await runChatToolLoop({
       purpose: `subagent:${def.kind}`,
       chatKey: ctx.actor.chatKey,
-      settings: ctx.services.getSettings(),
+      settings,
       store: ctx.services.store,
       systemPrompt: `${rolePrompt}\n${SUBAGENT_OUTPUT_SUFFIX}`,
       history: [],
@@ -88,6 +92,7 @@ export class SubagentRegistry {
       tools,
       maxRounds: def.maxRounds ?? DEFAULT_SUBAGENT_MAX_ROUNDS,
       outputSchema: subagentOutputSchema,
+      thinkingEffort,
     });
 
     return {

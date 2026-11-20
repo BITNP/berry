@@ -3,6 +3,7 @@ import type {
   ToolContext,
   ToolSource,
 } from "../../tools/types.ts";
+import type { ThinkingEffort } from "../loop.ts";
 
 export interface SubagentResult {
   brief: string;
@@ -40,6 +41,11 @@ export interface SubagentDefinition {
    * Maximum tool-calling rounds for this subagent (defaults to 8).
    */
   readonly maxRounds?: number;
+  /**
+   * Optional thinking effort override for this subagent. Defaults to "low" when
+   * mainModel.thinkingEffort is enabled, otherwise "none".
+   */
+  readonly thinkingEffort?: ThinkingEffort;
   /**
    * Optional precondition check before invoking the LLM loop. Return a
    * non-empty string to short-circuit with that brief.

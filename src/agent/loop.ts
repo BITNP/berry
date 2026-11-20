@@ -19,6 +19,8 @@ export interface AgentTool {
   execute: (args: Record<string, unknown>) => Promise<unknown>;
 }
 
+export type ThinkingEffort = RuntimeSettings["mainModel"]["thinkingEffort"];
+
 export interface ToolLoopResult<T> {
   text: string;
   structured: T;
@@ -39,6 +41,7 @@ export async function runChatToolLoop<S extends TSchema>(options: {
   outputSchema?: S;
   maxTokens?: number;
   temperature?: number;
+  thinkingEffort?: ThinkingEffort;
 }): Promise<ToolLoopResult<Static<S>>> {
   const logger = new Logger(`llm:${options.purpose}`);
   const cfg = options.settings.mainModel;
@@ -68,8 +71,7 @@ export async function runChatToolLoop<S extends TSchema>(options: {
   let corrections = 0;
   let prevLoggedLen = 0;
 
-  const useReasoning =
-    options.purpose === "dialog" && cfg.thinkingEffort !== "none";
+  const thinkingEffort = options.thinkingEffort ?? "none";
 
   for (let round = 0; round < options.maxRounds; round++) {
     const isFinalRound =
@@ -110,7 +112,9 @@ export async function runChatToolLoop<S extends TSchema>(options: {
         ...(!isFinalRound && openAITools.length > 0
           ? { tools: openAITools }
           : {}),
-        ...(useReasoning ? { reasoning_effort: cfg.thinkingEffort } : {}),
+        ...(thinkingEffort === "none"
+          ? {}
+          : { reasoning_effort: thinkingEffort }),
       },
     });
 

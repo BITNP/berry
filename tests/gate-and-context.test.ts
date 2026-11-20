@@ -235,6 +235,52 @@ test("mention_only vs smart_observe micro-batch, confidence threshold, and anti-
   await delay(140);
   await app.worker.drainOnce();
   assert.equal(mainCalls.length, 2);
+
+  // Direct @ mention arriving during an active delayed batch immediately flushes run_after.
+  await app.worker.stop();
+  await app.updateSettings({
+    ...app.settings,
+    gateModel: { ...app.settings.gateModel, batchWindowMs: 5000 },
+  });
+  await app.gatewayEvents.handleEvent({
+    post_type: "message",
+    message_type: "group",
+    group_id: 100,
+    user_id: 2001,
+    message_id: "m-5",
+    time: Math.floor(Date.now() / 1000),
+    message: [{ type: "text", data: { text: "先发一条普通消息" } }],
+    sender: { nickname: "群友A" },
+  });
+  const delayedBatches = (await app.store.jobs.list(20)).filter(
+    (job) => job.kind === "gate_batch" && job.state === "pending",
+  );
+
+  assert.equal(delayedBatches.length, 1);
+  assert.ok(delayedBatches[0]!.runAfter > Date.now() + 2000);
+
+  await app.gatewayEvents.handleEvent({
+    post_type: "message",
+    message_type: "group",
+    group_id: 100,
+    user_id: 2002,
+    message_id: "m-6",
+    time: Math.floor(Date.now() / 1000),
+    message: [
+      { type: "at", data: { qq: "999999" } },
+      { type: "text", data: { text: " 直接提问不等待" } },
+    ],
+    sender: { nickname: "群友B" },
+  });
+  const flushedBatches = (await app.store.jobs.list(20)).filter(
+    (job) => job.kind === "gate_batch" && job.state === "pending",
+  );
+
+  assert.equal(flushedBatches.length, 1);
+  assert.ok(
+    flushedBatches[0]!.runAfter <= Date.now() + 50,
+    "direct @ should advance pending gate_batch runAfter immediately",
+  );
 });
 
 test("BERRY_ALLOWED_GROUPS restricts group events, group listing, and outbound group dispatch at the gateway boundary", async (t) => {

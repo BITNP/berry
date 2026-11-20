@@ -165,13 +165,19 @@ export class JobsStore {
         const payload = JSON.parse(
           pending.payload_json,
         ) as JobPayloads["gate_batch"];
+        const nextRunAfter = Math.min(pending.run_after, runAfter);
+        const added = !payload.messageIds.includes(messageId);
 
-        if (!payload.messageIds.includes(messageId)) {
+        if (added) {
           payload.messageIds.push(messageId);
+        }
+
+        if (added || nextRunAfter < pending.run_after) {
           await trx
             .updateTable("jobs")
             .set({
               payload_json: JSON.stringify(payload),
+              run_after: nextRunAfter,
               updated_at: now,
             })
             .where("id", "=", pending.id)

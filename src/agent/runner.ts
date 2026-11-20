@@ -305,6 +305,7 @@ export class BerryAgent {
       tools,
       maxRounds: 12,
       outputSchema: agentOutputSchema,
+      thinkingEffort: settings.mainModel.thinkingEffort,
     });
 
     // Resolve opaque quote, reaction, and optional targetRef handles back to real OneBot IDs.
