@@ -308,10 +308,34 @@ export interface MessageReactionRecord {
   updatedAt: number;
 }
 
+export interface LlmToolCallSummary {
+  name: string;
+  arguments: string;
+}
+
+export interface LlmCallRecord {
+  id: number;
+  day: string;
+  purpose: string;
+  model: string;
+  chatKey: string | null;
+  status: "ok" | "error";
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  durationMs: number;
+  requestPreview: string | null;
+  responseText: string | null;
+  toolCalls: LlmToolCallSummary[];
+  error: string | null;
+  createdAt: number;
+}
+
 export type AdminEvent =
   | { type: "gate_decision"; data: GateDecisionRecord }
   | { type: "delivery_update"; data: DeliveryRecord }
   | { type: "guild_audit"; data: GuildAuditRecord }
+  | { type: "llm_call"; data: LlmCallRecord }
   | { type: "log"; data: LogEntry }
   | {
       type: "job_update";

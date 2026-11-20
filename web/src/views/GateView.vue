@@ -19,7 +19,8 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { h, onMounted, ref } from "vue";
+import { h, onMounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import { useEventStream } from "../composables/useEventStream.ts";
@@ -52,6 +53,7 @@ interface DryRunResponse {
   durationMs: number;
 }
 
+const router = useRouter();
 const message = useMessage();
 
 const loading = ref(false);
@@ -259,7 +261,7 @@ const columns: DataTableColumns<GateDecisionRow> = [
   {
     title: "耗时",
     key: "durationMs",
-    width: 68,
+    width: 82,
     align: "right",
     render: (row) => h("span", { class: "tabular" }, `${row.durationMs} ms`),
   },
@@ -275,6 +277,22 @@ const columns: DataTableColumns<GateDecisionRow> = [
       ),
   },
 ];
+
+let filterTimer: ReturnType<typeof setTimeout> | null = null;
+
+watch([filterAction, filterStage], () => {
+  void loadDecisions();
+});
+
+watch([filterChatKey, filterSearch], () => {
+  if (filterTimer) {
+    clearTimeout(filterTimer);
+  }
+
+  filterTimer = setTimeout(() => {
+    void loadDecisions();
+  }, 240);
+});
 
 onMounted(() => {
   void loadDecisions();
@@ -348,17 +366,23 @@ onMounted(() => {
 
     <NCard size="small">
       <NDataTable
+        class="clickable-table"
         :columns
         :data="items"
         :loading
         :pagination="{ pageSize: 20 }"
+        :row-props="
+          (row: GateDecisionRow) => ({
+            onClick: () => openDetail(row),
+          })
+        "
         :scroll-x="840"
         size="small"
       />
     </NCard>
 
     <NDrawer v-model:show="detailOpen" class="drawer-safe" :width="440">
-      <NDrawerContent v-if="selectedRow" title="判定详情">
+      <NDrawerContent v-if="selectedRow" closable title="判定详情">
         <NDescriptions bordered :column="1" label-placement="left" size="small">
           <NDescriptionsItem label="记录编号">
             {{ selectedRow.id }}
@@ -395,11 +419,27 @@ onMounted(() => {
 
         <div class="section-title">判断理由</div>
         <pre class="code-block">{{ selectedRow.reason }}</pre>
+
+        <NButton
+          block
+          class="mt-lg"
+          secondary
+          size="small"
+          @click="
+            detailOpen = false;
+            router.push({
+              path: '/ai',
+              query: { chatKey: selectedRow.chatKey },
+            });
+          "
+        >
+          查看该会话 AI 调用
+        </NButton>
       </NDrawerContent>
     </NDrawer>
 
     <NDrawer v-model:show="dryRunOpen" class="drawer-safe" :width="460">
-      <NDrawerContent title="小模型分流沙盒">
+      <NDrawerContent closable title="小模型分流沙盒">
         <NForm label-placement="top" size="small">
           <NFormItem label="模拟会话标识">
             <NInput v-model:value="dryRunForm.chatKey" />

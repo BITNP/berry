@@ -273,6 +273,66 @@ test("admin auth, CSRF, secret masking, TypeBox validation, and removed /api/web
 
   assert.equal(invalidPurgeRes.status, 400);
 
+  // Record AI calls (ok with tool calls + error) and verify /api/admin/llm-calls filtering.
+  await app.store.usage.record({
+    purpose: "subagent:chat_analyst",
+    model: "deepseek-v4-flash",
+    chatKey: "group:1054204419",
+    status: "ok",
+    inputTokens: 1200,
+    cachedInputTokens: 400,
+    outputTokens: 180,
+    durationMs: 620,
+    requestPreview: "[user]\n总结最近话题",
+    responseText: '{"brief":"ok"}',
+    toolCalls: [{ name: "search_chat_messages", arguments: '{"limit":60}' }],
+  });
+  await app.store.usage.record({
+    purpose: "dialog",
+    model: "deepseek-v4-flash",
+    chatKey: "group:1054204419",
+    status: "error",
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    durationMs: 150,
+    error: "upstream 429 rate limited",
+  });
+
+  const subagentCalls = (await (
+    await fetch(`${url}/api/admin/llm-calls?purpose=subagent`, {
+      headers: { Cookie: cookieHeader },
+    })
+  ).json()) as {
+    items: {
+      purpose: string;
+      toolCalls: { name: string }[];
+      requestPreview: string | null;
+    }[];
+    total: number;
+  };
+
+  assert.equal(subagentCalls.total, 1);
+  assert.equal(subagentCalls.items[0]?.purpose, "subagent:chat_analyst");
+  assert.equal(
+    subagentCalls.items[0]?.toolCalls[0]?.name,
+    "search_chat_messages",
+  );
+  assert.match(subagentCalls.items[0]?.requestPreview ?? "", /总结最近话题/);
+
+  const errorCalls = (await (
+    await fetch(`${url}/api/admin/llm-calls?status=error`, {
+      headers: { Cookie: cookieHeader },
+    })
+  ).json()) as {
+    items: { status: string; error: string | null }[];
+    total: number;
+  };
+
+  assert.equal(errorCalls.total, 1);
+  assert.equal(errorCalls.items[0]?.status, "error");
+  assert.match(errorCalls.items[0]?.error ?? "", /429/);
+
   // Leave an active SSE connection open to verify app.close() does not hang on shutdown.
   const sseRes = await fetch(`${url}/api/admin/events`, {
     headers: { Cookie: cookieHeader },

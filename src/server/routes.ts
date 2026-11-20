@@ -82,6 +82,16 @@ const gateQuerySchema = Type.Object({
   offset: Type.Integer({ minimum: 0, default: 0 }),
 });
 
+const llmCallsQuerySchema = Type.Object({
+  purpose: Type.Optional(Type.String()),
+  status: Type.Optional(
+    Type.Union([Type.Literal("ok"), Type.Literal("error")]),
+  ),
+  chatKey: Type.Optional(Type.String()),
+  search: Type.Optional(Type.String()),
+  limit: Type.Integer({ minimum: 1, maximum: 200, default: 80 }),
+});
+
 const messagesQuerySchema = Type.Object({
   search: Type.Optional(Type.String()),
   limit: Type.Integer({ minimum: 1, default: 80 }),
@@ -500,6 +510,16 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       const query = await parseQuery(event, gateQuerySchema);
 
       return berry.store.gate.list(query);
+    }),
+  );
+
+  router.get(
+    "/api/admin/llm-calls",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const query = await parseQuery(event, llmCallsQuerySchema);
+
+      return berry.store.usage.listRecent(query);
     }),
   );
 

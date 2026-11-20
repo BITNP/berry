@@ -866,7 +866,7 @@ export async function runSubagent(options: {
 完成检索或操作后，最终只输出一个 JSON 对象：{"brief":"简练准确的结论（不超过 1200 字）","references":["可选引用来源、节点URL或m_*句柄"]}`;
 
   const result = await runChatToolLoop({
-    purpose: "subagent",
+    purpose: `subagent:${kind}`,
     chatKey: actor.chatKey,
     settings: services.getSettings(),
     store: services.store,

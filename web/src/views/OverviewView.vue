@@ -1,40 +1,29 @@
 <script setup lang="ts">
-import { RefreshCw, RotateCcw, Trash2 } from "@lucide/vue";
-import type { DataTableColumns } from "naive-ui";
+import { ArrowRight, RefreshCw, RotateCcw } from "@lucide/vue";
 import {
   NAlert,
   NButton,
   NCard,
-  NDataTable,
+  NCollapse,
+  NCollapseItem,
   NDescriptions,
   NDescriptionsItem,
+  NDrawer,
+  NDrawerContent,
   NEmpty,
-  NInputNumber,
-  NPopconfirm,
   NSpace,
-  NTabPane,
-  NTabs,
   NTag,
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, h, onMounted, ref } from "vue";
-import { useRoute } from "vue-router";
+import { computed, onMounted, ref } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import { useEventStream } from "../composables/useEventStream.ts";
+import type { LlmCallRow } from "../utils/ai.ts";
+import { prettyMaybeJson, purposeMeta } from "../utils/ai.ts";
 import { formatBytes, formatPercent, formatTime } from "../utils/format.ts";
-
-interface UsageBucket {
-  day: string;
-  purpose: string;
-  model: string;
-  calls: number;
-  inputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  avgDurationMs: number;
-}
 
 interface McpStatus {
   name: string;
@@ -44,31 +33,10 @@ interface McpStatus {
   error?: string;
 }
 
-interface StorageSummary {
-  dbBytes: number;
-  assetsFiles: number;
-  assetsBytes: number;
-  avatarsFiles: number;
-  avatarsBytes: number;
-  tables: {
-    messages: number;
-    gateDecisions: number;
-    conversations: number;
-    memories: number;
-    messageAssets: number;
-    jobs: number;
-    deliveries: number;
-    schedules: number;
-    guildAuditLogs: number;
-    llmUsage: number;
-  };
-}
-
 interface OverviewResponse {
   workerRunning: boolean;
   botPaused: boolean;
   botQQ: string;
-  botAccount: { user_id: string; nickname: string } | null;
   gatewayHealth: { configured: boolean; reachable: boolean; error?: string };
   gatewayStreamConnected: boolean;
   pendingJobs: number;
@@ -86,19 +54,21 @@ interface OverviewResponse {
   guildStreamConnected: boolean;
   keycloakConfigured: boolean;
   mcpServers: McpStatus[];
-  storage: StorageSummary;
-  usageBuckets: UsageBucket[];
+  storage: {
+    dbBytes: number;
+    tables: {
+      messages: number;
+      deliveries: number;
+    };
+  };
 }
 
 interface JobRow {
   id: number;
   kind: string;
-  dedupeKey: string;
   chatKey: string;
   state: "pending" | "running" | "done" | "failed";
-  attempts: number;
   lastError: string | null;
-  createdAt: number;
   updatedAt: number;
 }
 
@@ -108,60 +78,23 @@ interface DeliveryRow {
   kind: string;
   payload: Record<string, unknown>;
   status: "queued" | "retrying" | "sent" | "failed";
-  attempts: number;
   error: string | null;
-  onebotMessageId: string | null;
   updatedAt: number;
-}
-
-interface PurgeResult {
-  olderThanDays: number;
-  deletedMessages: number;
-  deletedDecisions: number;
-  deletedJobs: number;
-  deletedDeliveries: number;
-  deletedAssetRows: number;
-  freedBytes: number;
-}
-
-interface ConversationView {
-  chatKey: string;
-  sessionId: string;
-  summary: string;
-  afterMessageId: number;
-  updatedAt: number;
-  messages: {
-    role: string;
-    content: string | null;
-    tool_call_id?: string;
-    tool_calls?: {
-      id: string;
-      function: { name: string; arguments: string };
-    }[];
-  }[];
-  pendingResults: {
-    module: string;
-    status: string;
-    detail: string;
-    createdAt: number;
-  }[];
 }
 
 const route = useRoute();
+const router = useRouter();
 const message = useMessage();
 
 const loading = ref(false);
-const activeTab = ref(route.query.tab === "context" ? "context" : "usage");
-const overview = ref<OverviewResponse | null>(null);
-const jobs = ref<JobRow[]>([]);
-const deliveries = ref<DeliveryRow[]>([]);
-const conversation = ref<ConversationView | null>(null);
-const resettingContext = ref(false);
 const retryingAll = ref(false);
-const busyJobId = ref<number | null>(null);
-const purging = ref(false);
-const purgeDays = ref(30);
-const lastPurge = ref<PurgeResult | null>(null);
+const overview = ref<OverviewResponse | null>(null);
+const recentCalls = ref<LlmCallRow[]>([]);
+const recentDeliveries = ref<DeliveryRow[]>([]);
+const jobs = ref<JobRow[]>([]);
+
+const selectedCall = ref<LlmCallRow | null>(null);
+const callDetailOpen = ref(false);
 
 const gateTotal24h = computed(() => {
   if (!overview.value) {
@@ -177,65 +110,33 @@ const connectedMcpCount = computed(
   () => overview.value?.mcpServers.filter((s) => s.connected).length ?? 0,
 );
 
-const usageTotals30d = computed(() => {
-  const buckets = overview.value?.usageBuckets ?? [];
-  let calls = 0;
-  let inputTokens = 0;
-  let cachedInputTokens = 0;
-  let outputTokens = 0;
+const failedJobCount = computed(
+  () => jobs.value.filter((j) => j.state === "failed").length,
+);
 
-  for (const row of buckets) {
-    calls += row.calls;
-    inputTokens += row.inputTokens;
-    cachedInputTokens += row.cachedInputTokens;
-    outputTokens += row.outputTokens;
-  }
-
-  return {
-    calls,
-    inputTokens,
-    cachedInputTokens,
-    outputTokens,
-    totalTokens: inputTokens + outputTokens,
-  };
-});
+const failedDeliveryCount = computed(
+  () => recentDeliveries.value.filter((d) => d.status === "failed").length,
+);
 
 async function loadAll() {
   loading.value = true;
 
   try {
-    const [ov, jobRes, delRes, convRes] = await Promise.all([
+    const [ov, callRes, delRes, jobRes] = await Promise.all([
       apiFetch<OverviewResponse>("/api/admin/overview"),
-      apiFetch<{ items: JobRow[] }>("/api/admin/jobs"),
-      apiFetch<{ items: DeliveryRow[] }>("/api/admin/deliveries"),
-      apiFetch<ConversationView>("/api/admin/conversation"),
+      apiFetch<{ items: LlmCallRow[] }>("/api/admin/llm-calls?limit=8"),
+      apiFetch<{ items: DeliveryRow[] }>("/api/admin/deliveries?limit=8"),
+      apiFetch<{ items: JobRow[] }>("/api/admin/jobs?limit=30"),
     ]);
 
     overview.value = ov;
+    recentCalls.value = callRes.items;
+    recentDeliveries.value = delRes.items;
     jobs.value = jobRes.items;
-    deliveries.value = delRes.items;
-    conversation.value = convRes;
   } catch (err) {
     message.error(err instanceof Error ? err.message : "加载概览数据失败");
   } finally {
     loading.value = false;
-  }
-}
-
-async function handleResetConversation() {
-  resettingContext.value = true;
-
-  try {
-    conversation.value = await apiFetch<ConversationView>(
-      "/api/admin/conversation/reset",
-      { method: "POST" },
-    );
-    message.success("全局上下文已重置");
-    await loadAll();
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "重置全局上下文失败");
-  } finally {
-    resettingContext.value = false;
   }
 }
 
@@ -257,53 +158,9 @@ async function handleRetryAllFailed() {
   }
 }
 
-async function handleRetryJob(id: number) {
-  busyJobId.value = id;
-
-  try {
-    await apiFetch(`/api/admin/jobs/${id}/retry`, { method: "POST" });
-    message.success(`任务 #${id} 已重试`);
-    await loadAll();
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "重试失败");
-  } finally {
-    busyJobId.value = null;
-  }
-}
-
-async function handleCancelJob(id: number) {
-  busyJobId.value = id;
-
-  try {
-    await apiFetch(`/api/admin/jobs/${id}/cancel`, { method: "POST" });
-    message.success(`任务 #${id} 已取消`);
-    await loadAll();
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "取消失败");
-  } finally {
-    busyJobId.value = null;
-  }
-}
-
-async function handlePurgeStorage() {
-  purging.value = true;
-
-  try {
-    const res = await apiFetch<PurgeResult>("/api/admin/storage/purge", {
-      method: "POST",
-      body: JSON.stringify({ olderThanDays: purgeDays.value }),
-    });
-
-    lastPurge.value = res;
-    message.success(
-      `清理完成：删除 ${res.deletedMessages} 条消息、释放 ${formatBytes(res.freedBytes)}`,
-    );
-    await loadAll();
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "存储清理失败");
-  } finally {
-    purging.value = false;
-  }
+function openCallDetail(call: LlmCallRow) {
+  selectedCall.value = call;
+  callDetailOpen.value = true;
 }
 
 function summarizePayload(
@@ -323,187 +180,11 @@ function summarizePayload(
   }
 
   if (kind === "qq_reaction") {
-    return `表情回应 #${String(payload.emojiId ?? "")} -> ${String(payload.messageId ?? "")}`;
+    return `表情回应 #${String(payload.emojiId ?? "")}`;
   }
 
   return JSON.stringify(payload);
 }
-
-const PURPOSE_LABELS: Record<string, string> = {
-  dialog: "主对话",
-  subagent: "子代理",
-  gate: "门控分流",
-  memory_update: "记忆提炼",
-  compaction: "摘要压缩",
-  vision: "图像识别",
-  audio: "语音转写",
-  report: "公会周报",
-};
-
-const usageColumns: DataTableColumns<UsageBucket> = [
-  { title: "日期", key: "day", width: 96 },
-  {
-    title: "用途",
-    key: "purpose",
-    width: 96,
-    render: (row) =>
-      h(
-        NTag,
-        { size: "small" },
-        { default: () => PURPOSE_LABELS[row.purpose] ?? row.purpose },
-      ),
-  },
-  {
-    title: "模型",
-    key: "model",
-    minWidth: 120,
-    ellipsis: { tooltip: true },
-    render: (row) => h("span", { class: "mono" }, row.model),
-  },
-  {
-    title: "次数",
-    key: "calls",
-    width: 64,
-    align: "right",
-    render: (row) => h("span", { class: "tabular" }, String(row.calls)),
-  },
-  {
-    title: "输入 Tokens",
-    key: "inputTokens",
-    width: 96,
-    align: "right",
-    render: (row) =>
-      h("span", { class: "tabular" }, row.inputTokens.toLocaleString()),
-  },
-  {
-    title: "缓存命中",
-    key: "cachedInputTokens",
-    width: 90,
-    align: "right",
-    render: (row) =>
-      h("span", { class: "tabular" }, row.cachedInputTokens.toLocaleString()),
-  },
-  {
-    title: "输出 Tokens",
-    key: "outputTokens",
-    width: 96,
-    align: "right",
-    render: (row) =>
-      h("span", { class: "tabular" }, row.outputTokens.toLocaleString()),
-  },
-  {
-    title: "合计 Tokens",
-    key: "totalTokens",
-    width: 100,
-    align: "right",
-    render: (row) =>
-      h(
-        "span",
-        { class: "tabular" },
-        (row.inputTokens + row.outputTokens).toLocaleString(),
-      ),
-  },
-  {
-    title: "平均耗时",
-    key: "avgDurationMs",
-    width: 84,
-    align: "right",
-    render: (row) => h("span", { class: "tabular" }, `${row.avgDurationMs} ms`),
-  },
-];
-
-const jobStateLabel: Record<
-  JobRow["state"],
-  { text: string; type: "default" | "info" | "success" | "error" }
-> = {
-  pending: { text: "排队中", type: "info" },
-  running: { text: "执行中", type: "info" },
-  done: { text: "已完成", type: "success" },
-  failed: { text: "失败", type: "error" },
-};
-
-const jobColumns: DataTableColumns<JobRow> = [
-  { title: "ID", key: "id", width: 54 },
-  {
-    title: "类型",
-    key: "kind",
-    width: 112,
-    render: (row) => h("span", { class: "mono" }, row.kind),
-  },
-  {
-    title: "会话",
-    key: "chatKey",
-    width: 136,
-    ellipsis: { tooltip: true },
-    render: (row) => h("span", { class: "mono" }, row.chatKey),
-  },
-  {
-    title: "状态",
-    key: "state",
-    width: 78,
-    render: (row) => {
-      const cfg = jobStateLabel[row.state];
-
-      return h(
-        NTag,
-        { size: "small", type: cfg.type },
-        { default: () => cfg.text },
-      );
-    },
-  },
-  { title: "重试", key: "attempts", width: 56, align: "right" },
-  {
-    title: "错误信息",
-    key: "lastError",
-    minWidth: 130,
-    ellipsis: { tooltip: true },
-    render: (row) => row.lastError || "—",
-  },
-  {
-    title: "更新时间",
-    key: "updatedAt",
-    width: 136,
-    render: (row) => h("span", { class: "tabular" }, formatTime(row.updatedAt)),
-  },
-  {
-    title: "操作",
-    key: "actions",
-    width: 76,
-    render: (row) => {
-      if (row.state === "failed") {
-        return h(
-          NButton,
-          {
-            size: "tiny",
-            secondary: true,
-            loading: busyJobId.value === row.id,
-            onClick: () => {
-              void handleRetryJob(row.id);
-            },
-          },
-          { default: () => "重试" },
-        );
-      }
-
-      if (row.state === "pending") {
-        return h(
-          NButton,
-          {
-            size: "tiny",
-            quaternary: true,
-            loading: busyJobId.value === row.id,
-            onClick: () => {
-              void handleCancelJob(row.id);
-            },
-          },
-          { default: () => "取消" },
-        );
-      }
-
-      return "—";
-    },
-  },
-];
 
 const deliveryStatusLabel: Record<
   DeliveryRow["status"],
@@ -515,67 +196,30 @@ const deliveryStatusLabel: Record<
   failed: { text: "失败", type: "error" },
 };
 
-const deliveryColumns: DataTableColumns<DeliveryRow> = [
-  { title: "ID", key: "id", width: 68 },
-  {
-    title: "会话",
-    key: "chatKey",
-    width: 150,
-    render: (row) => h("span", { class: "mono" }, row.chatKey),
-  },
-  {
-    title: "类型",
-    key: "kind",
-    width: 112,
-    render: (row) => h("span", { class: "mono" }, row.kind),
-  },
-  {
-    title: "状态",
-    key: "status",
-    width: 88,
-    render: (row) => {
-      const cfg = deliveryStatusLabel[row.status];
-
-      return h(
-        NTag,
-        { size: "small", type: cfg.type },
-        { default: () => cfg.text },
-      );
-    },
-  },
-  {
-    title: "内容摘要",
-    key: "payload",
-    minWidth: 220,
-    ellipsis: { tooltip: true },
-    render: (row) => summarizePayload(row.payload, row.kind) || "—",
-  },
-  {
-    title: "错误",
-    key: "error",
-    minWidth: 140,
-    ellipsis: { tooltip: true },
-    render: (row) => row.error || "—",
-  },
-  {
-    title: "更新时间",
-    key: "updatedAt",
-    width: 155,
-    render: (row) => h("span", { class: "tabular" }, formatTime(row.updatedAt)),
-  },
-];
-
 useEventStream((type) => {
   if (
     type === "job_update" ||
     type === "delivery_update" ||
-    type === "gate_decision"
+    type === "gate_decision" ||
+    type === "llm_call"
   ) {
     void loadAll();
   }
 });
 
 onMounted(() => {
+  if (route.query.tab === "context") {
+    void router.replace("/ai?tab=context");
+
+    return;
+  }
+
+  if (route.query.tab === "storage") {
+    void router.replace("/settings?tab=storage");
+
+    return;
+  }
+
   void loadAll();
 });
 </script>
@@ -583,7 +227,7 @@ onMounted(() => {
 <template>
   <div>
     <div class="page-bar">
-      <h1 class="page-title">运行概览</h1>
+      <h1 class="page-title">概览</h1>
       <NButton :loading size="small" @click="loadAll">
         <template #icon>
           <RefreshCw :size="14" />
@@ -592,27 +236,18 @@ onMounted(() => {
       </NButton>
     </div>
 
-    <div v-if="overview" class="metric-strip">
-      <div class="metric-cell">
-        <span class="metric-label">调度器 / 应答</span>
+    <div v-if="overview" class="metric-grid">
+      <button class="metric-card" type="button" @click="router.push('/ai')">
+        <div class="metric-card-top">
+          <span class="metric-label">今日 AI 调用</span>
+          <ArrowRight class="metric-arrow" :size="13" />
+        </div>
         <span class="metric-value">
-          {{ overview.workerRunning ? "运行中" : "已停止" }} /
-          {{ overview.botPaused ? "已暂停" : "自动" }}
-        </span>
-      </div>
-      <div class="metric-cell">
-        <span class="metric-label">今日模型调用</span>
-        <span class="metric-value">
-          {{ overview.todayUsage.calls }}
-        </span>
-      </div>
-      <div class="metric-cell">
-        <span class="metric-label">今日 Token 消耗</span>
-        <span class="metric-value">
-          {{ overview.todayUsage.totalTokens.toLocaleString() }}
+          {{ overview.todayUsage.calls }} 次 ·
+          {{ overview.todayUsage.totalTokens.toLocaleString() }} tok
         </span>
         <span class="metric-sub">
-          入 {{ overview.todayUsage.inputTokens.toLocaleString() }}（缓存
+          入 {{ overview.todayUsage.inputTokens.toLocaleString() }}（缓
           {{
             formatPercent(
               overview.todayUsage.cachedInputTokens,
@@ -620,39 +255,101 @@ onMounted(() => {
             )
           }}）· 出 {{ overview.todayUsage.outputTokens.toLocaleString() }}
         </span>
-      </div>
-      <div class="metric-cell">
-        <span class="metric-label">24 小时分流（放行率）</span>
+      </button>
+
+      <button class="metric-card" type="button" @click="router.push('/gate')">
+        <div class="metric-card-top">
+          <span class="metric-label">24 小时分流</span>
+          <ArrowRight class="metric-arrow" :size="13" />
+        </div>
         <span class="metric-value">
           {{ overview.gate24h.reply }} / {{ overview.gate24h.memory }} /
-          {{ overview.gate24h.ignore }}（{{
-            formatPercent(overview.gate24h.reply, gateTotal24h)
-          }}）
+          {{ overview.gate24h.ignore }}
         </span>
-      </div>
-      <div class="metric-cell">
-        <span class="metric-label">启用会话</span>
+        <span class="metric-sub">
+          回复放行率 {{ formatPercent(overview.gate24h.reply, gateTotal24h) }}
+        </span>
+      </button>
+
+      <button class="metric-card" type="button" @click="router.push('/chats')">
+        <div class="metric-card-top">
+          <span class="metric-label">启用会话</span>
+          <ArrowRight class="metric-arrow" :size="13" />
+        </div>
         <span class="metric-value">
           {{ overview.activeChatCount }} / {{ overview.chatCount }}
         </span>
-      </div>
-      <div class="metric-cell">
-        <span class="metric-label">待处理队列</span>
-        <span class="metric-value">{{ overview.pendingJobs }}</span>
-      </div>
-      <div class="metric-cell">
-        <span class="metric-label">数据库体积</span>
+        <span class="metric-sub">
+          {{ overview.botPaused ? "自动应答已暂停" : "自动应答运行中" }}
+        </span>
+      </button>
+
+      <button
+        class="metric-card"
+        type="button"
+        @click="router.push('/logs?tab=jobs')"
+      >
+        <div class="metric-card-top">
+          <span class="metric-label">任务队列</span>
+          <ArrowRight class="metric-arrow" :size="13" />
+        </div>
+        <span class="metric-value">
+          待处理 {{ overview.pendingJobs }}
+          <NText v-if="failedJobCount > 0" type="error">
+            · 失败 {{ failedJobCount }}
+          </NText>
+        </span>
+        <span class="metric-sub">
+          调度器{{ overview.workerRunning ? "运行中" : "已停止" }}
+        </span>
+      </button>
+
+      <button
+        class="metric-card"
+        type="button"
+        @click="router.push('/logs?tab=deliveries')"
+      >
+        <div class="metric-card-top">
+          <span class="metric-label">出站投递</span>
+          <ArrowRight class="metric-arrow" :size="13" />
+        </div>
+        <span class="metric-value">
+          {{ overview.storage.tables.deliveries }} 条
+        </span>
+        <span class="metric-sub">
+          {{
+            failedDeliveryCount > 0
+              ? `近期失败 ${failedDeliveryCount} 条`
+              : "近期投递正常"
+          }}
+        </span>
+      </button>
+
+      <button
+        class="metric-card"
+        type="button"
+        @click="router.push('/settings?tab=storage')"
+      >
+        <div class="metric-card-top">
+          <span class="metric-label">本地存储</span>
+          <ArrowRight class="metric-arrow" :size="13" />
+        </div>
         <span class="metric-value">
           {{ formatBytes(overview.storage.dbBytes) }}
         </span>
-      </div>
+        <span class="metric-sub">
+          消息 {{ overview.storage.tables.messages.toLocaleString() }} 条
+        </span>
+      </button>
     </div>
 
     <NCard v-if="overview" class="mb-md" size="small">
       <NSpace :size="8" wrap>
         <NTag
+          class="status-link"
           size="small"
           :type="overview.gatewayHealth.reachable ? 'success' : 'warning'"
+          @click="router.push('/logs')"
         >
           Message Gateway：{{
             overview.gatewayHealth.reachable
@@ -663,270 +360,265 @@ onMounted(() => {
           }}
         </NTag>
         <NTag
+          class="status-link"
           size="small"
           :type="overview.gatewayStreamConnected ? 'success' : 'default'"
+          @click="router.push('/logs')"
         >
           网关事件流：{{
             overview.gatewayStreamConnected ? "已连接" : "未连接"
           }}
         </NTag>
         <NTag
+          class="status-link"
           size="small"
           :type="overview.guildApiConfigured ? 'success' : 'default'"
+          @click="router.push('/settings?tab=guild')"
         >
           公会内部接口：{{ overview.guildApiConfigured ? "已配置" : "未配置" }}
         </NTag>
         <NTag
+          class="status-link"
           size="small"
           :type="overview.guildStreamConnected ? 'success' : 'default'"
+          @click="router.push('/settings?tab=guild')"
         >
           公会事件流：{{ overview.guildStreamConnected ? "已连接" : "未连接" }}
         </NTag>
         <NTag
+          class="status-link"
           size="small"
           :type="overview.keycloakConfigured ? 'success' : 'default'"
+          @click="router.push('/settings?tab=bot')"
         >
           Keycloak 目录：{{ overview.keycloakConfigured ? "已配置" : "未配置" }}
         </NTag>
-        <NTag size="small" :type="connectedMcpCount > 0 ? 'info' : 'default'">
+        <NTag
+          class="status-link"
+          size="small"
+          :type="connectedMcpCount > 0 ? 'info' : 'default'"
+          @click="router.push('/settings?tab=mcp')"
+        >
           MCP 服务：{{ connectedMcpCount }} /
           {{ overview.mcpServers.length }} 在线
         </NTag>
       </NSpace>
     </NCard>
 
-    <NCard size="small">
-      <NTabs v-model:value="activeTab" type="line">
-        <NTabPane name="usage" tab="用量明细">
-          <div class="filter-bar">
-            <NText class="tabular sub-note" depth="2">
-              近 30 日累计：调用 {{ usageTotals30d.calls.toLocaleString() }} 次
-              · 合计 {{ usageTotals30d.totalTokens.toLocaleString() }} Tokens（
-              输入 {{ usageTotals30d.inputTokens.toLocaleString() }} / 缓存命中
-              {{ usageTotals30d.cachedInputTokens.toLocaleString() }}，{{
-                formatPercent(
-                  usageTotals30d.cachedInputTokens,
-                  usageTotals30d.inputTokens,
-                )
-              }}
-              / 输出 {{ usageTotals30d.outputTokens.toLocaleString() }}）
-            </NText>
-          </div>
-          <NDataTable
-            :columns="usageColumns"
-            :data="overview?.usageBuckets ?? []"
-            :loading
-            :pagination="{ pageSize: 15 }"
-            :scroll-x="820"
-            size="small"
-          />
-        </NTabPane>
+    <NAlert v-if="failedJobCount > 0" class="mb-md" type="warning">
+      <div class="feed-row-top">
+        <span>当前有 {{ failedJobCount }} 个后台任务执行失败。</span>
+        <NSpace :size="8">
+          <NButton
+            :loading="retryingAll"
+            secondary
+            size="tiny"
+            type="warning"
+            @click="handleRetryAllFailed"
+          >
+            <template #icon>
+              <RotateCcw :size="12" />
+            </template>
+            重试全部
+          </NButton>
+          <NButton
+            quaternary
+            size="tiny"
+            @click="router.push('/logs?tab=jobs')"
+          >
+            查看队列
+          </NButton>
+        </NSpace>
+      </div>
+    </NAlert>
 
-        <NTabPane name="jobs" tab="任务队列">
-          <div class="filter-bar">
-            <NButton
-              :loading="retryingAll"
-              secondary
-              size="small"
-              @click="handleRetryAllFailed"
-            >
-              <template #icon>
-                <RotateCcw :size="14" />
-              </template>
-              重试全部失败任务
-            </NButton>
-          </div>
-          <NDataTable
-            :columns="jobColumns"
-            :data="jobs"
-            :loading
-            :pagination="{ pageSize: 15 }"
-            :scroll-x="760"
-            size="small"
-          />
-        </NTabPane>
+    <div class="overview-grid">
+      <NCard size="small" title="最近 AI 调用">
+        <template #header-extra>
+          <NButton quaternary size="tiny" @click="router.push('/ai')">
+            查看全部
+            <template #icon>
+              <ArrowRight :size="12" />
+            </template>
+          </NButton>
+        </template>
 
-        <NTabPane name="deliveries" tab="出站记录">
-          <NDataTable
-            :columns="deliveryColumns"
-            :data="deliveries"
-            :loading
-            :pagination="{ pageSize: 15 }"
-            :scroll-x="760"
-            size="small"
-          />
-        </NTabPane>
+        <NEmpty
+          v-if="recentCalls.length === 0"
+          class="py-empty"
+          description="暂无 AI 调用记录"
+        />
 
-        <NTabPane name="storage" tab="存储维护">
-          <NSpace v-if="overview" :size="16" vertical>
-            <NDescriptions
-              bordered
-              :column="3"
-              label-placement="left"
-              size="small"
-            >
-              <NDescriptionsItem label="SQLite 库文件">
-                {{ formatBytes(overview.storage.dbBytes) }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="媒体缓存">
-                {{ overview.storage.assetsFiles }} 个文件 /
-                {{ formatBytes(overview.storage.assetsBytes) }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="头像缓存">
-                {{ overview.storage.avatarsFiles }} 个文件 /
-                {{ formatBytes(overview.storage.avatarsBytes) }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="群聊消息数">
-                {{ overview.storage.tables.messages }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="分流记录数">
-                {{ overview.storage.tables.gateDecisions }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="结构化记忆">
-                {{ overview.storage.tables.memories }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="媒体附件记录">
-                {{ overview.storage.tables.messageAssets }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="后台任务">
-                {{ overview.storage.tables.jobs }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="出站投递">
-                {{ overview.storage.tables.deliveries }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="定时任务">
-                {{ overview.storage.tables.schedules }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="公会审计">
-                {{ overview.storage.tables.guildAuditLogs }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="用量流水">
-                {{ overview.storage.tables.llmUsage }}
-              </NDescriptionsItem>
-            </NDescriptions>
-
-            <div class="filter-bar">
-              <NText depth="2">保留最近天数：</NText>
-              <NInputNumber
-                v-model:value="purgeDays"
-                class="w-110"
-                :max="3650"
-                :min="1"
-                size="small"
-              />
-              <NPopconfirm @positive-click="handlePurgeStorage">
-                <template #trigger>
-                  <NButton :loading="purging" size="small" type="warning">
-                    <template #icon>
-                      <Trash2 :size="14" />
-                    </template>
-                    清理过期数据
-                  </NButton>
-                </template>
-                将删除超过 {{ purgeDays }}
-                天的未受保护历史消息、分流记录、已完成任务及孤立媒体文件；被长期记忆引用的消息会自动保留。确认继续？
-              </NPopconfirm>
-            </div>
-
-            <NAlert v-if="lastPurge" type="success">
-              本次清理范围：超过 {{ lastPurge.olderThanDays }} 天；共清理
-              {{ lastPurge.deletedMessages }} 条消息、{{
-                lastPurge.deletedDecisions
-              }}
-              条分流日志、{{ lastPurge.deletedJobs }} 条任务、{{
-                lastPurge.deletedDeliveries
-              }}
-              条投递、{{ lastPurge.deletedAssetRows }} 条媒体记录，释放磁盘
-              {{ formatBytes(lastPurge.freedBytes) }}。
-            </NAlert>
-          </NSpace>
-        </NTabPane>
-
-        <NTabPane name="context" tab="全局上下文">
-          <NSpace v-if="conversation" :size="12" vertical>
-            <div class="filter-bar space-between">
-              <NText class="mono sub-note" depth="3">
-                session: {{ conversation.sessionId }} · afterMessageId:
-                {{ conversation.afterMessageId }} · 更新于
-                {{ formatTime(conversation.updatedAt) }}
-              </NText>
-              <NPopconfirm @positive-click="handleResetConversation">
-                <template #trigger>
-                  <NButton
-                    :loading="resettingContext"
-                    size="small"
-                    type="warning"
-                  >
-                    <template #icon>
-                      <RotateCcw :size="14" />
-                    </template>
-                    重置全局上下文
-                  </NButton>
-                </template>
-                将清空全局短期上下文轮次并刷新
-                sessionId，全局/群聊/成员长期记忆保留不变。
-              </NPopconfirm>
-            </div>
-
-            <NCard
-              v-if="conversation.summary"
-              size="small"
-              title="全局压缩摘要"
-            >
-              <div class="pre-wrap">{{ conversation.summary }}</div>
-            </NCard>
-
-            <NCard
-              v-if="conversation.pendingResults.length > 0"
-              size="small"
-              title="待消费投递回执"
-            >
-              <pre class="code-block">{{
-                JSON.stringify(conversation.pendingResults, null, 2)
-              }}</pre>
-            </NCard>
-
-            <NEmpty
-              v-if="conversation.messages.length === 0"
-              description="全局上下文当前暂无短期轮次"
-            />
-
-            <div
-              v-for="(turn, idx) in conversation.messages"
-              :key="idx"
-              class="turn-box"
-            >
-              <div class="turn-head">
-                <NTag size="tiny">{{ turn.role }}</NTag>
+        <div v-else class="feed-list">
+          <div
+            v-for="call in recentCalls"
+            :key="call.id"
+            class="feed-row feed-row-clickable"
+            @click="openCallDetail(call)"
+          >
+            <div class="feed-row-top">
+              <div class="feed-row-meta">
+                <NTag size="tiny" :type="purposeMeta(call.purpose).type">
+                  {{ purposeMeta(call.purpose).label }}
+                </NTag>
+                <NTag v-if="call.status === 'error'" size="tiny" type="error">
+                  失败
+                </NTag>
                 <NTag
-                  v-for="call in turn.tool_calls ?? []"
-                  :key="call.id"
+                  v-for="(tc, idx) in call.toolCalls.slice(0, 3)"
+                  :key="`${tc.name}-${idx}`"
                   size="tiny"
                   type="info"
                 >
-                  {{ call.function.name }}
+                  {{ tc.name }}
                 </NTag>
-                <span v-if="turn.tool_call_id" class="mono">
-                  {{ turn.tool_call_id }}
-                </span>
+                <span class="mono sub-note">{{ call.model }}</span>
               </div>
-              <pre class="code-block mt-xs">{{
-                turn.content ||
-                (turn.tool_calls?.length
-                  ? JSON.stringify(
-                      turn.tool_calls.map((c) => ({
-                        tool: c.function.name,
-                        args: c.function.arguments,
-                      })),
-                      null,
-                      2,
-                    )
-                  : "(empty)")
-              }}</pre>
+              <span class="tabular turn-time sub-note">
+                {{ call.durationMs }} ms · {{ formatTime(call.createdAt) }}
+              </span>
             </div>
-          </NSpace>
-        </NTabPane>
-      </NTabs>
-    </NCard>
+            <div class="feed-row-body">
+              <NText v-if="call.error" type="error">{{ call.error }}</NText>
+              <template v-else>
+                {{
+                  (call.responseText ?? "").replaceAll(/\s+/g, " ").trim() ||
+                  (call.toolCalls.length > 0
+                    ? `调用工具：${call.toolCalls.map((t) => t.name).join("、")}`
+                    : call.chatKey || "—")
+                }}
+              </template>
+            </div>
+          </div>
+        </div>
+      </NCard>
+
+      <NCard size="small" title="最近出站投递">
+        <template #header-extra>
+          <NButton
+            quaternary
+            size="tiny"
+            @click="router.push('/logs?tab=deliveries')"
+          >
+            查看全部
+            <template #icon>
+              <ArrowRight :size="12" />
+            </template>
+          </NButton>
+        </template>
+
+        <NEmpty
+          v-if="recentDeliveries.length === 0"
+          class="py-empty"
+          description="暂无出站记录"
+        />
+
+        <div v-else class="feed-list">
+          <div v-for="item in recentDeliveries" :key="item.id" class="feed-row">
+            <div class="feed-row-top">
+              <div class="feed-row-meta">
+                <NTag size="tiny" :type="deliveryStatusLabel[item.status].type">
+                  {{ deliveryStatusLabel[item.status].text }}
+                </NTag>
+                <span class="mono sub-note">{{ item.chatKey }}</span>
+              </div>
+              <span class="tabular turn-time sub-note">
+                {{ formatTime(item.updatedAt) }}
+              </span>
+            </div>
+            <div class="feed-row-body">
+              <NText v-if="item.error" type="error">{{ item.error }}</NText>
+              <template v-else>
+                {{ summarizePayload(item.payload, item.kind) || "—" }}
+              </template>
+            </div>
+          </div>
+        </div>
+      </NCard>
+    </div>
+
+    <NDrawer v-model:show="callDetailOpen" class="drawer-safe" :width="560">
+      <NDrawerContent v-if="selectedCall" closable title="AI 调用详情">
+        <NSpace :size="12" vertical>
+          <NAlert v-if="selectedCall.error" title="调用失败" type="error">
+            {{ selectedCall.error }}
+          </NAlert>
+
+          <NDescriptions
+            bordered
+            :column="2"
+            label-placement="left"
+            size="small"
+          >
+            <NDescriptionsItem label="时间">
+              <span class="tabular">
+                {{ formatTime(selectedCall.createdAt) }}
+              </span>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="用途">
+              <NTag size="small" :type="purposeMeta(selectedCall.purpose).type">
+                {{ purposeMeta(selectedCall.purpose).label }}
+              </NTag>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="模型">
+              <span class="mono">{{ selectedCall.model }}</span>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="耗时">
+              <span class="tabular">{{ selectedCall.durationMs }} ms</span>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="会话">
+              <span class="mono">{{ selectedCall.chatKey || "全局" }}</span>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="Tokens">
+              <span class="tabular">
+                入 {{ selectedCall.inputTokens.toLocaleString() }} · 出
+                {{ selectedCall.outputTokens.toLocaleString() }}
+              </span>
+            </NDescriptionsItem>
+          </NDescriptions>
+
+          <div v-if="selectedCall.toolCalls.length > 0">
+            <div class="section-title">发起的工具调用</div>
+            <NSpace :size="8" vertical>
+              <div
+                v-for="(tc, idx) in selectedCall.toolCalls"
+                :key="`${tc.name}-${idx}`"
+                class="turn-box"
+              >
+                <NTag size="small" type="info">{{ tc.name }}</NTag>
+                <pre class="code-block mt-xs">{{
+                  prettyMaybeJson(tc.arguments)
+                }}</pre>
+              </div>
+            </NSpace>
+          </div>
+
+          <div v-if="selectedCall.responseText">
+            <div class="section-title">模型输出</div>
+            <pre class="code-block">{{
+              prettyMaybeJson(selectedCall.responseText)
+            }}</pre>
+          </div>
+
+          <NCollapse v-if="selectedCall.requestPreview">
+            <NCollapseItem name="req" title="请求上下文预览">
+              <pre class="code-block">{{ selectedCall.requestPreview }}</pre>
+            </NCollapseItem>
+          </NCollapse>
+
+          <NButton
+            block
+            secondary
+            size="small"
+            @click="
+              callDetailOpen = false;
+              router.push('/ai');
+            "
+          >
+            在 AI 调用页查看更多
+          </NButton>
+        </NSpace>
+      </NDrawerContent>
+    </NDrawer>
   </div>
 </template>

@@ -8,6 +8,7 @@ export const router = createRouter({
     { path: "/login", component: () => import("./views/LoginView.vue") },
     { path: "/", redirect: "/overview" },
     { path: "/overview", component: () => import("./views/OverviewView.vue") },
+    { path: "/ai", component: () => import("./views/AiCallsView.vue") },
     { path: "/gate", component: () => import("./views/GateView.vue") },
     { path: "/chats", component: () => import("./views/ChatsView.vue") },
     { path: "/memories", component: () => import("./views/MemoriesView.vue") },

@@ -71,7 +71,7 @@ export interface ToolLoopResult<T> {
 }
 
 export async function runChatToolLoop<S extends TSchema>(options: {
-  purpose: "dialog" | "subagent" | "memory_update" | "compaction";
+  purpose: string;
   chatKey: string | null;
   settings: RuntimeSettings;
   store: Store;

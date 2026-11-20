@@ -290,7 +290,7 @@ async function openChatDrawer(row: ChatRow) {
 
 function goToGlobalContext() {
   drawerOpen.value = false;
-  void router.push({ path: "/overview", query: { tab: "context" } });
+  void router.push({ path: "/ai", query: { tab: "context" } });
 }
 
 async function loadMessages() {
@@ -371,21 +371,30 @@ const columns: DataTableColumns<ChatRow> = [
     key: "title",
     minWidth: 185,
     render: (row) =>
-      h("div", { style: "display:flex;align-items:center;gap:10px;" }, [
-        h(NAvatar, { round: true, size: 30, src: avatarUrlForChat(row) }),
-        h("div", { style: "min-width:0;" }, [
-          h(
-            "div",
-            { style: "font-weight:600;line-height:1.3;" },
-            row.title || row.chatId,
-          ),
-          h(
-            "div",
-            { class: "mono", style: "font-size:11px;opacity:0.65;" },
-            row.chatKey,
-          ),
-        ]),
-      ]),
+      h(
+        "div",
+        {
+          style: "display:flex;align-items:center;gap:10px;cursor:pointer;",
+          onClick: () => {
+            void openChatDrawer(row);
+          },
+        },
+        [
+          h(NAvatar, { round: true, size: 30, src: avatarUrlForChat(row) }),
+          h("div", { style: "min-width:0;" }, [
+            h(
+              "div",
+              { style: "font-weight:600;line-height:1.3;" },
+              row.title || row.chatId,
+            ),
+            h(
+              "div",
+              { class: "mono", style: "font-size:11px;opacity:0.65;" },
+              row.chatKey,
+            ),
+          ]),
+        ],
+      ),
   },
   {
     title: "类型",
@@ -452,22 +461,20 @@ const columns: DataTableColumns<ChatRow> = [
               },
               { default: () => "查看记录" },
             ),
-            row.kind === "group"
-              ? h(
-                  NButton,
-                  {
-                    size: "tiny",
-                    loading: busyBackfill.value === row.chatKey,
-                    onClick: () => {
-                      void handleBackfill(row);
-                    },
-                  },
-                  {
-                    icon: () => h(Download, { size: 12 }),
-                    default: () => "补录",
-                  },
-                )
-              : null,
+            h(
+              NButton,
+              {
+                size: "tiny",
+                loading: busyBackfill.value === row.chatKey,
+                onClick: () => {
+                  void handleBackfill(row);
+                },
+              },
+              {
+                icon: () => h(Download, { size: 12 }),
+                default: () => "补录",
+              },
+            ),
             row.kind === "group"
               ? h(
                   NButton,
@@ -596,6 +603,7 @@ onMounted(() => {
     <NDrawer v-model:show="drawerOpen" :width="isNarrowViewport ? '100%' : 680">
       <NDrawerContent
         v-if="activeChat"
+        closable
         :title="`${activeChat.title || activeChat.chatId} (${activeChat.chatKey})`"
       >
         <NTabs v-model:value="drawerTab" type="line">
@@ -603,9 +611,9 @@ onMounted(() => {
             <div class="filter-bar">
               <NInput
                 v-model:value="messageSearch"
-                class="w-240"
+                class="w-220"
                 clearable
-                placeholder="搜索群聊消息文本"
+                placeholder="搜索消息文本"
                 size="small"
                 @keyup.enter="loadMessages"
               />
@@ -615,6 +623,30 @@ onMounted(() => {
                 @click="loadMessages"
               >
                 检索
+              </NButton>
+              <NButton
+                :loading="busyBackfill === activeChat.chatKey"
+                secondary
+                size="small"
+                @click="handleBackfill(activeChat)"
+              >
+                <template #icon>
+                  <Download :size="13" />
+                </template>
+                补录更早
+              </NButton>
+              <NButton
+                quaternary
+                size="small"
+                @click="
+                  drawerOpen = false;
+                  router.push({
+                    path: '/ai',
+                    query: { chatKey: activeChat.chatKey },
+                  });
+                "
+              >
+                AI 调用
               </NButton>
             </div>
 

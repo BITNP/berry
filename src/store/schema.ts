@@ -1,4 +1,5 @@
 import type { Generated, Kysely } from "kysely";
+import { sql } from "kysely";
 
 export interface BerryTables {
   settings: {
@@ -130,10 +131,15 @@ export interface BerryTables {
     purpose: string;
     model: string;
     chat_key: string | null;
+    status: string;
     input_tokens: number;
     cached_input_tokens: number;
     output_tokens: number;
     duration_ms: number;
+    request_preview: string | null;
+    response_text: string | null;
+    tool_calls_json: string | null;
+    error: string | null;
     created_at: number;
   };
   admin_sessions: {
@@ -398,18 +404,51 @@ export async function createBerryTables(db: BerryDb): Promise<void> {
     .addColumn("purpose", "text", (c) => c.notNull())
     .addColumn("model", "text", (c) => c.notNull())
     .addColumn("chat_key", "text")
+    .addColumn("status", "text", (c) => c.notNull().defaultTo("ok"))
     .addColumn("input_tokens", "integer", (c) => c.notNull())
     .addColumn("cached_input_tokens", "integer", (c) => c.notNull())
     .addColumn("output_tokens", "integer", (c) => c.notNull())
     .addColumn("duration_ms", "integer", (c) => c.notNull())
+    .addColumn("request_preview", "text")
+    .addColumn("response_text", "text")
+    .addColumn("tool_calls_json", "text")
+    .addColumn("error", "text")
     .addColumn("created_at", "integer", (c) => c.notNull())
     .execute();
+
+  // Upgrade existing llm_usage tables in place with trace detail columns.
+  const usageColumns = await sql<{ name: string }>`
+    pragma table_info(llm_usage)
+  `.execute(db);
+  const usageColSet = new Set(usageColumns.rows.map((r) => r.name));
+  const extraUsageCols: [string, string][] = [
+    ["status", "text not null default 'ok'"],
+    ["request_preview", "text"],
+    ["response_text", "text"],
+    ["tool_calls_json", "text"],
+    ["error", "text"],
+  ];
+
+  for (const [col, def] of extraUsageCols) {
+    if (!usageColSet.has(col)) {
+      await sql
+        .raw(`alter table llm_usage add column ${col} ${def}`)
+        .execute(db);
+    }
+  }
 
   await db.schema
     .createIndex("idx_usage_day_purpose")
     .ifNotExists()
     .on("llm_usage")
     .columns(["day", "purpose"])
+    .execute();
+
+  await db.schema
+    .createIndex("idx_usage_created_at")
+    .ifNotExists()
+    .on("llm_usage")
+    .columns(["created_at"])
     .execute();
 
   await db.schema

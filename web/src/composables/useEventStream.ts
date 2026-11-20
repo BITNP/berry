@@ -24,6 +24,7 @@ export function useEventStream(onEvent: (type: string, data: unknown) => void) {
       "gate_decision",
       "delivery_update",
       "guild_audit",
+      "llm_call",
       "job_update",
       "log",
     ]) {

@@ -2,6 +2,7 @@
 import { Plus, RefreshCw, Save, Trash2 } from "@lucide/vue";
 import type { DataTableColumns } from "naive-ui";
 import {
+  NAlert,
   NButton,
   NCard,
   NCollapse,
@@ -25,9 +26,11 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { h, onMounted, ref } from "vue";
+import { h, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
+import { formatBytes } from "../utils/format.ts";
 
 interface WeeklySchedule {
   kind: "weekly";
@@ -136,15 +139,66 @@ interface McpToolRow {
   description: string;
 }
 
+interface StorageSummary {
+  dbBytes: number;
+  assetsFiles: number;
+  assetsBytes: number;
+  avatarsFiles: number;
+  avatarsBytes: number;
+  tables: {
+    messages: number;
+    gateDecisions: number;
+    conversations: number;
+    memories: number;
+    messageAssets: number;
+    jobs: number;
+    deliveries: number;
+    schedules: number;
+    guildAuditLogs: number;
+    llmUsage: number;
+  };
+}
+
+interface PurgeResult {
+  olderThanDays: number;
+  deletedMessages: number;
+  deletedDecisions: number;
+  deletedJobs: number;
+  deletedDeliveries: number;
+  deletedAssetRows: number;
+  freedBytes: number;
+}
+
+const VALID_TABS = new Set([
+  "bot",
+  "digest",
+  "guild",
+  "mcp",
+  "media",
+  "models",
+  "policy",
+  "storage",
+]);
+
+const route = useRoute();
+const router = useRouter();
 const message = useMessage();
 
 const loading = ref(false);
 const saving = ref(false);
-const activeTab = ref("bot");
+const activeTab = ref(
+  typeof route.query.tab === "string" && VALID_TABS.has(route.query.tab)
+    ? route.query.tab
+    : "bot",
+);
 const settings = ref<RuntimeSettingsView | null>(null);
 const envSummary = ref<EnvSummaryView | null>(null);
 const mcpStatuses = ref<McpStatusRow[]>([]);
 const mcpTools = ref<McpToolRow[]>([]);
+const storage = ref<StorageSummary | null>(null);
+const purging = ref(false);
+const purgeDays = ref(30);
+const lastPurge = ref<PurgeResult | null>(null);
 
 const customWeeklyEnabled = ref(false);
 const weeklyDays = ref<string[]>(["sun"]);
@@ -186,19 +240,21 @@ async function loadSettings() {
   loading.value = true;
 
   try {
-    const [cfgRes, mcpRes] = await Promise.all([
+    const [cfgRes, mcpRes, ovRes] = await Promise.all([
       apiFetch<{ settings: RuntimeSettingsView; envSummary: EnvSummaryView }>(
         "/api/admin/settings",
       ),
       apiFetch<{ statuses: McpStatusRow[]; tools: McpToolRow[] }>(
         "/api/admin/mcp",
       ),
+      apiFetch<{ storage: StorageSummary }>("/api/admin/overview"),
     ]);
 
     settings.value = cfgRes.settings;
     envSummary.value = cfgRes.envSummary;
     mcpStatuses.value = mcpRes.statuses;
     mcpTools.value = mcpRes.tools;
+    storage.value = ovRes.storage;
 
     const ws = cfgRes.settings.guildAutomation.weeklySchedule;
 
@@ -217,6 +273,42 @@ async function loadSettings() {
     loading.value = false;
   }
 }
+
+async function handlePurgeStorage() {
+  purging.value = true;
+
+  try {
+    const res = await apiFetch<PurgeResult>("/api/admin/storage/purge", {
+      method: "POST",
+      body: JSON.stringify({ olderThanDays: purgeDays.value }),
+    });
+
+    lastPurge.value = res;
+    message.success(
+      `清理完成：删除 ${res.deletedMessages} 条消息、释放 ${formatBytes(res.freedBytes)}`,
+    );
+    await loadSettings();
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : "存储清理失败");
+  } finally {
+    purging.value = false;
+  }
+}
+
+watch(activeTab, (tab) => {
+  if (route.query.tab !== tab) {
+    void router.replace({ query: { ...route.query, tab } });
+  }
+});
+
+watch(
+  () => route.query.tab,
+  (tab) => {
+    if (typeof tab === "string" && VALID_TABS.has(tab)) {
+      activeTab.value = tab;
+    }
+  },
+);
 
 async function handleSave() {
   if (!settings.value) {
@@ -939,6 +1031,91 @@ onMounted(() => {
             :scroll-x="740"
             size="small"
           />
+        </NTabPane>
+
+        <NTabPane name="storage" tab="存储维护">
+          <NSpace v-if="storage" :size="16" vertical>
+            <NDescriptions
+              bordered
+              :column="3"
+              label-placement="left"
+              size="small"
+            >
+              <NDescriptionsItem label="SQLite 库文件">
+                {{ formatBytes(storage.dbBytes) }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="媒体缓存">
+                {{ storage.assetsFiles }} 个文件 /
+                {{ formatBytes(storage.assetsBytes) }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="头像缓存">
+                {{ storage.avatarsFiles }} 个文件 /
+                {{ formatBytes(storage.avatarsBytes) }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="聊天消息">
+                {{ storage.tables.messages.toLocaleString() }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="分流记录">
+                {{ storage.tables.gateDecisions.toLocaleString() }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="结构化记忆">
+                {{ storage.tables.memories.toLocaleString() }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="媒体附件">
+                {{ storage.tables.messageAssets.toLocaleString() }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="后台任务">
+                {{ storage.tables.jobs.toLocaleString() }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="出站投递">
+                {{ storage.tables.deliveries.toLocaleString() }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="定时任务">
+                {{ storage.tables.schedules.toLocaleString() }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="公会审计">
+                {{ storage.tables.guildAuditLogs.toLocaleString() }}
+              </NDescriptionsItem>
+              <NDescriptionsItem label="AI 调用流水">
+                {{ storage.tables.llmUsage.toLocaleString() }}
+              </NDescriptionsItem>
+            </NDescriptions>
+
+            <div class="filter-bar">
+              <NText depth="2">保留最近天数：</NText>
+              <NInputNumber
+                v-model:value="purgeDays"
+                class="w-110"
+                :max="3650"
+                :min="1"
+                size="small"
+              />
+              <NPopconfirm @positive-click="handlePurgeStorage">
+                <template #trigger>
+                  <NButton :loading="purging" size="small" type="warning">
+                    <template #icon>
+                      <Trash2 :size="14" />
+                    </template>
+                    清理过期数据
+                  </NButton>
+                </template>
+                将删除超过 {{ purgeDays }}
+                天的未受保护历史消息、分流记录、已完成任务及孤立媒体文件；被长期记忆引用的消息会自动保留。确认继续？
+              </NPopconfirm>
+            </div>
+
+            <NAlert v-if="lastPurge" type="success">
+              本次清理范围：超过 {{ lastPurge.olderThanDays }} 天；共清理
+              {{ lastPurge.deletedMessages }} 条消息、{{
+                lastPurge.deletedDecisions
+              }}
+              条分流日志、{{ lastPurge.deletedJobs }} 条任务、{{
+                lastPurge.deletedDeliveries
+              }}
+              条投递、{{ lastPurge.deletedAssetRows }} 条媒体记录，释放磁盘
+              {{ formatBytes(lastPurge.freedBytes) }}。
+            </NAlert>
+          </NSpace>
         </NTabPane>
       </NTabs>
     </NCard>

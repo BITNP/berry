@@ -51,7 +51,7 @@ export class Store {
     this.schedules = new SchedulesStore(database);
     this.cursors = new CursorsStore(database);
     this.guildAudit = new GuildAuditStore(database, events);
-    this.usage = new UsageStore(database);
+    this.usage = new UsageStore(database, events);
     this.maintenance = new MaintenanceStore(database);
     this.sessions = new AdminSessionsStore(database);
   }

@@ -4,6 +4,7 @@ import {
   BookOpen,
   Brain,
   Clock,
+  Cpu,
   GitBranch,
   LayoutDashboard,
   LogOut,
@@ -72,27 +73,43 @@ const renderIcon = (icon: Component) => () =>
   h(NIcon, null, { default: () => h(icon, { size: 16 }) });
 
 const menuOptions: MenuOption[] = [
-  { key: "/overview", label: "概览", icon: renderIcon(LayoutDashboard) },
-  { key: "/gate", label: "分流", icon: renderIcon(Activity) },
-  { key: "/chats", label: "会话", icon: renderIcon(MessagesSquare) },
-  { key: "/memories", label: "记忆", icon: renderIcon(Brain) },
-  { key: "/guild", label: "公会", icon: renderIcon(GitBranch) },
-  { key: "/docs", label: "资料库", icon: renderIcon(BookOpen) },
-  { key: "/schedules", label: "定时", icon: renderIcon(Clock) },
-  { key: "/logs", label: "日志", icon: renderIcon(ScrollText) },
-  { key: "/settings", label: "设置", icon: renderIcon(SlidersHorizontal) },
+  {
+    type: "group",
+    label: "监控",
+    key: "grp-monitor",
+    children: [
+      { key: "/overview", label: "概览", icon: renderIcon(LayoutDashboard) },
+      { key: "/ai", label: "AI 调用", icon: renderIcon(Cpu) },
+      { key: "/gate", label: "分流", icon: renderIcon(Activity) },
+      { key: "/logs", label: "日志队列", icon: renderIcon(ScrollText) },
+    ],
+  },
+  {
+    type: "group",
+    label: "协作",
+    key: "grp-collab",
+    children: [
+      { key: "/chats", label: "会话", icon: renderIcon(MessagesSquare) },
+      { key: "/memories", label: "记忆", icon: renderIcon(Brain) },
+      { key: "/guild", label: "公会", icon: renderIcon(GitBranch) },
+      { key: "/docs", label: "资料库", icon: renderIcon(BookOpen) },
+      { key: "/schedules", label: "定时", icon: renderIcon(Clock) },
+      { key: "/settings", label: "设置", icon: renderIcon(SlidersHorizontal) },
+    ],
+  },
 ];
 
 const routeTitles: Record<string, string> = {
   "/overview": "概览",
-  "/gate": "分流",
-  "/chats": "会话",
-  "/memories": "记忆",
-  "/guild": "公会",
+  "/ai": "AI 调用",
+  "/gate": "消息分流",
+  "/chats": "会话管理",
+  "/memories": "长期记忆",
+  "/guild": "公会联动",
   "/docs": "资料库",
-  "/schedules": "定时",
-  "/logs": "日志",
-  "/settings": "设置",
+  "/schedules": "定时任务",
+  "/logs": "日志队列",
+  "/settings": "系统设置",
 };
 
 const activeMenuKey = computed(() => route.path);
@@ -498,11 +515,14 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  flex-shrink: 0;
 }
 
 .header-title {
   font-size: 14px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .header-right {

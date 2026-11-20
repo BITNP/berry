@@ -3,12 +3,82 @@ import OpenAI from "openai";
 import type {
   ChatCompletion,
   ChatCompletionCreateParamsNonStreaming,
+  ChatCompletionMessageParam,
 } from "openai/resources/chat/completions";
 import type { Static, TSchema } from "typebox";
 import * as Value from "typebox/value";
 
 import type { Store } from "../store/index.ts";
+import type { LlmToolCallSummary } from "../types.ts";
 import { errorMessage } from "../utils/time.ts";
+
+function summarizeMessageContent(
+  content: ChatCompletionMessageParam["content"],
+): string {
+  if (typeof content === "string") {
+    return content;
+  }
+
+  if (!Array.isArray(content)) {
+    return "";
+  }
+
+  return content
+    .map((part) => {
+      if (part.type === "text") {
+        return part.text;
+      }
+
+      if (part.type === "image_url") {
+        return "[image]";
+      }
+
+      return `[${part.type}]`;
+    })
+    .join("\n");
+}
+
+function buildRequestPreview(
+  messages: ChatCompletionMessageParam[] | undefined,
+): string | null {
+  if (!messages || messages.length === 0) {
+    return null;
+  }
+
+  const nonSystem = messages.filter((m) => m.role !== "system");
+  const tail = nonSystem.slice(-6);
+  const chunks: string[] = [];
+
+  if (nonSystem.length > tail.length) {
+    chunks.push(`…（前略 ${nonSystem.length - tail.length} 条上下文）`);
+  }
+
+  for (const msg of tail) {
+    const header =
+      msg.role === "tool" && "tool_call_id" in msg
+        ? `[tool:${msg.tool_call_id}]`
+        : `[${msg.role}]`;
+    const body = summarizeMessageContent(msg.content);
+    const calls =
+      msg.role === "assistant" &&
+      "tool_calls" in msg &&
+      Array.isArray(msg.tool_calls) &&
+      msg.tool_calls.length > 0
+        ? msg.tool_calls
+            .map((c) =>
+              c.type === "function"
+                ? `call ${c.function.name}(${c.function.arguments.slice(0, 400)})`
+                : `[${c.type}]`,
+            )
+            .join("\n")
+        : "";
+    const text = [body, calls].filter(Boolean).join("\n");
+
+    chunks.push(`${header}\n${text.slice(0, 3000)}`);
+  }
+
+  return chunks.join("\n\n").slice(0, 12_000);
+}
 
 export function parseModelJson(raw: string): unknown {
   try {
@@ -57,6 +127,7 @@ export async function completeChat(options: {
   params: Omit<ChatCompletionCreateParamsNonStreaming, "model" | "stream">;
 }): Promise<ChatCompletion> {
   const started = performance.now();
+  const requestPreview = buildRequestPreview(options.params.messages);
   const client = new OpenAI({
     apiKey: options.apiKey,
     baseURL: options.baseURL,
@@ -64,23 +135,54 @@ export async function completeChat(options: {
     maxRetries: options.maxRetries ?? 1,
   });
 
-  const completion = await client.chat.completions.create({
-    model: options.model,
-    ...options.params,
-  } as ChatCompletionCreateParamsNonStreaming);
+  try {
+    const completion = await client.chat.completions.create({
+      model: options.model,
+      ...options.params,
+    } as ChatCompletionCreateParamsNonStreaming);
 
-  const usage = completion.usage;
+    const usage = completion.usage;
+    const message = completion.choices[0]?.message;
+    const toolCalls: LlmToolCallSummary[] = (message?.tool_calls ?? [])
+      .filter((call) => call.type === "function")
+      .map((call) => ({
+        name: call.function.name,
+        arguments: call.function.arguments.slice(0, 4000),
+      }));
 
-  await options.store.usage.record({
-    purpose: options.purpose,
-    model: options.model,
-    chatKey: options.chatKey ?? null,
-    inputTokens: usage?.prompt_tokens ?? 0,
-    cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
-    outputTokens: usage?.completion_tokens ?? 0,
-    durationMs: Math.round(performance.now() - started),
-    timeZone: options.timeZone,
-  });
+    await options.store.usage.record({
+      purpose: options.purpose,
+      model: options.model,
+      chatKey: options.chatKey ?? null,
+      status: "ok",
+      inputTokens: usage?.prompt_tokens ?? 0,
+      cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      outputTokens: usage?.completion_tokens ?? 0,
+      durationMs: Math.round(performance.now() - started),
+      requestPreview,
+      responseText: message?.content ?? null,
+      toolCalls,
+      timeZone: options.timeZone,
+    });
 
-  return completion;
+    return completion;
+  } catch (error) {
+    await options.store.usage
+      .record({
+        purpose: options.purpose,
+        model: options.model,
+        chatKey: options.chatKey ?? null,
+        status: "error",
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        durationMs: Math.round(performance.now() - started),
+        requestPreview,
+        error: errorMessage(error),
+        timeZone: options.timeZone,
+      })
+      .catch(() => undefined);
+
+    throw error;
+  }
 }

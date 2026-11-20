@@ -1,7 +1,11 @@
+import type { Selectable } from "kysely";
 import { sql } from "kysely";
 
+import type { LlmCallRecord, LlmToolCallSummary } from "../types.ts";
+import type { EventBus } from "../utils/logger.ts";
 import { formatDay } from "../utils/time.ts";
 import type { BerryDatabase } from "./database.ts";
+import type { BerryTables } from "./schema.ts";
 
 export interface UsageDailyBucket {
   day: string;
@@ -22,42 +26,240 @@ export interface UsageTotals {
   totalTokens: number;
 }
 
+const MAX_PREVIEW_CHARS = 12_000;
+
+function clipText(
+  value: string | null | undefined,
+  max = MAX_PREVIEW_CHARS,
+): string | null {
+  if (!value) {
+    return null;
+  }
+
+  return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+function decodeToolCalls(raw: string | null): LlmToolCallSummary[] {
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed
+      .filter(
+        (item): item is LlmToolCallSummary =>
+          Boolean(item) &&
+          typeof item === "object" &&
+          typeof (item as { name?: unknown }).name === "string",
+      )
+      .map((item) => ({
+        name: item.name,
+        arguments:
+          typeof item.arguments === "string"
+            ? item.arguments
+            : JSON.stringify(item.arguments ?? {}),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+const decodeLlmCall = (
+  row: Selectable<BerryTables["llm_usage"]>,
+): LlmCallRecord => ({
+  id: row.id,
+  day: row.day,
+  purpose: row.purpose,
+  model: row.model,
+  chatKey: row.chat_key,
+  status: row.status === "error" ? "error" : "ok",
+  inputTokens: Number(row.input_tokens),
+  cachedInputTokens: Number(row.cached_input_tokens),
+  outputTokens: Number(row.output_tokens),
+  durationMs: Number(row.duration_ms),
+  requestPreview: row.request_preview,
+  responseText: row.response_text,
+  toolCalls: decodeToolCalls(row.tool_calls_json),
+  error: row.error,
+  createdAt: Number(row.created_at),
+});
+
 export class UsageStore {
   #database: BerryDatabase;
+  #events?: EventBus;
 
-  constructor(database: BerryDatabase) {
+  constructor(database: BerryDatabase, events?: EventBus) {
     this.#database = database;
+    this.#events = events;
   }
 
   public async record(input: {
     purpose: string;
     model: string;
     chatKey?: string | null;
+    status?: "ok" | "error";
     inputTokens: number;
     cachedInputTokens: number;
     outputTokens: number;
     durationMs: number;
+    requestPreview?: string | null;
+    responseText?: string | null;
+    toolCalls?: LlmToolCallSummary[];
+    error?: string | null;
     timeZone?: string;
-  }): Promise<void> {
+  }): Promise<LlmCallRecord> {
     const now = Date.now();
     const day = formatDay(now, input.timeZone ?? "Asia/Shanghai");
+    const toolCalls = input.toolCalls ?? [];
+    const status = input.status ?? (input.error ? "error" : "ok");
 
-    await this.#database.writeTx(async (trx) => {
-      await trx
+    const row = await this.#database.writeTx(async (trx) =>
+      trx
         .insertInto("llm_usage")
         .values({
           day,
           purpose: input.purpose,
           model: input.model,
           chat_key: input.chatKey ?? null,
+          status,
           input_tokens: input.inputTokens,
           cached_input_tokens: input.cachedInputTokens,
           output_tokens: input.outputTokens,
           duration_ms: input.durationMs,
+          request_preview: clipText(input.requestPreview),
+          response_text: clipText(input.responseText),
+          tool_calls_json:
+            toolCalls.length > 0 ? JSON.stringify(toolCalls) : null,
+          error: clipText(input.error, 2000),
           created_at: now,
         })
-        .execute();
-    });
+        .returningAll()
+        .executeTakeFirstOrThrow(),
+    );
+
+    const record = decodeLlmCall(row);
+
+    this.#events?.emit({ type: "llm_call", data: record });
+
+    return record;
+  }
+
+  public async listRecent(
+    filter: {
+      purpose?: string;
+      status?: "ok" | "error";
+      chatKey?: string;
+      search?: string;
+      limit?: number;
+    } = {},
+  ): Promise<{ items: LlmCallRecord[]; total: number }> {
+    const limit = Math.min(200, Math.max(1, filter.limit ?? 80));
+
+    let listQuery = this.#database.db.selectFrom("llm_usage").selectAll();
+    let countQuery = this.#database.db
+      .selectFrom("llm_usage")
+      .select(sql<number>`count(*)`.as("count"));
+
+    if (filter.purpose) {
+      if (filter.purpose === "subagent") {
+        listQuery = listQuery.where("purpose", "like", "subagent%");
+        countQuery = countQuery.where("purpose", "like", "subagent%");
+      } else {
+        listQuery = listQuery.where("purpose", "=", filter.purpose);
+        countQuery = countQuery.where("purpose", "=", filter.purpose);
+      }
+    }
+
+    if (filter.status) {
+      listQuery = listQuery.where("status", "=", filter.status);
+      countQuery = countQuery.where("status", "=", filter.status);
+    }
+
+    if (filter.chatKey) {
+      listQuery = listQuery.where("chat_key", "=", filter.chatKey);
+      countQuery = countQuery.where("chat_key", "=", filter.chatKey);
+    }
+
+    if (filter.search) {
+      const needle = filter.search;
+
+      listQuery = listQuery.where((eb) =>
+        eb.or([
+          eb(sql<number>`contains_text(model, ${needle})`, "=", 1),
+          eb(
+            sql<number>`contains_text(coalesce(chat_key, ''), ${needle})`,
+            "=",
+            1,
+          ),
+          eb(
+            sql<number>`contains_text(coalesce(request_preview, ''), ${needle})`,
+            "=",
+            1,
+          ),
+          eb(
+            sql<number>`contains_text(coalesce(response_text, ''), ${needle})`,
+            "=",
+            1,
+          ),
+          eb(
+            sql<number>`contains_text(coalesce(tool_calls_json, ''), ${needle})`,
+            "=",
+            1,
+          ),
+          eb(
+            sql<number>`contains_text(coalesce(error, ''), ${needle})`,
+            "=",
+            1,
+          ),
+        ]),
+      );
+      countQuery = countQuery.where((eb) =>
+        eb.or([
+          eb(sql<number>`contains_text(model, ${needle})`, "=", 1),
+          eb(
+            sql<number>`contains_text(coalesce(chat_key, ''), ${needle})`,
+            "=",
+            1,
+          ),
+          eb(
+            sql<number>`contains_text(coalesce(request_preview, ''), ${needle})`,
+            "=",
+            1,
+          ),
+          eb(
+            sql<number>`contains_text(coalesce(response_text, ''), ${needle})`,
+            "=",
+            1,
+          ),
+          eb(
+            sql<number>`contains_text(coalesce(tool_calls_json, ''), ${needle})`,
+            "=",
+            1,
+          ),
+          eb(
+            sql<number>`contains_text(coalesce(error, ''), ${needle})`,
+            "=",
+            1,
+          ),
+        ]),
+      );
+    }
+
+    const [rows, countRow] = await Promise.all([
+      listQuery.orderBy("id", "desc").limit(limit).execute(),
+      countQuery.executeTakeFirstOrThrow(),
+    ]);
+
+    return {
+      items: rows.map(decodeLlmCall),
+      total: Number(countRow.count),
+    };
   }
 
   public async todaySummary(timeZone = "Asia/Shanghai"): Promise<UsageTotals> {
