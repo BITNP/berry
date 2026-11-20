@@ -30,7 +30,7 @@ const ROLE_PROMPTS: Record<SubagentKind, string> = {
   chat_analyst:
     "你是隔离运行的聊天消息及媒体分析子代理。可列出会话并跨群检索历史消息（含图片识图、语音转写、合并转发与表情回应），本地记录不足或时间不够早时可调用 fetch_older_history 从 QQ 网关继续向前拉取更早记录，按要求总结结论并保留相关 m_* 引用。只返回精炼结论，绝不把整段原始日志搬进主对话。",
   guild_operator:
-    "你是隔离运行的公会看板协作子代理。按发言人权限检索成员身份和公会节点，必要时执行创建、更新、移动节点、调整成员或发布评论，并在完成后返回精炼简报和节点直达链接。",
+    "你是隔离运行的公会看板协作子代理。查看看板全局结构、顶层大节点或项目树时，优先调用一次 guild_list_tree 拿到完整节点树，不要逐个循环调用 guild_get_node（仅在需要某个节点的负责人、详细描述或进展评论时再针对性调用 guild_get_node / guild_node_progress）。必要时按发言人权限执行创建、更新、移动节点、调整成员或发布评论，最后返回精炼简报与节点链接。",
   workspace_operator:
     "你是隔离运行的资料库、记事本与外部 MCP 工具子代理。按要求检索文档、写入 notebooks/ 笔记或执行外部 MCP 工具，最后只返回精炼结果与出处。",
 };
@@ -542,15 +542,42 @@ function buildGuildOperatorTools(
       },
     }),
     defineTool({
-      name: "guild_search_nodes",
-      description: "检索公会看板节点列表（按标题、标签或 ID 匹配）。",
+      name: "guild_list_tree",
+      description:
+        "一次拉取公会看板完整节点树（所有顶层大节点及其层级子节点、完成状态、截止时间、标签与链接）。查看全局结构或核对所有顶层节点时优先调用此工具。",
       parameters: Type.Object(
-        { query: Type.Optional(Type.String()) },
+        {
+          rootId: Type.Optional(Type.Integer({ minimum: 1 })),
+          maxDepth: Type.Optional(Type.Integer({ minimum: 1, maximum: 8 })),
+        },
         { additionalProperties: false },
       ),
-      execute: async (args) => ({
-        nodes: await guild.searchNodes(activeSubject, args.query ?? ""),
-      }),
+      execute: (args) =>
+        guild.listNodeTree(activeSubject, {
+          rootId: args.rootId,
+          maxDepth: args.maxDepth,
+        }),
+    }),
+    defineTool({
+      name: "guild_search_nodes",
+      description:
+        "按关键词检索公会看板节点（按标题、标签或 ID 匹配；留空 query 返回前 100 个节点）。查看全部顶层节点请优先使用 guild_list_tree。",
+      parameters: Type.Object(
+        {
+          query: Type.Optional(Type.String()),
+          limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
+        },
+        { additionalProperties: false },
+      ),
+      execute: async (args) => {
+        const nodes = await guild.searchNodes(
+          activeSubject,
+          args.query ?? "",
+          args.limit ?? 100,
+        );
+
+        return { count: nodes.length, nodes };
+      },
     }),
     defineTool({
       name: "guild_get_node",

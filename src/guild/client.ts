@@ -16,6 +16,18 @@ export interface GuildNodeSummary {
   updatedAt: string;
 }
 
+export interface GuildNodeTreeItem {
+  id: number;
+  title: string;
+  completed: boolean;
+  dueAt: string | null;
+  tags: string[];
+  childCount: number;
+  commentCount: number;
+  url: string;
+  children: GuildNodeTreeItem[];
+}
+
 export interface GuildNodeDetail extends GuildNodeSummary {
   description: string;
   createdBySubject: string;
@@ -169,13 +181,76 @@ export class GuildInternalClient {
     );
   }
 
+  public async listNodeTree(
+    actorSubject: string,
+    options: { rootId?: number; maxDepth?: number } = {},
+  ): Promise<{
+    totalNodes: number;
+    rootCount: number;
+    roots: GuildNodeTreeItem[];
+  }> {
+    const all = await this.listNodes(actorSubject);
+    const byParent = new Map<number | null, GuildNodeSummary[]>();
+
+    for (const node of all) {
+      const siblings = byParent.get(node.parentId) ?? [];
+
+      siblings.push(node);
+      byParent.set(node.parentId, siblings);
+    }
+
+    for (const siblings of byParent.values()) {
+      siblings.sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
+    }
+
+    const maxDepth = Math.min(8, Math.max(1, options.maxDepth ?? 6));
+    const buildNode = (
+      node: GuildNodeSummary,
+      depth: number,
+      visited: Set<number>,
+    ): GuildNodeTreeItem => {
+      visited.add(node.id);
+      const kids =
+        depth < maxDepth
+          ? (byParent.get(node.id) ?? [])
+              .filter((child) => !visited.has(child.id))
+              .map((child) => buildNode(child, depth + 1, visited))
+          : [];
+
+      return {
+        id: node.id,
+        title: node.title,
+        completed: Boolean(node.completedAt),
+        dueAt: node.dueAt,
+        tags: node.tags,
+        childCount: node.childCount,
+        commentCount: node.commentCount,
+        url: this.nodeUrl(node.id),
+        children: kids,
+      };
+    };
+
+    const topNodes =
+      options.rootId === undefined
+        ? (byParent.get(null) ?? [])
+        : all.filter((n) => n.id === options.rootId);
+
+    return {
+      totalNodes: all.length,
+      rootCount: (byParent.get(null) ?? []).length,
+      roots: topNodes.map((root) => buildNode(root, 1, new Set())),
+    };
+  }
+
   public async searchNodes(
     actorSubject: string,
     query: string,
+    limit = 100,
   ): Promise<(GuildNodeSummary & { pathTitles: string[]; url: string })[]> {
     const all = await this.listNodes(actorSubject);
     const byId = new Map(all.map((node) => [node.id, node]));
     const needle = query.trim().toLowerCase();
+    const capped = Math.min(200, Math.max(1, limit));
 
     const pathOf = (node: GuildNodeSummary): string[] => {
       const chain: string[] = [];
@@ -198,9 +273,9 @@ export class GuildInternalClient {
             node.title.toLowerCase().includes(needle) ||
             node.tags.some((tag) => tag.toLowerCase().includes(needle)),
         )
-      : all.slice(0, 30);
+      : all;
 
-    return matches.slice(0, 30).map((node) => ({
+    return matches.slice(0, capped).map((node) => ({
       ...node,
       pathTitles: pathOf(node),
       url: this.nodeUrl(node.id),

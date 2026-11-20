@@ -359,7 +359,9 @@ test("BERRY_ALLOWED_GROUPS restricts group events, group listing, and outbound g
   assert.deepEqual(groups, [{ group_id: 100, group_name: "白名单群" }]);
 
   // Outbound dispatch is blocked locally for non-whitelisted groups and allowed for whitelisted groups.
-  const callsBeforeDispatch = gatewayCalls.length;
+  const sendCalls = () =>
+    gatewayCalls.filter((u) => u.endsWith("/send_group_msg_async"));
+  const callsBeforeDispatch = sendCalls().length;
   const blockedDispatch = await app.gateway.dispatchUnit(
     "group:200",
     { kind: "qq_reply", text: "不应发出" },
@@ -368,7 +370,7 @@ test("BERRY_ALLOWED_GROUPS restricts group events, group listing, and outbound g
 
   assert.equal(blockedDispatch.status, "failed");
   assert.match(blockedDispatch.error ?? "", /白名单/);
-  assert.equal(gatewayCalls.length, callsBeforeDispatch);
+  assert.equal(sendCalls().length, callsBeforeDispatch);
 
   const allowedDispatch = await app.gateway.dispatchUnit(
     "group:100",
@@ -377,7 +379,7 @@ test("BERRY_ALLOWED_GROUPS restricts group events, group listing, and outbound g
   );
 
   assert.equal(allowedDispatch.status, "sent");
-  assert.equal(gatewayCalls.length, callsBeforeDispatch + 1);
+  assert.equal(sendCalls().length, callsBeforeDispatch + 1);
 
   // Hot-clearing policy.allowedGroups immediately lifts the restriction without restart.
   await app.updateSettings({

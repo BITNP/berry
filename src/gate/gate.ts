@@ -155,7 +155,9 @@ export class MessageGate {
     await this.#store.jobs.coalesceGateBatch(
       message.chatKey,
       message.id,
-      message.receivedAt + settings.gateModel.batchWindowMs,
+      isDirectInvocation
+        ? message.receivedAt
+        : message.receivedAt + settings.gateModel.batchWindowMs,
     );
     this.#wake();
   }

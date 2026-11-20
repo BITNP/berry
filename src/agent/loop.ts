@@ -112,7 +112,21 @@ export async function runChatToolLoop<S extends TSchema>(options: {
   let corrections = 0;
   let prevLoggedLen = 0;
 
+  const useReasoning =
+    options.purpose === "dialog" && cfg.thinkingEffort !== "none";
+
   for (let round = 0; round < options.maxRounds; round++) {
+    const isFinalRound =
+      round === options.maxRounds - 1 && openAITools.length > 0;
+
+    if (isFinalRound && round > 0) {
+      messages.push({
+        role: "user",
+        content:
+          "已达到工具调用上限，不再继续调用工具。请直接基于已获取的数据给出最终 JSON 答复。",
+      });
+    }
+
     const deltaCount = messages.length - prevLoggedLen;
 
     logger.debug("LLM request delta", {
@@ -137,10 +151,10 @@ export async function runChatToolLoop<S extends TSchema>(options: {
         messages,
         temperature: options.temperature ?? cfg.temperature,
         max_tokens: options.maxTokens ?? cfg.maxOutputTokens,
-        ...(openAITools.length > 0 ? { tools: openAITools } : {}),
-        ...(cfg.thinkingEffort === "none"
-          ? {}
-          : { reasoning_effort: cfg.thinkingEffort }),
+        ...(!isFinalRound && openAITools.length > 0
+          ? { tools: openAITools }
+          : {}),
+        ...(useReasoning ? { reasoning_effort: cfg.thinkingEffort } : {}),
       },
     });
 

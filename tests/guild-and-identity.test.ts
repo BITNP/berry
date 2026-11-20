@@ -961,3 +961,69 @@ test("Duplicate QQ bindings are rejected and guild_replace_members updates node 
   assert.equal(audits[0]!.targetTitle, "接入监控告警");
   assert.equal(audits[0]!.error, null);
 });
+
+test("GuildInternalClient.listNodeTree returns all roots and nested children beyond 30 nodes", async (t) => {
+  const flatNodes = [
+    ...Array.from({ length: 10 }, (_, idx) => ({
+      id: idx + 1,
+      parentId: null,
+      title: `根项目 ${idx + 1}`,
+      dueAt: null,
+      completedAt: idx === 1 ? "2026-11-10T00:00:00Z" : null,
+      tags: ["项目"],
+      sortOrder: idx,
+      childCount: idx < 5 ? 6 : 0,
+      commentCount: 0,
+      myRelation: null,
+      updatedAt: "2026-11-20T00:00:00Z",
+    })),
+    ...Array.from({ length: 30 }, (_, idx) => ({
+      id: 100 + idx,
+      parentId: (idx % 5) + 1,
+      title: `子任务 ${idx + 1}`,
+      dueAt: null,
+      completedAt: null,
+      tags: [],
+      sortOrder: idx,
+      childCount: 0,
+      commentCount: 0,
+      myRelation: null,
+      updatedAt: "2026-11-20T00:00:00Z",
+    })),
+  ];
+
+  const guildStub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/api/internal/nodes") {
+      res.end(JSON.stringify(flatNodes));
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      guildApiUrl: guildStub.url,
+      guildInternalToken: "guild-sec",
+      guildPublicUrl: "https://home.bitnp.net",
+    },
+    {},
+    t,
+  );
+
+  const tree = await app.guild.listNodeTree("sub-admin");
+
+  assert.equal(tree.totalNodes, 40);
+  assert.equal(tree.rootCount, 10);
+  assert.equal(tree.roots.length, 10);
+  assert.equal(tree.roots[0]!.children.length, 6);
+  assert.equal(tree.roots[1]!.completed, true);
+  assert.equal(tree.roots[9]!.title, "根项目 10");
+
+  const searchAll = await app.guild.searchNodes("sub-admin", "");
+
+  assert.equal(searchAll.length, 40);
+});
