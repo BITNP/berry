@@ -306,4 +306,27 @@ export class MessagesStore {
 
     return rows.reverse().map(decodeMessage);
   }
+
+  public async listKnownUsers(
+    limit = 300,
+  ): Promise<{ userId: string; name: string }[]> {
+    const capped = Math.min(500, Math.max(1, limit));
+    const res = await sql<{ user_id: string; sender_name: string }>`
+      select m.user_id, m.sender_name
+      from messages m
+      inner join (
+        select user_id, max(id) as max_id
+        from messages
+        where is_bot = 0 and user_id != ''
+        group by user_id
+      ) latest on m.id = latest.max_id
+      order by m.sent_at desc, m.id desc
+      limit ${capped}
+    `.execute(this.#database.db);
+
+    return res.rows.map((row) => ({
+      userId: row.user_id,
+      name: row.sender_name.trim(),
+    }));
+  }
 }

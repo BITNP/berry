@@ -45,7 +45,7 @@ const SCOPE_META: Record<
 };
 
 const message = useMessage();
-const { chatOptions } = useChatOptions();
+const { chats, users, chatOptions, userOptions } = useChatOptions();
 
 const loading = ref(false);
 const saving = ref(false);
@@ -54,22 +54,60 @@ const filterScope = ref<MemoryScope | null>(null);
 const filterOwnerId = ref<string | null>(null);
 const filterSearch = ref("");
 
-const ownerFilterOptions = computed(() => [
-  { label: "全局 (global)", value: "global" },
-  ...chatOptions.value,
-]);
+const chatTitleByKey = computed(
+  () => new Map(chats.value.map((c) => [c.chatKey, c.title])),
+);
+const userNameById = computed(
+  () => new Map(users.value.map((u) => [u.userId, u.name])),
+);
+
+function formatOwner(scope: MemoryScope, ownerId: string): string {
+  if (scope === "global" || ownerId === "global") {
+    return "全局";
+  }
+
+  if (scope === "chat") {
+    const title = chatTitleByKey.value.get(ownerId);
+
+    return title ? `${title} (${ownerId})` : ownerId;
+  }
+
+  const name = userNameById.value.get(ownerId);
+
+  return name && name !== ownerId ? `${name} (${ownerId})` : ownerId;
+}
+
+const ownerFilterOptions = computed(() => {
+  if (filterScope.value === "global") {
+    return [{ label: "全局 (global)", value: "global" }];
+  }
+
+  if (filterScope.value === "chat") {
+    return chatOptions.value;
+  }
+
+  if (filterScope.value === "user") {
+    return userOptions.value;
+  }
+
+  return [
+    { label: "全局 (global)", value: "global" },
+    ...chatOptions.value,
+    ...userOptions.value,
+  ];
+});
 
 const modalOpen = ref(false);
 const isEdit = ref(false);
 const form = ref<{
   scope: MemoryScope;
-  ownerId: string;
+  ownerId: string | null;
   key: string;
   summary: string;
   content: string;
 }>({
   scope: "chat",
-  ownerId: "",
+  ownerId: null,
   key: "",
   summary: "",
   content: "",
@@ -87,7 +125,8 @@ const visibleItems = computed(() => {
       row.key.toLowerCase().includes(kw) ||
       row.summary.toLowerCase().includes(kw) ||
       row.content.toLowerCase().includes(kw) ||
-      row.ownerId.toLowerCase().includes(kw),
+      row.ownerId.toLowerCase().includes(kw) ||
+      formatOwner(row.scope, row.ownerId).toLowerCase().includes(kw),
   );
 });
 
@@ -120,8 +159,8 @@ async function loadMemories() {
 function openCreate() {
   isEdit.value = false;
   form.value = {
-    scope: "chat",
-    ownerId: "",
+    scope: filterScope.value ?? "chat",
+    ownerId: filterScope.value === "global" ? "global" : null,
     key: "",
     summary: "",
     content: "",
@@ -145,20 +184,41 @@ function handleScopeChange(scope: MemoryScope) {
   form.value.scope = scope;
 
   if (!isEdit.value) {
-    if (scope === "global") {
-      form.value.ownerId = "global";
-    } else if (form.value.ownerId === "global") {
-      form.value.ownerId = "";
-    }
+    form.value.ownerId = scope === "global" ? "global" : null;
   }
 }
 
+function normalizeOwnerId(scope: MemoryScope, raw: string | null): string {
+  if (scope === "global") {
+    return "global";
+  }
+
+  const trimmed = (raw ?? "").trim();
+
+  if (!trimmed) {
+    return "";
+  }
+
+  if (scope === "chat") {
+    return /^\d+$/.test(trimmed) ? `group:${trimmed}` : trimmed;
+  }
+
+  return trimmed.startsWith("private:")
+    ? trimmed.slice("private:".length)
+    : trimmed;
+}
+
 async function handleSave() {
-  const ownerId =
-    form.value.scope === "global" ? "global" : form.value.ownerId.trim();
+  const ownerId = normalizeOwnerId(form.value.scope, form.value.ownerId);
 
   if (!ownerId || !form.value.key.trim() || !form.value.summary.trim()) {
-    message.warning("请填写归属 ID、键名和摘要");
+    message.warning(
+      form.value.scope === "global"
+        ? "请填写键名和摘要"
+        : form.value.scope === "user"
+          ? "请选择或输入目标成员，并填写键名和摘要"
+          : "请选择或输入目标会话，并填写键名和摘要",
+    );
 
     return;
   }
@@ -219,8 +279,9 @@ const columns: DataTableColumns<MemoryRow> = [
   {
     title: "归属",
     key: "ownerId",
-    width: 145,
-    render: (row) => h("span", { class: "mono" }, row.ownerId),
+    width: 196,
+    ellipsis: { tooltip: true },
+    render: (row) => formatOwner(row.scope, row.ownerId),
   },
   {
     title: "键名",
@@ -381,20 +442,31 @@ onMounted(() => {
           />
         </NFormItem>
         <NFormItem
-          label="归属 ID（全局固定 global，群聊用 group:群号，成员用 QQ 号）"
+          v-if="form.scope !== 'global'"
+          :label="form.scope === 'user' ? '目标成员' : '目标会话'"
         >
           <NSelect
-            v-if="form.scope === 'chat' && !isEdit"
+            v-if="!isEdit && form.scope === 'chat'"
             v-model:value="form.ownerId"
+            clearable
             filterable
             :options="chatOptions"
-            placeholder="选择群聊或输入 group:群号"
+            placeholder="搜索群名/私聊，或直接输入群号"
+            tag
+          />
+          <NSelect
+            v-else-if="!isEdit && form.scope === 'user'"
+            v-model:value="form.ownerId"
+            clearable
+            filterable
+            :options="userOptions"
+            placeholder="搜索昵称/QQ 号，或直接输入新 QQ 号"
             tag
           />
           <NInput
             v-else
-            v-model:value="form.ownerId"
-            :disabled="isEdit || form.scope === 'global'"
+            disabled
+            :value="formatOwner(form.scope, form.ownerId ?? '')"
           />
         </NFormItem>
         <NFormItem label="记忆键名">

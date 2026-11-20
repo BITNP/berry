@@ -758,6 +758,48 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
   );
 
   router.get(
+    "/api/admin/users",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const [speakers, chats, userMemories] = await Promise.all([
+        berry.store.messages.listKnownUsers(300),
+        berry.store.chats.list(),
+        berry.store.memories.list({ scope: "user" }),
+      ]);
+
+      const byId = new Map<string, string>();
+
+      for (const s of speakers) {
+        if (s.userId && !byId.has(s.userId)) {
+          byId.set(s.userId, s.name);
+        }
+      }
+
+      for (const c of chats) {
+        if (c.kind === "private" && c.chatId) {
+          const existing = byId.get(c.chatId);
+
+          if (!existing && c.title.trim()) {
+            byId.set(c.chatId, c.title.trim());
+          } else if (!byId.has(c.chatId)) {
+            byId.set(c.chatId, "");
+          }
+        }
+      }
+
+      for (const mem of userMemories) {
+        if (mem.ownerId && !byId.has(mem.ownerId)) {
+          byId.set(mem.ownerId, "");
+        }
+      }
+
+      return {
+        items: [...byId.entries()].map(([userId, name]) => ({ userId, name })),
+      };
+    }),
+  );
+
+  router.get(
     "/api/admin/memories",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
