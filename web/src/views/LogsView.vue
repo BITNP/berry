@@ -410,7 +410,7 @@ const jobColumns: DataTableColumns<JobRow> = [
   {
     title: "会话",
     key: "chatKey",
-    width: 136,
+    width: 176,
     ellipsis: { tooltip: true },
     render: (row) => h("span", { class: "mono" }, row.chatKey),
   },
@@ -497,7 +497,8 @@ const deliveryColumns: DataTableColumns<DeliveryRow> = [
   {
     title: "会话",
     key: "chatKey",
-    width: 146,
+    width: 176,
+    ellipsis: { tooltip: true },
     render: (row) => h("span", { class: "mono" }, row.chatKey),
   },
   {
@@ -725,7 +726,7 @@ onMounted(() => {
             :data="visibleJobs"
             :loading="loadingJobs"
             :pagination="{ pageSize: 15 }"
-            :scroll-x="780"
+            :scroll-x="840"
             size="small"
           />
         </NTabPane>
@@ -770,7 +771,7 @@ onMounted(() => {
                 },
               })
             "
-            :scroll-x="800"
+            :scroll-x="840"
             size="small"
           />
         </NTabPane>

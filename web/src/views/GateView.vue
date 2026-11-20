@@ -203,7 +203,7 @@ const columns: DataTableColumns<GateDecisionRow> = [
   {
     title: "会话",
     key: "chatKey",
-    width: 126,
+    width: 176,
     ellipsis: { tooltip: true },
     render: (row) => h("span", { class: "mono" }, row.chatKey),
   },
@@ -376,7 +376,7 @@ onMounted(() => {
             onClick: () => openDetail(row),
           })
         "
-        :scroll-x="840"
+        :scroll-x="900"
         size="small"
       />
     </NCard>

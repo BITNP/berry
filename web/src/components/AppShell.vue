@@ -581,7 +581,7 @@ onUnmounted(() => {
 }
 
 .content-container {
-  max-width: 1280px;
+  max-width: 1600px;
   margin: 0 auto;
   padding: 18px 20px 32px;
 }

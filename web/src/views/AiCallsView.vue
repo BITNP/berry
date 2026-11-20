@@ -368,7 +368,7 @@ const callColumns: DataTableColumns<LlmCallRow> = [
   {
     title: "模型",
     key: "model",
-    width: 136,
+    width: 176,
     ellipsis: { tooltip: true },
     render: (row) => h("span", { class: "mono" }, row.model),
   },
@@ -417,14 +417,14 @@ const callColumns: DataTableColumns<LlmCallRow> = [
   {
     title: "会话",
     key: "chatKey",
-    width: 124,
+    width: 176,
     ellipsis: { tooltip: true },
     render: (row) => h("span", { class: "mono" }, row.chatKey || "全局"),
   },
   {
     title: "Tokens",
     key: "tokens",
-    width: 108,
+    width: 116,
     align: "right",
     render: (row) =>
       h(
@@ -604,7 +604,7 @@ onMounted(() => {
                 onClick: () => openDetail(row),
               })
             "
-            :scroll-x="960"
+            :scroll-x="1080"
             size="small"
           />
         </NTabPane>

@@ -386,7 +386,7 @@ const columns: DataTableColumns<ScheduleRow> = [
   {
     title: "目标会话",
     key: "chatKey",
-    width: 132,
+    width: 176,
     ellipsis: { tooltip: true },
     render: (row) =>
       row.chatKey
