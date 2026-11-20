@@ -1,4 +1,6 @@
 import { EventSourceParserStream } from "eventsource-parser/stream";
+import type { $Fetch } from "ofetch";
+import { FetchError, ofetch } from "ofetch";
 
 import type { EnvConfig } from "../config/env.ts";
 
@@ -151,6 +153,7 @@ export class GuildInternalClient {
   #apiUrl: string;
   #token: string;
   #publicUrl: string;
+  #api: $Fetch;
 
   constructor(
     env: Pick<
@@ -161,6 +164,12 @@ export class GuildInternalClient {
     this.#apiUrl = env.guildApiUrl.replace(/\/+$/, "");
     this.#token = env.guildInternalToken;
     this.#publicUrl = env.guildPublicUrl.replace(/\/+$/, "");
+    this.#api = ofetch.create({
+      baseURL: this.#apiUrl,
+      timeout: 15_000,
+      retry: 0,
+      headers: { Authorization: `Bearer ${this.#token}` },
+    });
   }
 
   public get enabled(): boolean {
@@ -380,49 +389,20 @@ export class GuildInternalClient {
   }
 
   public listEvents(after = 0, limit = 50): Promise<GuildEventListResponse> {
-    const params = new URLSearchParams({
-      after: String(after),
-      limit: String(limit),
+    return this.#serviceGet<GuildEventListResponse>("/api/internal/events", {
+      after,
+      limit,
     });
-
-    return this.#serviceGet<GuildEventListResponse>(
-      `/api/internal/events?${params.toString()}`,
-    );
   }
 
   public listDueNodes(
     query: GuildDueNodesParams = {},
   ): Promise<GuildDueNodesResponse> {
-    const params = new URLSearchParams();
-
-    if (query.since) {
-      params.set("since", query.since);
-    }
-
-    if (query.advanceHours !== undefined) {
-      params.set("advanceHours", String(query.advanceHours));
-    }
-
-    if (query.dueAfter) {
-      params.set("dueAfter", query.dueAfter);
-    }
-
-    if (query.dueBefore) {
-      params.set("dueBefore", query.dueBefore);
-    }
-
-    if (query.includeOverdue !== undefined) {
-      params.set("includeOverdue", String(query.includeOverdue));
-    }
-
-    if (query.limit !== undefined) {
-      params.set("limit", String(query.limit));
-    }
-
-    const qs = params.toString();
-
     return this.#serviceGet<GuildDueNodesResponse>(
-      qs ? `/api/internal/due-nodes?${qs}` : "/api/internal/due-nodes",
+      "/api/internal/due-nodes",
+      Object.fromEntries(
+        Object.entries(query).filter(([, value]) => value !== undefined),
+      ),
     );
   }
 
@@ -430,22 +410,12 @@ export class GuildInternalClient {
     start?: string,
     end?: string,
   ): Promise<GuildActivitySummary> {
-    const params = new URLSearchParams();
-
-    if (start) {
-      params.set("start", start);
-    }
-
-    if (end) {
-      params.set("end", end);
-    }
-
-    const qs = params.toString();
-
     return this.#serviceGet<GuildActivitySummary>(
-      qs
-        ? `/api/internal/activity-summary?${qs}`
-        : "/api/internal/activity-summary",
+      "/api/internal/activity-summary",
+      {
+        ...(start ? { start } : {}),
+        ...(end ? { end } : {}),
+      },
     );
   }
 
@@ -456,16 +426,17 @@ export class GuildInternalClient {
   ): AsyncGenerator<GuildSseFrame> {
     this.#assertEnabled();
 
-    const qs =
-      after === undefined ? "" : `?after=${encodeURIComponent(String(after))}`;
-    const res = await fetch(`${this.#apiUrl}/api/internal/events/stream${qs}`, {
+    const res = await this.#api.raw("/api/internal/events/stream", {
       method: "GET",
+      query: after === undefined ? undefined : { after },
       headers: {
-        Authorization: `Bearer ${this.#token}`,
         Accept: "text/event-stream",
         ...(after === undefined ? {} : { "Last-Event-ID": String(after) }),
       },
+      responseType: "stream",
+      timeout: undefined,
       signal,
+      ignoreResponseError: true,
     });
 
     if (!res.ok) {
@@ -498,10 +469,11 @@ export class GuildInternalClient {
     }
   }
 
-  #serviceGet<T>(path: string): Promise<T> {
-    return this.#fetchJson<T>("GET", path, {
-      Authorization: `Bearer ${this.#token}`,
-    });
+  #serviceGet<T>(
+    path: string,
+    query?: Record<string, string | number | boolean>,
+  ): Promise<T> {
+    return this.#fetchJson<T>("GET", path, { query });
   }
 
   #request<T>(
@@ -510,16 +482,10 @@ export class GuildInternalClient {
     actorSubject: string,
     body?: unknown,
   ): Promise<T> {
-    return this.#fetchJson<T>(
-      method,
-      path,
-      {
-        "Authorization": `Bearer ${this.#token}`,
-        "X-Act-As-Subject": actorSubject,
-        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-      },
+    return this.#fetchJson<T>(method, path, {
+      headers: { "X-Act-As-Subject": actorSubject },
       body,
-    );
+    });
   }
 
   #assertEnabled(): void {
@@ -533,29 +499,31 @@ export class GuildInternalClient {
   async #fetchJson<T>(
     method: string,
     path: string,
-    headers: Record<string, string>,
-    body?: unknown,
+    options: {
+      query?: Record<string, string | number | boolean>;
+      headers?: Record<string, string>;
+      body?: unknown;
+    } = {},
   ): Promise<T> {
     this.#assertEnabled();
 
-    const res = await fetch(`${this.#apiUrl}${path}`, {
-      method,
-      headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      signal: AbortSignal.timeout(15_000),
-    });
+    try {
+      return await this.#api<T>(path, {
+        method,
+        query: options.query,
+        headers: options.headers,
+        body: options.body === undefined ? undefined : (options.body as object),
+      });
+    } catch (error) {
+      if (error instanceof FetchError && error.statusCode) {
+        const data = error.data as { message?: string; error?: string } | null;
 
-    const data = (await res.json().catch(() => ({}))) as {
-      message?: string;
-      error?: string;
-    };
+        throw new Error(
+          data?.message || data?.error || `Guild API HTTP ${error.statusCode}`,
+        );
+      }
 
-    if (!res.ok) {
-      throw new Error(
-        data.message || data.error || `Guild API HTTP ${res.status}`,
-      );
+      throw error;
     }
-
-    return data as T;
   }
 }

@@ -39,12 +39,14 @@ test("agent loop: ModelIds isolation, one-shot OutputResult feed, compaction, an
     }
 
     userMessages.push(reqJson.messages.at(-1)?.content ?? "");
+    const promptTokens = reqJson.messages.length > 20 ? 3200 : 180;
+
     res.end(
       JSON.stringify(
         chatReply(
           { units: [{ kind: "qq_reply", text: "好的" }] },
           {
-            prompt_tokens: 180,
+            prompt_tokens: promptTokens,
             completion_tokens: 20,
             prompt_tokens_details: { cached_tokens: 120 },
           },

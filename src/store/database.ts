@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Kysely, SqliteDialect } from "kysely";
 
 import type { BerryDb, BerryTables } from "./schema.ts";
-import { createBerryTables } from "./schema.ts";
+import { migrateBerryDatabase } from "./schema.ts";
 
 export class BerryDatabase {
   public readonly db: BerryDb;
@@ -87,7 +87,7 @@ export class BerryDatabase {
       }),
     });
 
-    await createBerryTables(db);
+    await migrateBerryDatabase(db);
 
     return new BerryDatabase(db, sqlite, {
       dataDir,

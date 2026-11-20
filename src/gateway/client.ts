@@ -1,5 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
 
+import type { $Fetch, FetchResponse } from "ofetch";
+import { ofetch } from "ofetch";
+
 import type { EnvConfig } from "../config/env.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
 import { isGroupAllowed } from "../config/settings.ts";
@@ -86,6 +89,7 @@ export class MessageGatewayClient {
   #baseUrl: string;
   #account: string;
   #token: string;
+  #api: $Fetch;
   #store: Store;
   #logger = new Logger("gateway");
   #pendingTracks = new Set<Promise<void>>();
@@ -104,6 +108,11 @@ export class MessageGatewayClient {
     this.#baseUrl = env.gatewayUrl.replace(/\/+$/, "");
     this.#account = env.gatewayAccount || "qq";
     this.#token = env.gatewayToken;
+    this.#api = ofetch.create({
+      baseURL: this.#baseUrl,
+      retry: 0,
+      headers: { Authorization: `Bearer ${this.#token}` },
+    });
     this.#store = store;
     this.#pollDelaysMs = options.pollDelaysMs?.length
       ? options.pollDelaysMs
@@ -126,8 +135,10 @@ export class MessageGatewayClient {
     }
 
     try {
-      const res = await fetch(`${this.#baseUrl}/healthz`, {
-        signal: AbortSignal.timeout(4000),
+      const res = await ofetch.raw(`${this.#baseUrl}/healthz`, {
+        timeout: 4000,
+        retry: 0,
+        ignoreResponseError: true,
       });
 
       if (!res.ok) {
@@ -156,18 +167,20 @@ export class MessageGatewayClient {
       throw new Error("message-gateway is not configured");
     }
 
-    const url = `${this.#baseUrl}/api/v1/accounts/${encodeURIComponent(this.#account)}/${action}`;
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${this.#token}`,
-        "Content-Type": "application/json",
+    const res = await this.#api.raw<GatewayEnvelope<T>>(
+      `/api/v1/accounts/${encodeURIComponent(this.#account)}/${action}`,
+      {
+        method: "POST",
+        body: params,
+        timeout: 30_000,
+        ignoreResponseError: true,
       },
-      body: JSON.stringify(params),
-      signal: AbortSignal.timeout(30_000),
-    });
+    );
 
-    const body = (await res.json().catch(() => ({}))) as GatewayEnvelope<T>;
+    const body =
+      res._data && typeof res._data === "object"
+        ? res._data
+        : ({} as GatewayEnvelope<T>);
 
     if (res.status >= 400) {
       throw new Error(
@@ -854,7 +867,7 @@ export class MessageGatewayClient {
     gatewayDeliveryId: string,
     ctx: SentMessageContext,
   ): Promise<void> {
-    const url = `${this.#baseUrl}/api/v1/accounts/${encodeURIComponent(this.#account)}/message-status/${encodeURIComponent(gatewayDeliveryId)}`;
+    const statusPath = `/api/v1/accounts/${encodeURIComponent(this.#account)}/message-status/${encodeURIComponent(gatewayDeliveryId)}`;
     const startedAt = Date.now();
     const deadline = startedAt + this.#maxTrackMs;
     let attempt = 0;
@@ -883,20 +896,20 @@ export class MessageGatewayClient {
 
       attempt++;
 
-      let res: Response;
+      let res: FetchResponse<GatewayStatusResponse>;
       let state: GatewayStatusResponse | null = null;
 
       try {
-        res = await fetch(url, {
-          headers: { Authorization: `Bearer ${this.#token}` },
+        res = await this.#api.raw<GatewayStatusResponse>(statusPath, {
           signal: AbortSignal.any([
             AbortSignal.timeout(10_000),
             this.#abort.signal,
           ]),
+          ignoreResponseError: true,
         });
 
-        if (res.ok) {
-          state = (await res.json()) as GatewayStatusResponse;
+        if (res.ok && res._data) {
+          state = res._data;
         }
       } catch (error) {
         if (this.#abort.signal.aborted) {

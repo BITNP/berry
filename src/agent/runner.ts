@@ -19,7 +19,7 @@ import type {
 } from "../types.ts";
 import { parseChatKey } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
-import { errorMessage, estimateTokens, formatDateTime } from "../utils/time.ts";
+import { errorMessage, formatDateTime } from "../utils/time.ts";
 import { runChatToolLoop } from "./loop.ts";
 import { ModelIds } from "./model-ids.ts";
 import { buildStaticSystemPrompt, resultsAsText } from "./prompt.ts";
@@ -339,7 +339,7 @@ export class BerryAgent {
       );
 
       if (updated) {
-        await this.#maybeCompact(settings);
+        await this.#maybeCompact(settings, result.lastPromptTokens);
       }
     }
 
@@ -416,7 +416,10 @@ export class BerryAgent {
     });
   }
 
-  async #maybeCompact(settings: RuntimeSettings): Promise<void> {
+  async #maybeCompact(
+    settings: RuntimeSettings,
+    lastPromptTokens: number,
+  ): Promise<void> {
     if (this.#compacting) {
       return;
     }
@@ -432,21 +435,15 @@ export class BerryAgent {
       settings.mainModel.contextTokens -
       settings.mainModel.maxOutputTokens -
       4096;
-    const totalTokens =
-      estimateTokens(conversation.summary) +
-      conversation.messages.reduce(
-        (sum, msg) => sum + estimateTokens(JSON.stringify(msg)),
-        0,
-      );
+    const overTokenBudget = budget > 0 && lastPromptTokens >= budget * 0.75;
+    const overMessageLimit =
+      conversation.messages.length >= COMPACTION_MAX_MESSAGES;
 
-    if (
-      totalTokens < budget * 0.75 &&
-      conversation.messages.length < COMPACTION_MAX_MESSAGES
-    ) {
+    if (!overTokenBudget && !overMessageLimit) {
       return;
     }
 
-    // Keep the most recent turns within 30% budget intact along clean user-turn boundaries.
+    // Split along clean user-turn boundaries without heuristic token estimation.
     const userIndices: number[] = [];
 
     for (let i = 0; i < conversation.messages.length; i++) {
@@ -459,24 +456,16 @@ export class BerryAgent {
       return;
     }
 
-    let turnCursor = Math.max(
-      1,
-      userIndices.length - COMPACTION_KEEP_RECENT_TURNS,
-    );
-
-    while (turnCursor < userIndices.length - 1) {
-      const splitAt = userIndices[turnCursor]!;
-      const keptTokens = conversation.messages
-        .slice(splitAt)
-        .reduce((sum, m) => sum + estimateTokens(JSON.stringify(m)), 0);
-
-      if (keptTokens <= budget * 0.3) {
-        break;
-      }
-
-      turnCursor++;
-    }
-
+    const keepTurns = overTokenBudget
+      ? Math.max(
+          1,
+          Math.min(
+            COMPACTION_KEEP_RECENT_TURNS,
+            Math.floor((userIndices.length * 0.3 * budget) / lastPromptTokens),
+          ),
+        )
+      : Math.min(COMPACTION_KEEP_RECENT_TURNS, userIndices.length - 1);
+    const turnCursor = Math.max(1, userIndices.length - keepTurns);
     const splitIndex = userIndices[turnCursor]!;
 
     if (splitIndex <= 0) {
@@ -519,7 +508,7 @@ export class BerryAgent {
       if (saved) {
         this.#logger.info("Conversation compacted", {
           consumedMessages: splitIndex,
-          estimatedTokens: totalTokens,
+          lastPromptTokens,
         });
       }
     } catch (error) {

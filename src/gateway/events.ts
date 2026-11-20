@@ -1,6 +1,4 @@
-import { setTimeout as delay } from "node:timers/promises";
-
-import type { RawData } from "ws";
+import ReconnectingWebSocket from "partysocket/ws";
 import WebSocket from "ws";
 
 import type { EnvConfig } from "../config/env.ts";
@@ -41,22 +39,6 @@ export interface OneBotEvent {
   };
 }
 
-function rawDataToText(data: RawData): string {
-  if (typeof data === "string") {
-    return data;
-  }
-
-  if (Buffer.isBuffer(data)) {
-    return data.toString("utf8");
-  }
-
-  if (Array.isArray(data)) {
-    return Buffer.concat(data).toString("utf8");
-  }
-
-  return Buffer.from(data).toString("utf8");
-}
-
 function buildEventWsUrl(baseUrl: string, account: string): string {
   const url = new URL(
     `${baseUrl.replace(/\/+$/, "")}/api/v1/accounts/${encodeURIComponent(account || "qq")}/ws/event`,
@@ -78,9 +60,7 @@ export class GatewayEventSubscriber {
   #logger = new Logger("gateway:events");
   #started = false;
   #connected = false;
-  #stopController: AbortController | null = null;
-  #activeWs: WebSocket | null = null;
-  #loopPromise: Promise<void> | null = null;
+  #socket: ReconnectingWebSocket | null = null;
   #eventQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -113,35 +93,87 @@ export class GatewayEventSubscriber {
     }
 
     this.#started = true;
-    this.#stopController?.abort();
-    this.#stopController = new AbortController();
-    this.#loopPromise = this.#runLoop().finally(() => {
-      this.#loopPromise = null;
+    const wsUrl = buildEventWsUrl(this.#baseUrl, this.#account);
+    const socket = new ReconnectingWebSocket(wsUrl, undefined, {
+      WebSocket: this.#createSocketClass(),
+      minReconnectionDelay: RECONNECT_MIN_MS,
+      maxReconnectionDelay: RECONNECT_MAX_MS,
+      reconnectionDelayGrowFactor: 2,
+      minUptime: RECONNECT_MAX_MS,
+      connectionTimeout: 10_000,
+      startClosed: true,
     });
+
+    socket.binaryType = "arraybuffer";
+    socket.addEventListener("open", () => {
+      if (!this.#started) {
+        socket.close(1000, "shutdown");
+
+        return;
+      }
+
+      this.#connected = true;
+      this.#logger.info("Connected to gateway event stream", {
+        account: this.#account,
+      });
+    });
+
+    socket.addEventListener("message", (event) => {
+      if (!this.#started || typeof event.data !== "string") {
+        return;
+      }
+
+      let parsed: unknown;
+
+      try {
+        parsed = JSON.parse(event.data);
+      } catch (error) {
+        this.#logger.warn("Ignored malformed OneBot WS frame", {
+          error: errorMessage(error),
+        });
+
+        return;
+      }
+
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return;
+      }
+
+      this.#enqueueEvent(parsed);
+    });
+
+    socket.addEventListener("error", (event) => {
+      this.#logger.warn("Gateway event stream error", {
+        error: event.message || errorMessage(event.error),
+      });
+    });
+
+    socket.addEventListener("close", (event) => {
+      const wasConnected = this.#connected;
+
+      this.#connected = false;
+
+      if (wasConnected) {
+        this.#logger.info("Gateway event stream closed", {
+          code: event.code,
+          reason: event.reason || undefined,
+        });
+      }
+    });
+
+    this.#socket = socket;
+    socket.reconnect();
   }
 
   public async stop(): Promise<void> {
     this.#started = false;
     this.#connected = false;
-    this.#stopController?.abort();
-    this.#stopController = null;
 
-    const ws = this.#activeWs;
+    const socket = this.#socket;
 
-    if (ws) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close(1000, "shutdown");
-        const forceTimer = setTimeout(() => {
-          ws.terminate();
-        }, 500);
+    this.#socket = null;
+    socket?.close(1000, "shutdown");
 
-        forceTimer.unref();
-      } else {
-        ws.terminate();
-      }
-    }
-
-    await this.#loopPromise?.catch(() => undefined);
     await this.#eventQueue.catch(() => undefined);
   }
 
@@ -314,161 +346,76 @@ export class GatewayEventSubscriber {
     return { accepted: true, messageId: message.id };
   }
 
-  async #runLoop(): Promise<void> {
-    let backoffMs = RECONNECT_MIN_MS;
-    const wsUrl = buildEventWsUrl(this.#baseUrl, this.#account);
+  #createSocketClass() {
+    const token = this.#token;
+    const account = this.#account;
+    const logger = this.#logger;
 
-    while (this.#started) {
-      const openedAt = await this.#connectOnce(wsUrl);
-
-      if (!this.#started) {
-        break;
-      }
-
-      if (openedAt > 0 && Date.now() - openedAt >= RECONNECT_MAX_MS) {
-        backoffMs = RECONNECT_MIN_MS;
-      }
-
-      await delay(backoffMs, undefined, {
-        ref: false,
-        signal: this.#stopController?.signal,
-      }).catch(() => undefined);
-      backoffMs = Math.min(backoffMs * 2, RECONNECT_MAX_MS);
-    }
-  }
-
-  #connectOnce(wsUrl: string): Promise<number> {
-    return new Promise((resolve) => {
-      const ws = new WebSocket(wsUrl, {
-        headers: {
-          Authorization: `Bearer ${this.#token}`,
-        },
-        handshakeTimeout: 10_000,
-      });
-
-      this.#activeWs = ws;
-
-      let settled = false;
-      let pingTimer: ReturnType<typeof setInterval> | null = null;
-      let alive = true;
-      let openedAt = 0;
-
-      const settle = () => {
-        if (pingTimer) {
-          clearInterval(pingTimer);
-          pingTimer = null;
-        }
-
-        if (this.#activeWs === ws) {
-          this.#activeWs = null;
-        }
-
-        this.#connected = false;
-
-        if (!settled) {
-          settled = true;
-          resolve(openedAt);
-        }
-      };
-
-      ws.on("open", () => {
-        if (!this.#started) {
-          ws.close(1000, "shutdown");
-
-          return;
-        }
-
-        openedAt = Date.now();
-        this.#connected = true;
-        this.#logger.info("Connected to gateway event stream", {
-          account: this.#account,
+    return class AuthenticatedWebSocket extends WebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols, {
+          headers: { Authorization: `Bearer ${token}` },
+          handshakeTimeout: 10_000,
         });
 
-        pingTimer = setInterval(() => {
-          if (!alive) {
-            this.#logger.warn("Gateway event stream ping timeout");
-            ws.terminate();
+        let alive = true;
+        let pingTimer: ReturnType<typeof setInterval> | null = null;
 
-            return;
+        const clearPing = () => {
+          if (pingTimer) {
+            clearInterval(pingTimer);
+            pingTimer = null;
+          }
+        };
+
+        this.on("open", () => {
+          alive = true;
+          pingTimer = setInterval(() => {
+            if (!alive) {
+              logger.warn("Gateway event stream ping timeout");
+              this.terminate();
+
+              return;
+            }
+
+            alive = false;
+            this.ping();
+          }, PING_INTERVAL_MS);
+          pingTimer.unref();
+        });
+
+        this.on("pong", () => {
+          alive = true;
+        });
+
+        this.on("unexpected-response", (_req, res) => {
+          res.resume();
+          const status = res.statusCode ?? 0;
+
+          if (status === 401 || status === 403) {
+            logger.error("Gateway event stream authentication failed", {
+              status,
+              account,
+            });
+          } else if (status === 503) {
+            logger.warn("Gateway event stream unavailable; retrying", {
+              status,
+              account,
+            });
+          } else {
+            logger.warn("Unexpected gateway WebSocket handshake response", {
+              status,
+              account,
+            });
           }
 
-          alive = false;
-          ws.ping();
-        }, PING_INTERVAL_MS);
-        pingTimer.unref();
-      });
-
-      ws.on("pong", () => {
-        alive = true;
-      });
-
-      ws.on("message", (data, isBinary) => {
-        if (isBinary || !this.#started) {
-          return;
-        }
-
-        const raw = rawDataToText(data);
-        let parsed: unknown;
-
-        try {
-          parsed = JSON.parse(raw);
-        } catch (error) {
-          this.#logger.warn("Ignored malformed OneBot WS frame", {
-            error: errorMessage(error),
-          });
-
-          return;
-        }
-
-        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-          return;
-        }
-
-        this.#enqueueEvent(parsed);
-      });
-
-      ws.on("unexpected-response", (_req, res) => {
-        res.resume();
-        const status = res.statusCode ?? 0;
-
-        if (status === 401 || status === 403) {
-          this.#logger.error("Gateway event stream authentication failed", {
-            status,
-            account: this.#account,
-          });
-        } else if (status === 503) {
-          this.#logger.warn("Gateway event stream unavailable; retrying", {
-            status,
-            account: this.#account,
-          });
-        } else {
-          this.#logger.warn("Unexpected gateway WebSocket handshake response", {
-            status,
-            account: this.#account,
-          });
-        }
-
-        ws.terminate();
-        settle();
-      });
-
-      ws.on("error", (error) => {
-        this.#logger.warn("Gateway event stream error", {
-          error: errorMessage(error),
+          clearPing();
+          this.terminate();
         });
-      });
 
-      ws.on("close", (code, reason) => {
-        if (openedAt > 0) {
-          this.#logger.info("Gateway event stream closed", {
-            code,
-            reason: reason.toString("utf8") || undefined,
-          });
-        }
-
-        settle();
-      });
-    });
+        this.on("close", clearPing);
+      }
+    };
   }
 
   #enqueueEvent(event: OneBotEvent): void {

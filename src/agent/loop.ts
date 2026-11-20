@@ -26,6 +26,7 @@ export interface ToolLoopResult<T> {
   structured: T;
   turnMessages: TurnMessage[];
   mutated: boolean;
+  lastPromptTokens: number;
 }
 
 export async function runChatToolLoop<S extends TSchema>(options: {
@@ -70,6 +71,7 @@ export async function runChatToolLoop<S extends TSchema>(options: {
   let mutated = false;
   let corrections = 0;
   let prevLoggedLen = 0;
+  let lastPromptTokens = 0;
 
   const thinkingEffort = options.thinkingEffort ?? "none";
 
@@ -119,6 +121,10 @@ export async function runChatToolLoop<S extends TSchema>(options: {
     });
 
     const choice = completion.choices[0];
+
+    if (typeof completion.usage?.prompt_tokens === "number") {
+      lastPromptTokens = completion.usage.prompt_tokens;
+    }
 
     if (!choice?.message) {
       throw new Error("模型未返回有效回复");
@@ -197,6 +203,7 @@ export async function runChatToolLoop<S extends TSchema>(options: {
         structured: validation.value,
         turnMessages,
         mutated,
+        lastPromptTokens,
       };
     }
 

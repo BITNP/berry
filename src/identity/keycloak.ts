@@ -1,6 +1,8 @@
 import type { SitePermissions } from "bitnp-authz";
 import { fromRoles } from "bitnp-authz";
 import { LRUCache } from "lru-cache";
+import type { $Fetch, FetchResponse } from "ofetch";
+import { FetchError, ofetch } from "ofetch";
 
 import type { EnvConfig } from "../config/env.ts";
 import { Logger } from "../utils/logger.ts";
@@ -33,6 +35,7 @@ interface KeycloakUserRaw {
 
 export class IdentityDirectory {
   #adminUrl: string;
+  #adminApi: $Fetch;
   #tokenUrl: string;
   #clientId: string;
   #clientSecret: string;
@@ -61,6 +64,12 @@ export class IdentityDirectory {
     >,
   ) {
     this.#adminUrl = env.keycloakAdminUrl.replace(/\/+$/, "");
+    this.#adminApi = ofetch.create({
+      baseURL: this.#adminUrl,
+      timeout: 10_000,
+      retry: 0,
+      headers: { Accept: "application/json" },
+    });
     const issuerBase =
       env.oidcIssuer || this.#adminUrl.replace(/\/admin\/realms\//, "/realms/");
 
@@ -89,7 +98,9 @@ export class IdentityDirectory {
       return cached.user;
     }
 
-    const res = await this.#adminGet(`/users/${encodeURIComponent(subject)}`);
+    const res = await this.#adminGet<KeycloakUserRaw>(
+      `/users/${encodeURIComponent(subject)}`,
+    );
 
     if (res.status === 404) {
       this.#bySubject.set(subject, { user: null }, { ttl: NEGATIVE_TTL_MS });
@@ -97,12 +108,11 @@ export class IdentityDirectory {
       return null;
     }
 
-    if (!res.ok) {
+    if (!res.ok || !res._data) {
       throw new Error(`Keycloak user lookup failed: HTTP ${res.status}`);
     }
 
-    const raw = (await res.json()) as KeycloakUserRaw;
-    const user = await this.#hydrateUser(raw);
+    const user = await this.#hydrateUser(res._data);
     const resolved = user?.enabled ? user : null;
 
     this.#bySubject.set(
@@ -127,18 +137,17 @@ export class IdentityDirectory {
       return cached.user;
     }
 
-    const params = new URLSearchParams({
+    const res = await this.#adminGet<KeycloakUserRaw[]>("/users", {
       q: `${this.#qqAttr}:${clean}`,
       exact: "true",
-      max: "5",
+      max: 5,
     });
-    const res = await this.#adminGet(`/users?${params.toString()}`);
 
     if (!res.ok) {
       throw new Error(`Keycloak QQ lookup failed: HTTP ${res.status}`);
     }
 
-    const candidates = (await res.json()) as KeycloakUserRaw[];
+    const candidates = res._data ?? [];
     const matchedRaws = candidates.filter(
       (raw) => raw.enabled !== false && this.#extractQQ(raw) === clean,
     );
@@ -194,17 +203,16 @@ export class IdentityDirectory {
       }
     }
 
-    const params = new URLSearchParams({
+    const res = await this.#adminGet<KeycloakUserRaw[]>("/users", {
       search: trimmed,
-      max: "15",
+      max: 15,
     });
-    const res = await this.#adminGet(`/users?${params.toString()}`);
 
     if (!res.ok) {
       throw new Error(`Keycloak member search failed: HTTP ${res.status}`);
     }
 
-    const rows = (await res.json()) as KeycloakUserRaw[];
+    const rows = res._data ?? [];
     const users: DirectoryUser[] = [];
 
     for (const raw of rows) {
@@ -227,15 +235,13 @@ export class IdentityDirectory {
       return null;
     }
 
-    const rolesRes = await this.#adminGet(
+    const rolesRes = await this.#adminGet<{ name?: string }[]>(
       `/users/${encodeURIComponent(raw.id)}/role-mappings/realm/composite`,
     );
     const roles: string[] = [];
 
-    if (rolesRes.ok) {
-      const roleObjects = (await rolesRes.json()) as { name?: string }[];
-
-      for (const item of roleObjects) {
+    if (rolesRes.ok && Array.isArray(rolesRes._data)) {
+      for (const item of rolesRes._data) {
         if (item.name?.trim()) {
           roles.push(item.name);
         }
@@ -279,24 +285,31 @@ export class IdentityDirectory {
     const credentials = Buffer.from(
       `${this.#clientId}:${this.#clientSecret}`,
     ).toString("base64");
-    const res = await fetch(this.#tokenUrl, {
-      method: "POST",
-      headers: {
-        "Authorization": `Basic ${credentials}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({ grant_type: "client_credentials" }),
-      signal: AbortSignal.timeout(10_000),
-    });
+    let body: { access_token: string; expires_in?: number };
 
-    if (!res.ok) {
-      throw new Error(`Keycloak token request failed: HTTP ${res.status}`);
+    try {
+      body = await ofetch<{ access_token: string; expires_in?: number }>(
+        this.#tokenUrl,
+        {
+          method: "POST",
+          timeout: 10_000,
+          retry: 0,
+          headers: {
+            "Authorization": `Basic ${credentials}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({ grant_type: "client_credentials" }),
+        },
+      );
+    } catch (error) {
+      if (error instanceof FetchError && error.statusCode) {
+        throw new Error(
+          `Keycloak token request failed: HTTP ${error.statusCode}`,
+        );
+      }
+
+      throw error;
     }
-
-    const body = (await res.json()) as {
-      access_token: string;
-      expires_in?: number;
-    };
 
     if (!body.access_token) {
       throw new Error("Keycloak token response missing access_token");
@@ -311,15 +324,16 @@ export class IdentityDirectory {
     return this.#token;
   }
 
-  async #adminGet(path: string): Promise<Response> {
+  async #adminGet<T>(
+    path: string,
+    query?: Record<string, string | number>,
+  ): Promise<FetchResponse<T>> {
     for (let attempt = 0; attempt < 2; attempt++) {
       const token = await this.#accessToken();
-      const res = await fetch(`${this.#adminUrl}${path}`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/json",
-        },
-        signal: AbortSignal.timeout(10_000),
+      const res = await this.#adminApi.raw<T>(path, {
+        query,
+        headers: { Authorization: `Bearer ${token}` },
+        ignoreResponseError: true,
       });
 
       if (res.status !== 401 || attempt === 1) {
