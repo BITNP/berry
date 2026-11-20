@@ -241,7 +241,9 @@ onUnmounted(() => {
         </div>
 
         <NMenu
+          :indent="0"
           :options="menuOptions"
+          :root-indent="16"
           :value="activeMenuKey"
           @update:value="handleSelectMenu"
         />
@@ -286,7 +288,9 @@ onUnmounted(() => {
       >
         <div @click="handleMobileMenuClick">
           <NMenu
+            :indent="0"
             :options="menuOptions"
+            :root-indent="16"
             :value="activeMenuKey"
             @update:value="handleSelectMenu"
           />
