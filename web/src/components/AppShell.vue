@@ -100,21 +100,10 @@ const menuOptions: MenuOption[] = [
   },
 ];
 
-const routeTitles: Record<string, string> = {
-  "/overview": "概览",
-  "/ai": "AI 调用",
-  "/gate": "消息分流",
-  "/chats": "会话管理",
-  "/memories": "长期记忆",
-  "/guild": "公会联动",
-  "/docs": "资料库",
-  "/schedules": "定时任务",
-  "/logs": "日志队列",
-  "/settings": "系统设置",
-};
-
 const activeMenuKey = computed(() => route.path);
-const currentTitle = computed(() => routeTitles[route.path] ?? "控制台");
+const currentTitle = computed(() =>
+  typeof route.meta.title === "string" ? route.meta.title : "控制台",
+);
 
 const botAvatarUrl = computed(() =>
   status.value?.botQQ ? `/api/admin/avatars/user/${status.value.botQQ}` : "",

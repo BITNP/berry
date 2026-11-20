@@ -617,7 +617,7 @@ test("per-task thinkingEffort resolves defaults, category fallback, and exact ov
     initialRes.thinkingTasks.some(
       (item) =>
         item.key === "subagent:deep_checker" &&
-        item.label === "子代理 · 深度排查",
+        item.label === "子代理：深度排查",
     ),
   );
 

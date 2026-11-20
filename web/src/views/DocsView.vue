@@ -293,7 +293,7 @@ onMounted(async () => {
           >
             <div class="file-path mono">{{ file.path }}</div>
             <div class="file-meta tabular">
-              {{ formatBytes(file.sizeBytes) }} ·
+              {{ formatBytes(file.sizeBytes) }} /
               {{ formatTime(file.updatedAt) }}
             </div>
           </button>

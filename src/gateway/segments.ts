@@ -54,7 +54,7 @@ function summarizeJsonCard(rawData: unknown): string {
           const parts = [title, desc, link].filter(Boolean);
 
           if (parts.length > 0) {
-            return `[分享: ${parts.join(" · ").slice(0, 220)}]`;
+            return `[分享: ${parts.join(" - ").slice(0, 220)}]`;
           }
         }
       }

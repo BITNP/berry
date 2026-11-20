@@ -414,7 +414,7 @@ onMounted(() => {
           </NDescriptionsItem>
           <NDescriptionsItem label="模型 / 耗时">
             <span class="mono">{{ selectedRow.model || "rule" }}</span>
-            · {{ selectedRow.durationMs }} ms
+            / {{ selectedRow.durationMs }} ms
           </NDescriptionsItem>
         </NDescriptions>
 
@@ -522,7 +522,7 @@ onMounted(() => {
                 置信度 {{ Math.round(dryRunResult.result.confidence * 100) }}%
               </NText>
               <NText class="mono sub-note" depth="3">
-                {{ dryRunResult.model }} · {{ dryRunResult.durationMs }} ms
+                {{ dryRunResult.model }} / {{ dryRunResult.durationMs }} ms
               </NText>
             </NSpace>
             <div>{{ dryRunResult.result.reason }}</div>

@@ -30,9 +30,9 @@ const PURPOSE_META: Record<
 > = {
   "dialog": { label: "主对话", type: "primary" },
   "subagent": { label: "子代理", type: "info" },
-  "subagent:chat_analyst": { label: "子代理 · 聊天分析", type: "info" },
-  "subagent:guild_operator": { label: "子代理 · 公会看板", type: "info" },
-  "subagent:workspace_operator": { label: "子代理 · 资料库", type: "info" },
+  "subagent:chat_analyst": { label: "子代理：聊天分析", type: "info" },
+  "subagent:guild_operator": { label: "子代理：公会看板", type: "info" },
+  "subagent:workspace_operator": { label: "子代理：资料库", type: "info" },
   "gate": { label: "门控分流", type: "default" },
   "memory_update": { label: "记忆提炼", type: "success" },
   "compaction": { label: "摘要压缩", type: "warning" },
@@ -51,7 +51,7 @@ export function purposeMeta(purpose: string): {
 
   if (purpose.startsWith("subagent:")) {
     return {
-      label: `子代理 · ${purpose.slice("subagent:".length)}`,
+      label: `子代理：${purpose.slice("subagent:".length)}`,
       type: "info",
     };
   }
@@ -62,9 +62,9 @@ export function purposeMeta(purpose: string): {
 export const PURPOSE_FILTER_OPTIONS = [
   { label: "主对话", value: "dialog" },
   { label: "子代理（全部）", value: "subagent" },
-  { label: "子代理 · 聊天分析", value: "subagent:chat_analyst" },
-  { label: "子代理 · 公会看板", value: "subagent:guild_operator" },
-  { label: "子代理 · 资料库", value: "subagent:workspace_operator" },
+  { label: "子代理：聊天分析", value: "subagent:chat_analyst" },
+  { label: "子代理：公会看板", value: "subagent:guild_operator" },
+  { label: "子代理：资料库", value: "subagent:workspace_operator" },
   { label: "门控分流", value: "gate" },
   { label: "记忆提炼", value: "memory_update" },
   { label: "摘要压缩", value: "compaction" },

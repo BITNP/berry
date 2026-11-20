@@ -1041,7 +1041,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
           { key: "subagent", label: "子代理（默认）" },
           ...berry.subagents.list().map((sub) => ({
             key: `subagent:${sub.kind}`,
-            label: `子代理 · ${sub.title}`,
+            label: `子代理：${sub.title}`,
             ...(sub.thinkingEffort ? { fallback: sub.thinkingEffort } : {}),
           })),
           { key: "report", label: "公会周报" },

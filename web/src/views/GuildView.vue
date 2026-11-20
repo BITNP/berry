@@ -185,7 +185,7 @@ async function triggerTask(task: "due" | "assignments" | "weekly") {
       message.info(`「${label}」已在后台执行中（任务 #${res.jobId}）`);
     } else {
       message.success(
-        `已加入后台任务队列（#${res.jobId} · ${label}），离开页面不影响执行`,
+        `已加入后台任务队列（#${res.jobId}，${label}），离开页面不影响执行`,
       );
     }
 
@@ -594,9 +594,9 @@ onMounted(() => {
             <span class="mono">{{ selectedAudit.chatKey || "—" }}</span>
           </NDescriptionsItem>
           <NDescriptionsItem label="操作">
-            {{ actionLabels[selectedAudit.action] }} · 节点 #{{
+            {{ actionLabels[selectedAudit.action] }}（节点 #{{
               selectedAudit.nodeId ?? "—"
-            }}
+            }}）
           </NDescriptionsItem>
         </NDescriptions>
 

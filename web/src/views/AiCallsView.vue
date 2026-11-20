@@ -620,9 +620,9 @@ onMounted(() => {
           <NSpace v-if="conversation" :size="12" vertical>
             <div class="filter-bar space-between">
               <NText class="mono sub-note" depth="3">
-                session: {{ conversation.sessionId }} · 共
-                {{ contextItems.length }} 轮 · afterMessageId:
-                {{ conversation.afterMessageId }} · 更新于
+                session: {{ conversation.sessionId }}，共
+                {{ contextItems.length }} 轮，afterMessageId:
+                {{ conversation.afterMessageId }}，更新于
                 {{ formatTime(conversation.updatedAt) }}
               </NText>
               <NSpace :size="8">
@@ -734,9 +734,10 @@ onMounted(() => {
         <NTabPane name="usage" tab="用量统计">
           <div class="filter-bar">
             <NText class="tabular sub-note" depth="2">
-              近 30 日累计：调用 {{ usageTotals30d.calls.toLocaleString() }} 次
-              · 合计 {{ usageTotals30d.totalTokens.toLocaleString() }} Tokens（
-              输入 {{ usageTotals30d.inputTokens.toLocaleString() }} / 缓存命中
+              近 30 日累计：调用
+              {{ usageTotals30d.calls.toLocaleString() }} 次，合计
+              {{ usageTotals30d.totalTokens.toLocaleString() }} Tokens（ 输入
+              {{ usageTotals30d.inputTokens.toLocaleString() }} / 缓存命中
               {{ usageTotals30d.cachedInputTokens.toLocaleString() }}，{{
                 formatPercent(
                   usageTotals30d.cachedInputTokens,
@@ -798,7 +799,7 @@ onMounted(() => {
                     selectedCall.cachedInputTokens,
                     selectedCall.inputTokens,
                   )
-                }}）· 出 {{ selectedCall.outputTokens.toLocaleString() }}
+                }}） / 出 {{ selectedCall.outputTokens.toLocaleString() }}
               </span>
             </NDescriptionsItem>
           </NDescriptions>

@@ -243,7 +243,7 @@ onMounted(() => {
           <ArrowRight class="metric-arrow" :size="13" />
         </div>
         <span class="metric-value">
-          {{ overview.todayUsage.calls }} 次 ·
+          {{ overview.todayUsage.calls }} 次 /
           {{ overview.todayUsage.totalTokens.toLocaleString() }} tok
         </span>
         <span class="metric-sub">
@@ -253,7 +253,7 @@ onMounted(() => {
               overview.todayUsage.cachedInputTokens,
               overview.todayUsage.inputTokens,
             )
-          }}）· 出 {{ overview.todayUsage.outputTokens.toLocaleString() }}
+          }}） / 出 {{ overview.todayUsage.outputTokens.toLocaleString() }}
         </span>
       </button>
 
@@ -296,7 +296,7 @@ onMounted(() => {
         <span class="metric-value">
           待处理 {{ overview.pendingJobs }}
           <NText v-if="failedJobCount > 0" type="error">
-            · 失败 {{ failedJobCount }}
+            / 失败 {{ failedJobCount }}
           </NText>
         </span>
         <span class="metric-sub">
@@ -475,7 +475,7 @@ onMounted(() => {
                 <span class="mono sub-note">{{ call.model }}</span>
               </div>
               <span class="tabular turn-time sub-note">
-                {{ call.durationMs }} ms · {{ formatTime(call.createdAt) }}
+                {{ call.durationMs }} ms / {{ formatTime(call.createdAt) }}
               </span>
             </div>
             <div class="feed-row-body">
@@ -571,7 +571,7 @@ onMounted(() => {
             </NDescriptionsItem>
             <NDescriptionsItem label="Tokens">
               <span class="tabular">
-                入 {{ selectedCall.inputTokens.toLocaleString() }} · 出
+                入 {{ selectedCall.inputTokens.toLocaleString() }} / 出
                 {{ selectedCall.outputTokens.toLocaleString() }}
               </span>
             </NDescriptionsItem>

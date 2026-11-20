@@ -620,7 +620,7 @@ const mcpColumns: DataTableColumns<McpServerFormRow> = [
         return h(
           NTag,
           { size: "small", type: "success" },
-          { default: () => `在线 · ${st.toolCount} 工具` },
+          { default: () => `在线（${st.toolCount} 工具）` },
         );
       }
 
