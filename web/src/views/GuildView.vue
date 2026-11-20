@@ -141,10 +141,10 @@ const actionLabels: Record<GuildAuditRow["action"], string> = {
 async function loadGuildJobs() {
   try {
     const res = await apiFetch<{ items: GuildJobRow[] }>(
-      "/api/admin/jobs?limit=30",
+      "/api/admin/jobs?kind=guild_task&limit=20",
     );
 
-    guildJobs.value = res.items.filter((j) => j.kind === "guild_task");
+    guildJobs.value = res.items;
   } catch {
     // Keep last known job list on transient error.
   }

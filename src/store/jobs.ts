@@ -4,14 +4,29 @@ import type { Selectable } from "kysely";
 
 import type {
   ChatKey,
-  GuildTaskKind,
   JobKind,
+  JobPayload,
   JobPayloads,
   JobRecord,
 } from "../types.ts";
 import type { EventBus } from "../utils/logger.ts";
 import type { BerryDatabase } from "./database.ts";
 import type { BerryTables } from "./schema.ts";
+
+export interface JobListFilter {
+  limit?: number;
+  kind?: string;
+  kinds?: readonly string[];
+  state?: JobRecord["state"];
+  chatKey?: string;
+}
+
+export interface JobCountsSummary {
+  pending: number;
+  running: number;
+  failed: number;
+  backgroundActive: number;
+}
 
 const decodeJob = <K extends JobKind>(
   row: Selectable<BerryTables["jobs"]>,
@@ -20,7 +35,7 @@ const decodeJob = <K extends JobKind>(
   kind: row.kind as K,
   dedupeKey: row.dedupe_key,
   chatKey: row.chat_key,
-  payload: JSON.parse(row.payload_json) as JobPayloads[K],
+  payload: JSON.parse(row.payload_json) as JobPayload<K>,
   state: row.state as JobRecord["state"],
   attempts: row.attempts,
   runAfter: row.run_after,
@@ -56,7 +71,7 @@ export class JobsStore {
     kind: K,
     dedupeKey: string,
     chatKey: string,
-    payload: JobPayloads[K],
+    payload: JobPayload<K>,
     runAfter = Date.now(),
   ): Promise<void> {
     const now = Date.now();
@@ -81,18 +96,23 @@ export class JobsStore {
     });
   }
 
-  public async enqueueGuildTask(task: GuildTaskKind): Promise<{
-    job: JobRecord<"guild_task">;
+  public async enqueueUniqueActive<K extends JobKind>(
+    kind: K,
+    chatKey: string,
+    payload: JobPayload<K>,
+    options: { runAfter?: number } = {},
+  ): Promise<{
+    job: JobRecord<K>;
     alreadyActive: boolean;
   }> {
     const now = Date.now();
-    const chatKey = `guild:${task}`;
+    const runAfter = options.runAfter ?? now;
 
     const result = await this.#database.writeTx(async (trx) => {
       const existing = await trx
         .selectFrom("jobs")
         .selectAll()
-        .where("kind", "=", "guild_task")
+        .where("kind", "=", kind)
         .where("chat_key", "=", chatKey)
         .where("state", "in", ["pending", "running"])
         .orderBy("id", "desc")
@@ -101,7 +121,7 @@ export class JobsStore {
 
       if (existing) {
         return {
-          job: decodeJob<"guild_task">(existing),
+          job: decodeJob<K>(existing),
           alreadyActive: true,
         };
       }
@@ -109,13 +129,13 @@ export class JobsStore {
       const created = await trx
         .insertInto("jobs")
         .values({
-          kind: "guild_task",
-          dedupe_key: `guild_task:${task}:${now}:${randomUUID().slice(0, 6)}`,
+          kind,
+          dedupe_key: `${kind}:${chatKey}:${now}:${randomUUID().slice(0, 6)}`,
           chat_key: chatKey,
-          payload_json: JSON.stringify({ task }),
+          payload_json: JSON.stringify(payload),
           state: "pending",
           attempts: 0,
-          run_after: now,
+          run_after: runAfter,
           last_error: null,
           created_at: now,
           updated_at: now,
@@ -124,21 +144,18 @@ export class JobsStore {
         .executeTakeFirstOrThrow();
 
       return {
-        job: decodeJob<"guild_task">(created),
+        job: decodeJob<K>(created),
         alreadyActive: false,
       };
     });
 
     if (!result.alreadyActive) {
-      this.#events.emit({
-        type: "job_update",
-        data: {
-          id: result.job.id,
-          kind: "guild_task",
-          chatKey: result.job.chatKey,
-          state: result.job.state,
-        },
-      });
+      this.#emitJobUpdate(
+        result.job.id,
+        result.job.kind,
+        result.job.chatKey,
+        result.job.state,
+      );
     }
 
     return result;
@@ -266,7 +283,7 @@ export class JobsStore {
     );
 
     if (row) {
-      this.#emitJobUpdate(row.id, row.kind as JobKind, row.chat_key, "done");
+      this.#emitJobUpdate(row.id, row.kind, row.chat_key, "done");
     }
   }
 
@@ -334,7 +351,7 @@ export class JobsStore {
     );
 
     if (row) {
-      this.#emitJobUpdate(row.id, row.kind as JobKind, row.chat_key, "pending");
+      this.#emitJobUpdate(row.id, row.kind, row.chat_key, "pending");
     }
 
     return Boolean(row);
@@ -358,7 +375,7 @@ export class JobsStore {
     );
 
     for (const row of rows) {
-      this.#emitJobUpdate(row.id, row.kind as JobKind, row.chat_key, "pending");
+      this.#emitJobUpdate(row.id, row.kind, row.chat_key, "pending");
     }
 
     return rows.length;
@@ -381,21 +398,77 @@ export class JobsStore {
     );
 
     if (row) {
-      this.#emitJobUpdate(row.id, row.kind as JobKind, row.chat_key, "failed");
+      this.#emitJobUpdate(row.id, row.kind, row.chat_key, "failed");
     }
 
     return Boolean(row);
   }
 
-  public async list(limit = 100): Promise<JobRecord[]> {
-    const rows = await this.#database.db
-      .selectFrom("jobs")
-      .selectAll()
-      .orderBy("id", "desc")
-      .limit(limit)
-      .execute();
+  public async list(
+    filter: number | JobListFilter = 100,
+  ): Promise<JobRecord[]> {
+    const opts: JobListFilter =
+      typeof filter === "number" ? { limit: filter } : filter;
+    const limit = Math.min(200, Math.max(1, opts.limit ?? 100));
+
+    let query = this.#database.db.selectFrom("jobs").selectAll();
+
+    if (opts.kind) {
+      query = query.where("kind", "=", opts.kind);
+    } else if (opts.kinds) {
+      if (opts.kinds.length === 0) {
+        return [];
+      }
+
+      query = query.where("kind", "in", [...opts.kinds]);
+    }
+
+    if (opts.state) {
+      query = query.where("state", "=", opts.state);
+    }
+
+    if (opts.chatKey) {
+      query = query.where("chat_key", "=", opts.chatKey);
+    }
+
+    const rows = await query.orderBy("id", "desc").limit(limit).execute();
 
     return rows.map(decodeJob);
+  }
+
+  public async counts(
+    backgroundKinds: readonly string[] = [],
+  ): Promise<JobCountsSummary> {
+    const rows = await this.#database.db
+      .selectFrom("jobs")
+      .select(["kind", "state"])
+      .where("state", "in", ["pending", "running", "failed"])
+      .execute();
+
+    const bgSet = new Set(backgroundKinds);
+    let pending = 0;
+    let running = 0;
+    let failed = 0;
+    let backgroundActive = 0;
+
+    for (const row of rows) {
+      if (row.state === "pending") {
+        pending++;
+      } else if (row.state === "running") {
+        running++;
+      } else if (row.state === "failed") {
+        failed++;
+      }
+
+      if (
+        (row.state === "pending" || row.state === "running") &&
+        bgSet.has(row.kind)
+      ) {
+        backgroundActive++;
+      }
+    }
+
+    return { pending, running, failed, backgroundActive };
   }
 
   public async countPending(): Promise<number> {

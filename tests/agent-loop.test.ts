@@ -397,3 +397,85 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
   assert.equal(blocked.brief, "前置条件未满足");
   assert.equal(blocked.mutated, false);
 });
+
+test("extensible JobRegistry runs custom background jobs with dedupe and exposes metadata via /api/admin/jobs", async (t) => {
+  const { app } = await createTestBerryApp(
+    {
+      devAuthBypass: true,
+    },
+    {},
+    t,
+  );
+  const { url } = await app.listen();
+  const executedTargets: string[] = [];
+
+  app.jobs.register({
+    kind: "kb_reindex",
+    label: "资料库重建索引",
+    lane: "background",
+    tagType: "info",
+    execute: async (job) => {
+      executedTargets.push(String(job.payload.scope ?? ""));
+    },
+    summarize: (job) => `重建 ${String(job.payload.scope ?? "all")} 索引`,
+    links: () => [{ label: "查看资料库", to: "/docs" }],
+  });
+
+  const first = await app.store.jobs.enqueueUniqueActive(
+    "kb_reindex",
+    "kb:all",
+    { scope: "knowledge" },
+  );
+  const second = await app.store.jobs.enqueueUniqueActive(
+    "kb_reindex",
+    "kb:all",
+    { scope: "knowledge" },
+  );
+
+  assert.equal(first.alreadyActive, false);
+  assert.equal(second.alreadyActive, true);
+  assert.equal(second.job.id, first.job.id);
+
+  // Before draining, activeBackgroundJobs reflects the queued custom job.
+  const overviewBefore = (await (
+    await fetch(`${url}/api/admin/overview`)
+  ).json()) as { activeBackgroundJobs: number };
+
+  assert.equal(overviewBefore.activeBackgroundJobs, 1);
+
+  await app.worker.drainOnce();
+  assert.deepEqual(executedTargets, ["knowledge"]);
+
+  const jobsRes = (await (
+    await fetch(`${url}/api/admin/jobs?lane=background`)
+  ).json()) as {
+    items: {
+      id: number;
+      kind: string;
+      label: string;
+      lane: string;
+      tagType: string;
+      summary: string;
+      state: string;
+      links: { label: string; to: string }[];
+    }[];
+    kinds: { kind: string; label: string; lane: string; tagType: string }[];
+    counts: {
+      pending: number;
+      running: number;
+      failed: number;
+      backgroundActive: number;
+    };
+  };
+
+  assert.ok(jobsRes.kinds.some((k) => k.kind === "kb_reindex"));
+  assert.equal(jobsRes.counts.backgroundActive, 0);
+  const item = jobsRes.items.find((j) => j.id === first.job.id);
+
+  assert.ok(item);
+  assert.equal(item.state, "done");
+  assert.equal(item.label, "资料库重建索引");
+  assert.equal(item.lane, "background");
+  assert.equal(item.summary, "重建 knowledge 索引");
+  assert.deepEqual(item.links, [{ label: "查看资料库", to: "/docs" }]);
+});

@@ -145,9 +145,6 @@ export interface UnifiedInput {
 
 export type GuildTaskKind = "due" | "assignments" | "weekly";
 
-export type JobKind =
-  "gate_batch" | "invoke" | "memory_update" | "group_digest" | "guild_task";
-
 export interface JobPayloads {
   gate_batch: {
     chatKey: ChatKey;
@@ -171,12 +168,37 @@ export interface JobPayloads {
   };
 }
 
+export type BuiltInJobKind = keyof JobPayloads;
+
+export type JobKind = BuiltInJobKind | (string & {});
+
+export type JobPayload<K extends JobKind = JobKind> = K extends BuiltInJobKind
+  ? JobPayloads[K]
+  : Record<string, unknown>;
+
+export type JobLane = "gate" | "dialog" | "background";
+
+export type JobTagType =
+  "default" | "primary" | "info" | "success" | "warning" | "error";
+
+export interface JobTypeDescriptor {
+  kind: string;
+  label: string;
+  lane: JobLane;
+  tagType: JobTagType;
+}
+
+export interface JobActionLink {
+  label: string;
+  to: string;
+}
+
 export interface JobRecord<K extends JobKind = JobKind> {
   id: number;
   kind: K;
   dedupeKey: string;
   chatKey: string;
-  payload: JobPayloads[K];
+  payload: JobPayload<K>;
   state: "pending" | "running" | "done" | "failed";
   attempts: number;
   runAfter: number;

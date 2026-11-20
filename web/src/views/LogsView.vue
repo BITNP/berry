@@ -20,6 +20,8 @@ import {
   NEmpty,
   NInput,
   NPopconfirm,
+  NRadioButton,
+  NRadioGroup,
   NSelect,
   NSpace,
   NSwitch,
@@ -48,13 +50,41 @@ interface LogEntryView {
   context: Record<string, unknown>;
 }
 
+type JobLane = "gate" | "dialog" | "background";
+type JobTagType =
+  "default" | "primary" | "info" | "success" | "warning" | "error";
+type JobLaneFilter = "all" | "background" | "realtime";
+
+interface JobTypeDescriptor {
+  kind: string;
+  label: string;
+  lane: JobLane;
+  tagType: JobTagType;
+}
+
+interface JobActionLink {
+  label: string;
+  to: string;
+}
+
+interface JobCounts {
+  pending: number;
+  running: number;
+  failed: number;
+  backgroundActive: number;
+}
+
 interface JobRow {
   id: number;
   kind: string;
+  label?: string;
+  lane?: JobLane;
+  tagType?: JobTagType;
   dedupeKey: string;
   chatKey: string;
   payload: Record<string, unknown>;
   summary?: string;
+  links?: JobActionLink[];
   state: "pending" | "running" | "done" | "failed";
   attempts: number;
   lastError: string | null;
@@ -91,6 +121,16 @@ function initialTab(): "logs" | "jobs" | "deliveries" {
   return "logs";
 }
 
+function initialJobLane(): JobLaneFilter {
+  const q = route.query.lane;
+
+  if (q === "background" || q === "realtime") {
+    return q;
+  }
+
+  return "all";
+}
+
 const activeTab = ref<"logs" | "jobs" | "deliveries">(initialTab());
 
 // Logs state
@@ -106,9 +146,29 @@ const consoleRef = ref<HTMLElement | null>(null);
 // Jobs state
 const loadingJobs = ref(false);
 const jobs = ref<JobRow[]>([]);
-const filterJobKind = ref<string | null>(null);
-const filterJobState = ref<JobRow["state"] | null>(null);
+const jobKinds = ref<JobTypeDescriptor[]>([]);
+const jobCounts = ref<JobCounts>({
+  pending: 0,
+  running: 0,
+  failed: 0,
+  backgroundActive: 0,
+});
+const filterJobLane = ref<JobLaneFilter>(initialJobLane());
+const filterJobKind = ref<string | null>(
+  typeof route.query.kind === "string" && route.query.kind
+    ? route.query.kind
+    : null,
+);
+const filterJobState = ref<JobRow["state"] | null>(
+  route.query.state === "pending" ||
+    route.query.state === "running" ||
+    route.query.state === "done" ||
+    route.query.state === "failed"
+    ? route.query.state
+    : null,
+);
 const filterJobChatKey = ref<string | null>(null);
+const filterJobSearch = ref("");
 const retryingAll = ref(false);
 const busyJobId = ref<number | null>(null);
 const selectedJob = ref<JobRow | null>(null);
@@ -169,8 +229,90 @@ const visibleEntries = computed(() => {
   });
 });
 
-const visibleJobs = computed(() =>
-  jobs.value.filter((j) => {
+const jobKindMap = computed(
+  () => new Map(jobKinds.value.map((item) => [item.kind, item])),
+);
+
+function jobMeta(row: Pick<JobRow, "kind" | "label" | "lane" | "tagType">): {
+  label: string;
+  lane: JobLane;
+  tagType: JobTagType;
+} {
+  const registered = jobKindMap.value.get(row.kind);
+
+  return {
+    label: row.label ?? registered?.label ?? row.kind,
+    lane: row.lane ?? registered?.lane ?? "background",
+    tagType: row.tagType ?? registered?.tagType ?? "default",
+  };
+}
+
+const jobKindOptions = computed(() => {
+  const seen = new Set<string>();
+  const items: { label: string; value: string }[] = [];
+
+  for (const desc of jobKinds.value) {
+    if (filterJobLane.value === "background" && desc.lane !== "background") {
+      continue;
+    }
+
+    if (filterJobLane.value === "realtime" && desc.lane === "background") {
+      continue;
+    }
+
+    seen.add(desc.kind);
+    items.push({ label: desc.label, value: desc.kind });
+  }
+
+  for (const job of jobs.value) {
+    if (seen.has(job.kind)) {
+      continue;
+    }
+
+    const meta = jobMeta(job);
+
+    if (
+      (filterJobLane.value === "background" && meta.lane !== "background") ||
+      (filterJobLane.value === "realtime" && meta.lane === "background")
+    ) {
+      continue;
+    }
+
+    seen.add(job.kind);
+    items.push({ label: meta.label, value: job.kind });
+  }
+
+  return items;
+});
+
+const jobTargetOptions = computed(() => {
+  const base = [...chatOptions.value];
+  const known = new Set(base.map((opt) => opt.value));
+
+  for (const job of jobs.value) {
+    if (job.chatKey && !known.has(job.chatKey)) {
+      known.add(job.chatKey);
+      base.push({ label: job.chatKey, value: job.chatKey });
+    }
+  }
+
+  return base;
+});
+
+const visibleJobs = computed(() => {
+  const kw = filterJobSearch.value.trim().toLowerCase();
+
+  return jobs.value.filter((j) => {
+    const meta = jobMeta(j);
+
+    if (filterJobLane.value === "background" && meta.lane !== "background") {
+      return false;
+    }
+
+    if (filterJobLane.value === "realtime" && meta.lane === "background") {
+      return false;
+    }
+
     if (filterJobKind.value && j.kind !== filterJobKind.value) {
       return false;
     }
@@ -183,9 +325,19 @@ const visibleJobs = computed(() =>
       return false;
     }
 
-    return true;
-  }),
-);
+    if (!kw) {
+      return true;
+    }
+
+    return (
+      j.chatKey.toLowerCase().includes(kw) ||
+      meta.label.toLowerCase().includes(kw) ||
+      j.kind.toLowerCase().includes(kw) ||
+      (j.summary ?? "").toLowerCase().includes(kw) ||
+      (j.lastError ?? "").toLowerCase().includes(kw)
+    );
+  });
+});
 
 const visibleDeliveries = computed(() =>
   deliveries.value.filter((d) => {
@@ -204,9 +356,11 @@ const visibleDeliveries = computed(() =>
   }),
 );
 
-const failedJobCount = computed(
-  () => jobs.value.filter((j) => j.state === "failed").length,
-);
+const failedJobCount = computed(() => jobCounts.value.failed);
+
+function toggleJobStateFilter(state: JobRow["state"]) {
+  filterJobState.value = filterJobState.value === state ? null : state;
+}
 
 function scrollToBottom() {
   if (!autoScroll.value || !consoleRef.value) {
@@ -286,9 +440,49 @@ async function loadJobs() {
   loadingJobs.value = true;
 
   try {
-    const res = await apiFetch<{ items: JobRow[] }>("/api/admin/jobs");
+    const qs = new URLSearchParams({ limit: "150" });
+
+    if (filterJobLane.value === "background") {
+      qs.set("lane", "background");
+    }
+
+    if (filterJobKind.value) {
+      qs.set("kind", filterJobKind.value);
+    }
+
+    if (filterJobState.value) {
+      qs.set("state", filterJobState.value);
+    }
+
+    if (filterJobChatKey.value) {
+      qs.set("chatKey", filterJobChatKey.value);
+    }
+
+    const res = await apiFetch<{
+      items: JobRow[];
+      kinds?: JobTypeDescriptor[];
+      counts?: JobCounts;
+    }>(`/api/admin/jobs?${qs.toString()}`);
 
     jobs.value = res.items;
+
+    if (res.kinds) {
+      jobKinds.value = res.kinds;
+    }
+
+    if (res.counts) {
+      jobCounts.value = res.counts;
+    }
+
+    if (selectedJob.value) {
+      const updated = res.items.find(
+        (item) => item.id === selectedJob.value?.id,
+      );
+
+      if (updated) {
+        selectedJob.value = updated;
+      }
+    }
   } catch (err) {
     message.error(err instanceof Error ? err.message : "加载任务队列失败");
   } finally {
@@ -422,15 +616,10 @@ function summarizePayload(
   return JSON.stringify(payload);
 }
 
-const jobKindLabel: Record<
-  string,
-  { text: string; type: "default" | "primary" | "info" | "success" | "warning" }
-> = {
-  invoke: { text: "对话应答", type: "primary" },
-  gate_batch: { text: "消息分流", type: "default" },
-  memory_update: { text: "记忆提炼", type: "success" },
-  group_digest: { text: "群聊摘要", type: "info" },
-  guild_task: { text: "公会任务", type: "warning" },
+const jobLaneLabel: Record<JobLane, string> = {
+  background: "后台任务",
+  dialog: "主对话",
+  gate: "门控分流",
 };
 
 const deliveryKindLabel: Record<string, string> = {
@@ -483,17 +672,14 @@ const jobColumns: DataTableColumns<JobRow> = [
   {
     title: "类型",
     key: "kind",
-    width: 96,
+    width: 108,
     render: (row) => {
-      const cfg = jobKindLabel[row.kind] ?? {
-        text: row.kind,
-        type: "default" as const,
-      };
+      const cfg = jobMeta(row);
 
       return h(
         NTag,
-        { size: "small", type: cfg.type },
-        { default: () => cfg.text },
+        { size: "small", type: cfg.tagType },
+        { default: () => cfg.label },
       );
     },
   },
@@ -668,11 +854,45 @@ watch(activeTab, (tab) => {
   }
 });
 
+watch([filterJobLane, filterJobKind, filterJobState, filterJobChatKey], () => {
+  if (
+    filterJobKind.value &&
+    !jobKindOptions.value.some((o) => o.value === filterJobKind.value)
+  ) {
+    filterJobKind.value = null;
+  }
+
+  if (activeTab.value === "jobs") {
+    const nextQuery: Record<string, string> = { tab: "jobs" };
+
+    if (filterJobLane.value !== "all") {
+      nextQuery.lane = filterJobLane.value;
+    }
+
+    if (filterJobKind.value) {
+      nextQuery.kind = filterJobKind.value;
+    }
+
+    if (filterJobState.value) {
+      nextQuery.state = filterJobState.value;
+    }
+
+    void router.replace({ query: nextQuery });
+    void loadJobs();
+  }
+});
+
 watch(
-  () => route.query.tab,
-  (tab) => {
-    if (tab === "logs" || tab === "jobs" || tab === "deliveries") {
-      activeTab.value = tab;
+  () => route.query,
+  (q) => {
+    if (q.tab === "logs" || q.tab === "jobs" || q.tab === "deliveries") {
+      activeTab.value = q.tab;
+    }
+
+    if (q.lane === "background" || q.lane === "realtime") {
+      filterJobLane.value = q.lane;
+    } else if (q.tab === "jobs" && !q.lane) {
+      filterJobLane.value = "all";
     }
   },
 );
@@ -810,21 +1030,62 @@ onUnmounted(() => {
           :tab="
             failedJobCount > 0
               ? `任务队列 (${failedJobCount} 失败)`
-              : `任务队列 (${jobs.length})`
+              : jobCounts.running > 0
+                ? `任务队列 (${jobCounts.running} 执行中)`
+                : `任务队列 (${jobs.length})`
           "
         >
+          <div class="job-toolbar">
+            <NRadioGroup v-model:value="filterJobLane" size="small">
+              <NRadioButton value="all">全部</NRadioButton>
+              <NRadioButton value="background">
+                后台任务
+                <template v-if="jobCounts.backgroundActive > 0">
+                  ({{ jobCounts.backgroundActive }})
+                </template>
+              </NRadioButton>
+              <NRadioButton value="realtime">对话与分流</NRadioButton>
+            </NRadioGroup>
+
+            <NSpace align="center" :size="6" wrap>
+              <NButton
+                v-if="jobCounts.running > 0"
+                :secondary="filterJobState !== 'running'"
+                size="tiny"
+                :type="filterJobState === 'running' ? 'info' : 'default'"
+                @click="toggleJobStateFilter('running')"
+              >
+                <span class="dot ok" />
+                执行中 {{ jobCounts.running }}
+              </NButton>
+              <NButton
+                v-if="jobCounts.pending > 0"
+                :secondary="filterJobState !== 'pending'"
+                size="tiny"
+                :type="filterJobState === 'pending' ? 'info' : 'default'"
+                @click="toggleJobStateFilter('pending')"
+              >
+                排队中 {{ jobCounts.pending }}
+              </NButton>
+              <NButton
+                v-if="jobCounts.failed > 0"
+                :secondary="filterJobState !== 'failed'"
+                size="tiny"
+                :type="filterJobState === 'failed' ? 'error' : 'warning'"
+                @click="toggleJobStateFilter('failed')"
+              >
+                失败 {{ jobCounts.failed }}
+              </NButton>
+            </NSpace>
+          </div>
+
           <div class="filter-bar">
             <NSelect
               v-model:value="filterJobKind"
-              class="w-135"
+              class="w-155"
               clearable
-              :options="[
-                { label: '对话应答', value: 'invoke' },
-                { label: '消息分流', value: 'gate_batch' },
-                { label: '记忆提炼', value: 'memory_update' },
-                { label: '群聊摘要', value: 'group_digest' },
-                { label: '公会任务', value: 'guild_task' },
-              ]"
+              filterable
+              :options="jobKindOptions"
               placeholder="全部类型"
               size="small"
             />
@@ -846,10 +1107,17 @@ onUnmounted(() => {
               class="w-240"
               clearable
               filterable
-              :options="chatOptions"
-              placeholder="筛选会话（支持群名/群号）"
+              :options="jobTargetOptions"
+              placeholder="筛选目标（会话/后台目标）"
               size="small"
               tag
+            />
+            <NInput
+              v-model:value="filterJobSearch"
+              class="w-220"
+              clearable
+              placeholder="搜索内容、错误或目标"
+              size="small"
             />
             <NButton :loading="loadingJobs" size="small" @click="loadJobs">
               <template #icon>
@@ -955,7 +1223,8 @@ onUnmounted(() => {
           </NAlert>
           <NDescriptions
             bordered
-            :column="2"
+            class="job-meta"
+            :column="1"
             label-placement="left"
             size="small"
           >
@@ -963,17 +1232,12 @@ onUnmounted(() => {
               #{{ selectedJob.id }}
             </NDescriptionsItem>
             <NDescriptionsItem label="类型">
-              <NTag
-                size="small"
-                :type="
-                  (jobKindLabel[selectedJob.kind] ?? { type: 'default' }).type
-                "
-              >
-                {{
-                  (jobKindLabel[selectedJob.kind] ?? { text: selectedJob.kind })
-                    .text
-                }}
+              <NTag size="small" :type="jobMeta(selectedJob).tagType">
+                {{ jobMeta(selectedJob).label }}
               </NTag>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="队列通道">
+              {{ jobLaneLabel[jobMeta(selectedJob).lane] }}
             </NDescriptionsItem>
             <NDescriptionsItem label="状态">
               <NTag size="small" :type="jobStateLabel[selectedJob.state].type">
@@ -983,11 +1247,14 @@ onUnmounted(() => {
             <NDescriptionsItem label="耗时">
               <span class="tabular">{{ jobDuration(selectedJob) }}</span>
             </NDescriptionsItem>
-            <NDescriptionsItem label="会话 / 目标">
-              <span class="mono">{{ selectedJob.chatKey }}</span>
+            <NDescriptionsItem label="目标">
+              <span class="mono break-all">{{ selectedJob.chatKey }}</span>
             </NDescriptionsItem>
             <NDescriptionsItem label="尝试次数">
               {{ selectedJob.attempts }}
+            </NDescriptionsItem>
+            <NDescriptionsItem label="去重键">
+              <span class="mono break-all">{{ selectedJob.dedupeKey }}</span>
             </NDescriptionsItem>
             <NDescriptionsItem label="创建时间">
               {{ formatTime(selectedJob.createdAt) }}
@@ -1019,38 +1286,26 @@ onUnmounted(() => {
               重新执行
             </NButton>
             <NButton
-              v-if="
-                selectedJob.chatKey.startsWith('group:') ||
-                selectedJob.chatKey.startsWith('private:')
-              "
+              v-if="selectedJob.state === 'pending'"
+              :loading="busyJobId === selectedJob.id"
+              quaternary
+              size="small"
+              type="error"
+              @click="handleCancelJob(selectedJob.id)"
+            >
+              取消任务
+            </NButton>
+            <NButton
+              v-for="link in selectedJob.links ?? []"
+              :key="link.to"
               secondary
               size="small"
               @click="
                 jobDrawerOpen = false;
-                router.push({
-                  path: '/ai',
-                  query: { chatKey: selectedJob.chatKey },
-                });
+                router.push(link.to);
               "
             >
-              查看该会话 AI 调用
-            </NButton>
-            <NButton
-              v-if="
-                selectedJob.chatKey.startsWith('group:') ||
-                selectedJob.chatKey.startsWith('private:')
-              "
-              quaternary
-              size="small"
-              @click="
-                jobDrawerOpen = false;
-                router.push({
-                  path: '/chats',
-                  query: { chat: selectedJob.chatKey },
-                });
-              "
-            >
-              查看会话消息
+              {{ link.label }}
             </NButton>
           </NSpace>
         </NSpace>
@@ -1065,6 +1320,7 @@ onUnmounted(() => {
           </NAlert>
           <NDescriptions
             bordered
+            class="job-meta"
             :column="1"
             label-placement="left"
             size="small"
@@ -1109,6 +1365,33 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+.job-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: #15803d;
+  margin-right: 5px;
+}
+
+.break-all {
+  word-break: break-all;
+}
+
+.job-meta :deep(.n-descriptions-table-header) {
+  white-space: nowrap;
+  width: 88px;
+}
+
 .log-console {
   max-height: 65vh;
   overflow-y: auto;

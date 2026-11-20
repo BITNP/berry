@@ -50,6 +50,7 @@ interface ShellStatus {
   gatewayHealth: { configured: boolean; reachable: boolean };
   gatewayStreamConnected: boolean;
   pendingJobs: number;
+  activeBackgroundJobs?: number;
 }
 
 const route = useRoute();
@@ -331,7 +332,7 @@ onUnmounted(() => {
         <div class="header-right">
           <div v-if="status" class="bot-chip">
             <NAvatar v-if="botAvatarUrl" round :size="22" :src="botAvatarUrl" />
-            <span class="bot-label">{{ botDisplayName }}</span>
+            <span v-if="!isMobile" class="bot-label">{{ botDisplayName }}</span>
             <NTag size="small" :type="status.botPaused ? 'warning' : 'success'">
               {{ status.botPaused ? "已暂停" : "运行中" }}
             </NTag>
@@ -349,6 +350,17 @@ onUnmounted(() => {
               {{ status.botPaused ? "恢复" : "暂停" }}
             </NButton>
           </div>
+
+          <NButton
+            v-if="(status?.activeBackgroundJobs ?? 0) > 0"
+            secondary
+            size="tiny"
+            type="info"
+            @click="router.push('/logs?tab=jobs&lane=background')"
+          >
+            <span class="dot ok" />
+            后台任务 {{ status?.activeBackgroundJobs }}
+          </NButton>
 
           <NTooltip v-if="status">
             <template #trigger>
@@ -596,7 +608,18 @@ onUnmounted(() => {
   }
 
   .shell-header {
-    padding: 0 12px;
+    padding: 0 8px;
+    gap: 6px;
+  }
+
+  .header-right {
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .bot-chip {
+    gap: 4px;
+    padding-right: 0;
   }
 
   .content-container {

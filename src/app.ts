@@ -16,6 +16,8 @@ import { GatewayEventSubscriber } from "./gateway/events.ts";
 import { GuildAutomationRunner } from "./guild/automation.ts";
 import { GuildInternalClient } from "./guild/client.ts";
 import { IdentityDirectory } from "./identity/keycloak.ts";
+import type { JobRegistry } from "./jobs/index.ts";
+import { createDefaultJobRegistry } from "./jobs/index.ts";
 import { KnowledgeBase } from "./knowledge/files.ts";
 import { McpHub } from "./mcp/hub.ts";
 import { MediaProcessor } from "./media/processor.ts";
@@ -49,6 +51,7 @@ export class BerryApp {
   public readonly agent: BerryAgent;
   public readonly scheduler: ScheduleRunner;
   public readonly guildAutomation: GuildAutomationRunner;
+  public readonly jobs: JobRegistry;
   public readonly worker: JobWorker;
   public readonly auth: AdminAuthService;
   public settings: RuntimeSettings;
@@ -77,6 +80,7 @@ export class BerryApp {
     agent: BerryAgent;
     scheduler: ScheduleRunner;
     guildAutomation: GuildAutomationRunner;
+    jobs: JobRegistry;
     worker: JobWorker;
     auth: AdminAuthService;
   }) {
@@ -100,6 +104,7 @@ export class BerryApp {
     this.agent = options.agent;
     this.scheduler = options.scheduler;
     this.guildAutomation = options.guildAutomation;
+    this.jobs = options.jobs;
     this.worker = options.worker;
     this.auth = options.auth;
   }
@@ -184,7 +189,14 @@ export class BerryApp {
       getSettings,
     );
 
-    workerRef = new JobWorker(store, gate, agent, scheduler, guildAutomation);
+    const jobs = createDefaultJobRegistry({
+      gate,
+      agent,
+      scheduler,
+      guildAutomation,
+    });
+
+    workerRef = new JobWorker(store, jobs);
     const auth = new AdminAuthService(env, store);
 
     const instance = new BerryApp({
@@ -208,6 +220,7 @@ export class BerryApp {
       agent,
       scheduler,
       guildAutomation,
+      jobs,
       worker: workerRef,
       auth,
     });

@@ -88,6 +88,27 @@ const llmCallsQuerySchema = Type.Object({
   limit: Type.Integer({ minimum: 1, maximum: 200, default: 80 }),
 });
 
+const jobsQuerySchema = Type.Object({
+  kind: Type.Optional(Type.String()),
+  lane: Type.Optional(
+    Type.Union([
+      Type.Literal("gate"),
+      Type.Literal("dialog"),
+      Type.Literal("background"),
+    ]),
+  ),
+  state: Type.Optional(
+    Type.Union([
+      Type.Literal("pending"),
+      Type.Literal("running"),
+      Type.Literal("done"),
+      Type.Literal("failed"),
+    ]),
+  ),
+  chatKey: Type.Optional(Type.String()),
+  limit: Type.Integer({ minimum: 1, maximum: 200, default: 100 }),
+});
+
 const messagesQuerySchema = Type.Object({
   search: Type.Optional(Type.String()),
   limit: Type.Integer({ minimum: 1, default: 80 }),
@@ -344,7 +365,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       const since24h = Date.now() - 86_400 * 1000;
       const [
         gatewayHealth,
-        pendingJobs,
+        jobCounts,
         gate24h,
         chats,
         todayUsage,
@@ -353,7 +374,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         usageBuckets,
       ] = await Promise.all([
         berry.gateway.checkHealth(),
-        berry.store.jobs.countPending(),
+        berry.store.jobs.counts(berry.jobs.kindsForLane("background")),
         berry.store.gate.summarySince(since24h),
         berry.store.chats.list(),
         berry.store.usage.todaySummary(berry.settings.bot.timezone),
@@ -369,7 +390,9 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         botAccount,
         gatewayHealth,
         gatewayStreamConnected: berry.gatewayEvents.connected,
-        pendingJobs,
+        pendingJobs: jobCounts.pending + jobCounts.running,
+        activeBackgroundJobs: jobCounts.backgroundActive,
+        failedJobs: jobCounts.failed,
         gate24h,
         chatCount: chats.length,
         activeChatCount: chats.filter((c) => c.enabled).length,
@@ -801,8 +824,11 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         guildTaskParamSchema,
         "未知公会任务类型",
       );
-      const { job, alreadyActive } =
-        await berry.store.jobs.enqueueGuildTask(task);
+      const { job, alreadyActive } = await berry.store.jobs.enqueueUniqueActive(
+        "guild_task",
+        `guild:${task}`,
+        { task },
+      );
 
       berry.worker.wake();
 
@@ -1018,113 +1044,36 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/jobs",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const rows = await berry.store.jobs.list(100);
-      const msgIds = new Set<number>();
+      const q = await parseQuery(event, jobsQuerySchema);
+      const kindsFilter = q.kind
+        ? undefined
+        : q.lane
+          ? berry.jobs.kindsForLane(q.lane)
+          : undefined;
 
-      for (const job of rows) {
-        if (job.kind === "invoke") {
-          for (const id of (job.payload as { triggerMessageIds?: number[] })
-            .triggerMessageIds ?? []) {
-            msgIds.add(id);
-          }
-        } else if (job.kind === "gate_batch") {
-          for (const id of (job.payload as { messageIds?: number[] })
-            .messageIds ?? []) {
-            msgIds.add(id);
-          }
-        } else if (job.kind === "memory_update") {
-          const id = (job.payload as { messageId?: number }).messageId;
+      const [rows, counts] = await Promise.all([
+        berry.store.jobs.list({
+          limit: q.limit,
+          kind: q.kind,
+          kinds: kindsFilter,
+          state: q.state,
+          chatKey: q.chatKey,
+        }),
+        berry.store.jobs.counts(berry.jobs.kindsForLane("background")),
+      ]);
 
-          if (typeof id === "number") {
-            msgIds.add(id);
-          }
-        }
-      }
-
+      const msgIds = berry.jobs.collectMessageIds(rows);
       const msgRows =
-        msgIds.size > 0 ? await berry.store.messages.getByIds([...msgIds]) : [];
-      const msgById = new Map(msgRows.map((m) => [m.id, m]));
-      const guildTaskNames: Record<string, string> = {
-        due: "公会到期提醒",
-        assignments: "公会新指派通知",
-        weekly: "生成公会周报",
-      };
-
-      function summarizeJob(job: (typeof rows)[number]): string {
-        if (job.kind === "guild_task") {
-          const task = (job.payload as { task?: string }).task ?? "";
-
-          return guildTaskNames[task] ?? task;
-        }
-
-        if (job.kind === "group_digest") {
-          const p = job.payload as { startTimeMs?: number; endTimeMs?: number };
-
-          if (p.startTimeMs && p.endTimeMs) {
-            const hours = Math.max(
-              1,
-              Math.round((p.endTimeMs - p.startTimeMs) / 3_600_000),
-            );
-
-            return `近 ${hours} 小时群聊摘要`;
-          }
-
-          return "群聊讨论摘要";
-        }
-
-        if (job.kind === "memory_update") {
-          const id = (job.payload as { messageId?: number }).messageId;
-          const m = typeof id === "number" ? msgById.get(id) : undefined;
-
-          return m
-            ? `${m.senderName}: ${m.text.slice(0, 80)}`
-            : `消息 #${String(id ?? "")}`;
-        }
-
-        if (job.kind === "gate_batch") {
-          const ids =
-            (job.payload as { messageIds?: number[] }).messageIds ?? [];
-          const first = ids.length > 0 ? msgById.get(ids[0]!) : undefined;
-
-          if (!first) {
-            return `${ids.length} 条候选消息`;
-          }
-
-          const head = `${first.senderName}: ${first.text.slice(0, 80)}`;
-
-          return ids.length > 1 ? `${head}（共 ${ids.length} 条）` : head;
-        }
-
-        const p = job.payload as {
-          source?: string;
-          content?: string;
-          senderName?: string;
-          triggerMessageIds?: number[];
-        };
-
-        if (p.content) {
-          const prefix = p.source === "schedule" ? "定时任务: " : "指令: ";
-
-          return `${prefix}${p.content.slice(0, 90)}`;
-        }
-
-        const ids = p.triggerMessageIds ?? [];
-        const first = ids.length > 0 ? msgById.get(ids[0]!) : undefined;
-
-        if (first) {
-          const head = `${first.senderName}: ${first.text.slice(0, 80)}`;
-
-          return ids.length > 1 ? `${head}（共 ${ids.length} 条）` : head;
-        }
-
-        return p.senderName ? `${p.senderName} 触发` : (p.source ?? "对话应答");
-      }
+        msgIds.length > 0 ? await berry.store.messages.getByIds(msgIds) : [];
+      const messagesById = new Map(msgRows.map((m) => [m.id, m]));
 
       return {
         items: rows.map((job) => ({
           ...job,
-          summary: summarizeJob(job),
+          ...berry.jobs.describeJob(job, { messagesById }),
         })),
+        kinds: berry.jobs.descriptors(),
+        counts,
       };
     }),
   );
