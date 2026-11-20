@@ -1,6 +1,6 @@
-import type { AgentServices } from "../agent/loop.ts";
 import { ModelIds } from "../agent/model-ids.ts";
-import { runSubagent } from "../agent/subagents.ts";
+import type { SubagentRegistry } from "../agent/subagents/index.ts";
+import type { AgentServices } from "../tools/types.ts";
 import type { ChatKey, JobRecord, ScheduleRecord } from "../types.ts";
 import { makeChatKey } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
@@ -8,14 +8,20 @@ import { errorMessage, formatDateTime, formatDay } from "../utils/time.ts";
 
 export class ScheduleRunner {
   #services: AgentServices;
+  #subagents: SubagentRegistry;
   #wake: () => void;
   #logger = new Logger("scheduler");
   #timer: ReturnType<typeof setInterval> | null = null;
   #ticking = false;
   #lastDigestCheck = 0;
 
-  constructor(services: AgentServices, wake: () => void) {
+  constructor(
+    services: AgentServices,
+    subagents: SubagentRegistry,
+    wake: () => void,
+  ) {
     this.#services = services;
+    this.#subagents = subagents;
     this.#wake = wake;
   }
 
@@ -108,9 +114,7 @@ export class ScheduleRunner {
       `总结重点：${prompt}`,
     ].join("\n");
 
-    const subagentResult = await runSubagent({
-      kind: "chat_analyst",
-      task,
+    const subagentResult = await this.#subagents.run("chat_analyst", task, {
       services: this.#services,
       actor: {
         chatKey,

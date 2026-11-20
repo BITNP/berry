@@ -4,8 +4,9 @@ import { resolve } from "node:path";
 
 import { toNodeListener } from "h3";
 
-import type { AgentServices } from "./agent/loop.ts";
 import { BerryAgent } from "./agent/runner.ts";
+import type { SubagentRegistry } from "./agent/subagents/index.ts";
+import { createDefaultSubagentRegistry } from "./agent/subagents/index.ts";
 import type { EnvConfig } from "./config/env.ts";
 import type { RuntimeSettings } from "./config/settings.ts";
 import { SmallModelClassifier } from "./gate/classifier.ts";
@@ -23,6 +24,8 @@ import { AdminAuthService } from "./server/auth.ts";
 import { AvatarCache } from "./server/avatars.ts";
 import { createHttpApp } from "./server/routes.ts";
 import { Store } from "./store/index.ts";
+import type { AgentServices, ToolRegistry } from "./tools/index.ts";
+import { createDefaultMainToolRegistry } from "./tools/index.ts";
 import { EventBus, LogHub, Logger } from "./utils/logger.ts";
 import { JobWorker } from "./worker.ts";
 
@@ -41,6 +44,8 @@ export class BerryApp {
   public readonly classifier: SmallModelClassifier;
   public readonly gate: MessageGate;
   public readonly gatewayEvents: GatewayEventSubscriber;
+  public readonly subagents: SubagentRegistry;
+  public readonly mainTools: ToolRegistry;
   public readonly agent: BerryAgent;
   public readonly scheduler: ScheduleRunner;
   public readonly guildAutomation: GuildAutomationRunner;
@@ -67,6 +72,8 @@ export class BerryApp {
     classifier: SmallModelClassifier;
     gate: MessageGate;
     gatewayEvents: GatewayEventSubscriber;
+    subagents: SubagentRegistry;
+    mainTools: ToolRegistry;
     agent: BerryAgent;
     scheduler: ScheduleRunner;
     guildAutomation: GuildAutomationRunner;
@@ -88,6 +95,8 @@ export class BerryApp {
     this.classifier = options.classifier;
     this.gate = options.gate;
     this.gatewayEvents = options.gatewayEvents;
+    this.subagents = options.subagents;
+    this.mainTools = options.mainTools;
     this.agent = options.agent;
     this.scheduler = options.scheduler;
     this.guildAutomation = options.guildAutomation;
@@ -140,7 +149,9 @@ export class BerryApp {
       getSettings,
     };
 
-    const agent = new BerryAgent(services);
+    const subagents = createDefaultSubagentRegistry();
+    const mainTools = createDefaultMainToolRegistry(subagents);
+    const agent = new BerryAgent(services, { subagents, mainTools });
 
     let workerRef: JobWorker;
 
@@ -159,7 +170,9 @@ export class BerryApp {
       media,
       getSettings,
     );
-    const scheduler = new ScheduleRunner(services, () => workerRef.wake());
+    const scheduler = new ScheduleRunner(services, subagents, () =>
+      workerRef.wake(),
+    );
     const guildAutomation = new GuildAutomationRunner(
       env,
       guild,
@@ -190,6 +203,8 @@ export class BerryApp {
       classifier,
       gate,
       gatewayEvents,
+      subagents,
+      mainTools,
       agent,
       scheduler,
       guildAutomation,

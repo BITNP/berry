@@ -2,32 +2,14 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from "openai/resources/chat/completions";
-import type { Static, TObject, TSchema } from "typebox";
-import * as Value from "typebox/value";
+import type { Static, TSchema } from "typebox";
 
 import type { RuntimeSettings } from "../config/settings.ts";
-import type { MessageGatewayClient } from "../gateway/client.ts";
-import type { GuildInternalClient } from "../guild/client.ts";
-import type { IdentityDirectory } from "../identity/keycloak.ts";
-import type { KnowledgeBase } from "../knowledge/files.ts";
-import type { McpHub } from "../mcp/hub.ts";
-import type { MediaProcessor } from "../media/processor.ts";
 import type { Store } from "../store/index.ts";
 import type { TurnMessage } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
 import { completeChat, parseModelJson, validateModelJson } from "./llm.ts";
-
-export interface AgentServices {
-  store: Store;
-  gateway: MessageGatewayClient;
-  media: MediaProcessor;
-  knowledge: KnowledgeBase;
-  directory: IdentityDirectory;
-  guild: GuildInternalClient;
-  mcp: McpHub;
-  getSettings: () => RuntimeSettings;
-}
 
 export interface AgentTool {
   name: string;
@@ -36,32 +18,6 @@ export interface AgentTool {
   mutating?: boolean;
   execute: (args: Record<string, unknown>) => Promise<unknown>;
 }
-
-export const defineTool = <S extends TObject>(spec: {
-  name: string;
-  description: string;
-  parameters: S;
-  mutating?: boolean;
-  execute: (args: Static<S>) => Promise<unknown>;
-}): AgentTool => ({
-  name: spec.name,
-  description: spec.description,
-  parameters: spec.parameters as Record<string, unknown>,
-  mutating: spec.mutating,
-  execute: (rawArgs) => {
-    const candidate = Value.Default(spec.parameters, structuredClone(rawArgs));
-
-    if (!Value.Check(spec.parameters, candidate)) {
-      const details = [...Value.Errors(spec.parameters, candidate)]
-        .map((err) => `${err.instancePath || "/"} ${err.message}`)
-        .join("; ");
-
-      throw new Error(`Invalid tool arguments for ${spec.name}: ${details}`);
-    }
-
-    return spec.execute(candidate);
-  },
-});
 
 export interface ToolLoopResult<T> {
   text: string;

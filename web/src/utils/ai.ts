@@ -41,12 +41,23 @@ const PURPOSE_META: Record<
   "report": { label: "公会周报", type: "success" },
 };
 
-export const purposeMeta = (
-  purpose: string,
-): {
+export function purposeMeta(purpose: string): {
   label: string;
   type: "default" | "info" | "success" | "warning" | "primary";
-} => PURPOSE_META[purpose] ?? { label: purpose, type: "default" };
+} {
+  if (PURPOSE_META[purpose]) {
+    return PURPOSE_META[purpose];
+  }
+
+  if (purpose.startsWith("subagent:")) {
+    return {
+      label: `子代理 · ${purpose.slice("subagent:".length)}`,
+      type: "info",
+    };
+  }
+
+  return { label: purpose, type: "default" };
+}
 
 export const PURPOSE_FILTER_OPTIONS = [
   { label: "主对话", value: "dialog" },

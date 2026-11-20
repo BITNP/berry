@@ -1,7 +1,15 @@
 import { Type } from "typebox";
 
 import type { RuntimeSettings } from "../config/settings.ts";
-import { buildMainTools, createMemoryManageTool } from "../tools/index.ts";
+import type {
+  AgentServices,
+  ToolContext,
+  ToolRegistry,
+} from "../tools/index.ts";
+import {
+  createDefaultMainToolRegistry,
+  memoryManageTool,
+} from "../tools/index.ts";
 import type {
   ChatKey,
   MessageRecord,
@@ -12,10 +20,11 @@ import type {
 import { parseChatKey } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage, estimateTokens, formatDateTime } from "../utils/time.ts";
-import type { AgentServices } from "./loop.ts";
 import { runChatToolLoop } from "./loop.ts";
 import { ModelIds } from "./model-ids.ts";
 import { buildStaticSystemPrompt, resultsAsText } from "./prompt.ts";
+import type { SubagentRegistry } from "./subagents/index.ts";
+import { createDefaultSubagentRegistry } from "./subagents/index.ts";
 
 const outputUnitSchema = Type.Union([
   Type.Object(
@@ -71,18 +80,37 @@ const COMPACTION_KEEP_RECENT_TURNS = 12;
 
 export class BerryAgent {
   #services: AgentServices;
+  #subagents: SubagentRegistry;
+  #mainTools: ToolRegistry;
   #logger = new Logger("agent");
   #compacting = false;
 
-  constructor(services: AgentServices) {
+  constructor(
+    services: AgentServices,
+    options: {
+      subagents?: SubagentRegistry;
+      mainTools?: ToolRegistry;
+    } = {},
+  ) {
     this.#services = services;
+    this.#subagents = options.subagents ?? createDefaultSubagentRegistry();
+    this.#mainTools =
+      options.mainTools ?? createDefaultMainToolRegistry(this.#subagents);
+  }
+
+  public get subagents(): SubagentRegistry {
+    return this.#subagents;
+  }
+
+  public get mainTools(): ToolRegistry {
+    return this.#mainTools;
   }
 
   public async invoke(input: UnifiedInput): Promise<{
     units: OutputUnit[];
     mutated: boolean;
   }> {
-    const { store, gateway, media, directory, guild, mcp } = this.#services;
+    const { store, gateway, media, directory } = this.#services;
     const settings = this.#services.getSettings();
     const allChats = await store.chats.list();
     const chat = allChats.find((c) => c.chatKey === input.chatKey) ?? null;
@@ -246,15 +274,9 @@ export class BerryAgent {
       ? `${feedText}\n\n${JSON.stringify(coreEnvelope)}`
       : JSON.stringify(coreEnvelope);
 
-    const systemPrompt = buildStaticSystemPrompt({
-      personaPrompt: settings.bot.personaPrompt,
-      mcpTools: mcp.tools,
-      guildEnabled: guild.enabled,
-    });
-
-    const tools = buildMainTools(
-      this.#services,
-      {
+    const toolContext: ToolContext = {
+      services: this.#services,
+      actor: {
         chatKey: input.chatKey,
         senderQQ: speakerQQ,
         actorSubject: identityUser?.subject ?? null,
@@ -263,7 +285,14 @@ export class BerryAgent {
         triggerMessageId: requestMessages.at(-1)?.id ?? null,
       },
       ids,
-    );
+    };
+
+    const systemPrompt = buildStaticSystemPrompt({
+      personaPrompt: settings.bot.personaPrompt,
+      capabilities: this.#mainTools.describeCapabilities(this.#services),
+    });
+
+    const tools = this.#mainTools.resolve(toolContext);
 
     const result = await runChatToolLoop({
       purpose: "dialog",
@@ -347,9 +376,9 @@ export class BerryAgent {
     const memoryIndex = await store.memories.index(chatKey, message.userId);
     const ids = new ModelIds();
     const userRef = ids.userRef(message.userId);
-    const memoryTool = createMemoryManageTool(
-      this.#services,
-      {
+    const memoryTool = memoryManageTool.bind({
+      services: this.#services,
+      actor: {
         chatKey,
         senderQQ: message.userId,
         actorSubject: null,
@@ -358,7 +387,7 @@ export class BerryAgent {
         triggerMessageId: message.id,
       },
       ids,
-    );
+    });
 
     await runChatToolLoop({
       purpose: "memory_update",
