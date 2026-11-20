@@ -1,6 +1,6 @@
 import { BerryApp } from "./app.ts";
 import { loadEnvConfig } from "./config/env.ts";
-import { Logger } from "./utils/logger.ts";
+import { Logger, printStartupBanner } from "./utils/logger.ts";
 
 const logger = new Logger("main");
 
@@ -8,6 +8,13 @@ async function main(): Promise<void> {
   const env = loadEnvConfig();
   const app = await BerryApp.create(env);
   const { url } = await app.listen();
+
+  printStartupBanner({
+    url,
+    devAuthBypass: env.devAuthBypass,
+    gatewayConfigured: app.gateway.configured,
+    guildApiConfigured: app.guild.enabled,
+  });
 
   logger.info("berry ready", {
     url,

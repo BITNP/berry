@@ -1,7 +1,6 @@
 import { Writable } from "node:stream";
 
 import pino from "pino";
-import pinoPretty from "pino-pretty";
 
 import type { AdminEvent, LogEntry, LogLevel } from "../types.ts";
 
@@ -244,20 +243,257 @@ const memorySink = new Writable({
   },
 });
 
+const ANSI = {
+  reset: "\x1B[0m",
+  bold: "\x1B[1m",
+  dim: "\x1B[2m",
+  gray: "\x1B[90m",
+  white: "\x1B[97m",
+  red: "\x1B[31m",
+  brightRed: "\x1B[91m",
+  green: "\x1B[32m",
+  yellow: "\x1B[33m",
+  blue: "\x1B[34m",
+  brightBlue: "\x1B[94m",
+  magenta: "\x1B[35m",
+  brightMagenta: "\x1B[95m",
+  cyan: "\x1B[36m",
+  brightCyan: "\x1B[96m",
+  errBadge: "\x1B[1;41;97m",
+  warnBadge: "\x1B[1;33m",
+  infoBadge: "\x1B[1;36m",
+  debugBadge: "\x1B[90m",
+} as const;
+
+const SCOPE_PALETTE = [
+  ANSI.cyan,
+  ANSI.magenta,
+  ANSI.brightBlue,
+  ANSI.green,
+  ANSI.yellow,
+  ANSI.brightMagenta,
+  ANSI.brightCyan,
+] as const;
+
+function shouldColorize(): boolean {
+  if (process.env.NO_COLOR !== undefined) {
+    return false;
+  }
+
+  if (
+    process.env.FORCE_COLOR !== undefined &&
+    process.env.FORCE_COLOR !== "0"
+  ) {
+    return true;
+  }
+
+  return Boolean(process.stdout.isTTY);
+}
+
+const paint = (text: string, code: string, color: boolean): string =>
+  color ? `${code}${text}${ANSI.reset}` : text;
+
+function scopeColor(scope: string): string {
+  if (scope === "berry" || scope === "main") {
+    return ANSI.brightMagenta;
+  }
+
+  if (scope === "agent" || scope.startsWith("llm")) {
+    return ANSI.brightCyan;
+  }
+
+  if (scope.startsWith("gate")) {
+    return ANSI.green;
+  }
+
+  if (scope.startsWith("gateway")) {
+    return ANSI.brightBlue;
+  }
+
+  if (scope.startsWith("guild")) {
+    return ANSI.yellow;
+  }
+
+  let hash = 0;
+
+  for (let i = 0; i < scope.length; i++) {
+    hash = (hash * 31 + scope.charCodeAt(i)) | 0;
+  }
+
+  return SCOPE_PALETTE[Math.abs(hash) % SCOPE_PALETTE.length]!;
+}
+
+function formatClockMs(ms: number): string {
+  const d = new Date(ms);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  const frac = String(d.getMilliseconds()).padStart(3, "0");
+
+  return `${hh}:${mm}:${ss}.${frac}`;
+}
+
+function formatMetaValue(value: unknown, color: boolean): string {
+  if (typeof value === "boolean") {
+    return paint(String(value), value ? ANSI.green : ANSI.red, color);
+  }
+
+  if (typeof value === "number") {
+    return paint(String(value), ANSI.yellow, color);
+  }
+
+  if (typeof value === "string") {
+    const clean = value.replaceAll(/\s+/g, " ").trim();
+    const display =
+      clean.length === 0 || /[\s=]/.test(clean) ? JSON.stringify(clean) : clean;
+
+    return paint(
+      display,
+      clean === "[已脱敏]" ? ANSI.magenta : ANSI.white,
+      color,
+    );
+  }
+
+  return paint(JSON.stringify(value), ANSI.gray, color);
+}
+
+export function formatPrettyLogLine(
+  input: {
+    time: number;
+    level: LogLevel;
+    scope: string;
+    message: string;
+    context: Record<string, unknown>;
+  },
+  color = shouldColorize(),
+): string {
+  const clock = paint(formatClockMs(input.time), ANSI.gray, color);
+  const badge =
+    input.level === "error"
+      ? paint(" ERR ", ANSI.errBadge, color)
+      : input.level === "warn"
+        ? paint(" WRN ", ANSI.warnBadge, color)
+        : input.level === "debug"
+          ? paint(" DBG ", ANSI.debugBadge, color)
+          : paint(" INF ", ANSI.infoBadge, color);
+
+  const scopeLabel =
+    input.scope.length > 16
+      ? `${input.scope.slice(0, 15)}…`
+      : input.scope.padEnd(16);
+  const scopePart = paint(scopeLabel, scopeColor(input.scope), color);
+
+  const msgColor =
+    input.level === "error"
+      ? `${ANSI.bold}${ANSI.brightRed}`
+      : input.level === "warn"
+        ? ANSI.yellow
+        : input.level === "debug"
+          ? ANSI.gray
+          : ANSI.white;
+  const msgPart = paint(input.message, msgColor, color);
+
+  const inlinePairs: string[] = [];
+  let errorDetail: string | null = null;
+
+  for (const [key, value] of Object.entries(input.context)) {
+    if (value === undefined) {
+      continue;
+    }
+
+    if ((key === "error" || key === "err") && typeof value === "string") {
+      errorDetail = value;
+
+      continue;
+    }
+
+    inlinePairs.push(
+      `${paint(`${key}=`, ANSI.gray, color)}${formatMetaValue(value, color)}`,
+    );
+  }
+
+  const head = `${clock} ${badge} ${scopePart} ${msgPart}${inlinePairs.length > 0 ? `  ${inlinePairs.join("  ")}` : ""}`;
+
+  if (!errorDetail) {
+    return `${head}\n`;
+  }
+
+  const indent = " ".repeat(19);
+  const lines = errorDetail.split("\n");
+  const formattedErr = lines
+    .map((line, idx) =>
+      idx === 0
+        ? `${indent}${paint("└─", ANSI.gray, color)} ${paint(line, ANSI.brightRed, color)}`
+        : `${indent}   ${paint(line, ANSI.red, color)}`,
+    )
+    .join("\n");
+
+  return `${head}\n${formattedErr}\n`;
+}
+
+export function printStartupBanner(info: {
+  url: string;
+  devAuthBypass: boolean;
+  gatewayConfigured: boolean;
+  guildApiConfigured: boolean;
+}): void {
+  if (process.env.BERRY_LOG_JSON === "true") {
+    return;
+  }
+
+  const color = shouldColorize();
+  const dot = (ok: boolean, label: string) =>
+    `${paint(ok ? "●" : "○", ok ? ANSI.green : ANSI.gray, color)} ${paint(label, ok ? ANSI.white : ANSI.gray, color)}`;
+  const title = `${paint("🍓 Berry", `${ANSI.bold}${ANSI.brightMagenta}`, color)} ${paint("树莓娘控制台", ANSI.gray, color)}`;
+  const urlLine = `  ${paint("➜", ANSI.brightCyan, color)}  ${paint("控制台", ANSI.gray, color)}  ${paint(info.url, `${ANSI.bold}${ANSI.cyan}`, color)}`;
+  const modLine = `  ${paint("➜", ANSI.brightCyan, color)}  ${paint("状态  ", ANSI.gray, color)}  ${dot(info.gatewayConfigured, "QQ 网关")}   ${dot(info.guildApiConfigured, "公会看板")}   ${dot(info.devAuthBypass, info.devAuthBypass ? "开发免登" : "OIDC 鉴权")}`;
+
+  process.stdout.write(`\n  ${title}\n\n${urlLine}\n${modLine}\n\n`);
+}
+
 const prettyStream =
   process.env.BERRY_LOG_JSON === "true"
     ? process.stdout
-    : pinoPretty({
-        colorize: Boolean(process.stdout.isTTY),
-        singleLine: true,
-        sync: true,
-        translateTime: "SYS:yyyy-mm-dd HH:MM:ss.l",
-        ignore: "pid,hostname,scope",
-        messageFormat: (log, messageKey) => {
-          const scope = typeof log.scope === "string" ? log.scope : "berry";
-          const text = String(log[messageKey] ?? "");
+    : new Writable({
+        write(chunk, _encoding, callback) {
+          try {
+            const raw = String(chunk).trim();
 
-          return `[${scope}] ${text}`;
+            if (raw) {
+              const parsed = JSON.parse(raw) as Record<string, unknown>;
+              const {
+                level: rawLevel,
+                time: rawTime,
+                scope: rawScope,
+                msg: rawMsg,
+                pid: _pid,
+                hostname: _hostname,
+                ...rest
+              } = parsed;
+
+              const level =
+                typeof rawLevel === "number"
+                  ? (LEVEL_NAMES[rawLevel] ?? "info")
+                  : "info";
+              const time = typeof rawTime === "number" ? rawTime : Date.now();
+              const scope = typeof rawScope === "string" ? rawScope : "berry";
+              const message = typeof rawMsg === "string" ? rawMsg : "";
+
+              process.stdout.write(
+                formatPrettyLogLine({
+                  time,
+                  level,
+                  scope,
+                  message,
+                  context: rest,
+                }),
+              );
+            }
+          } catch {
+            process.stdout.write(chunk);
+          }
+
+          callback();
         },
       });
 

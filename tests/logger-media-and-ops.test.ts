@@ -9,7 +9,7 @@ import {
 import { parseOneBotSegments } from "../src/gateway/segments.ts";
 import { previousNaturalWeek } from "../src/guild/automation.ts";
 import { computeNextRunAt } from "../src/store/schedules.ts";
-import { Logger } from "../src/utils/logger.ts";
+import { Logger, formatPrettyLogLine } from "../src/utils/logger.ts";
 import { captureText, createTestBerryApp, startStubServer } from "./helpers.ts";
 
 test("Pino LogHub redaction, level/scope filtering, and clear endpoint", async (t) => {
@@ -61,6 +61,24 @@ test("Pino LogHub redaction, level/scope filtering, and clear endpoint", async (
 
   assert.equal(clearRes.status, 200);
   assert.equal(app.logs.list().items.length, 0);
+
+  // Pretty formatter aligns columns, formats inline key=value pairs, and renders error sub-lines.
+  const prettyLine = formatPrettyLogLine(
+    {
+      time: Date.UTC(2026, 10, 21, 1, 2, 3, 45),
+      level: "error",
+      scope: "gateway",
+      message: "Delivery failed",
+      context: { deliveryId: 7, retry: false, error: "timeout\nat line 2" },
+    },
+    false,
+  );
+
+  assert.match(prettyLine, /ERR\s+gateway\s+Delivery failed/);
+  assert.match(prettyLine, /deliveryId=7/);
+  assert.match(prettyLine, /retry=false/);
+  assert.match(prettyLine, /└─ timeout/);
+  assert.match(prettyLine, /at line 2/);
 });
 
 test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, and backfill", async (t) => {

@@ -361,10 +361,11 @@ defineExpose({
   font-family: var(--berry-mono);
   font-size: 12px;
   line-height: 1.6;
-  background: var(--berry-inset);
-  border: 1px solid var(--berry-border);
+  background: #0d1017;
+  color: #e2e8f0;
+  border: 1px solid #1f2430;
   border-radius: 6px;
-  padding: 6px 10px;
+  padding: 6px 8px;
 }
 
 .chrono-top-bar {
