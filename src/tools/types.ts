@@ -9,7 +9,7 @@ import type { AccessRole } from "../identity/permissions.ts";
 import type { McpHub } from "../mcp/hub.ts";
 import type { MediaProcessor } from "../media/processor.ts";
 import type { Store } from "../store/index.ts";
-import type { ChatKey } from "../types.ts";
+import type { ChatKey, TurnMessage } from "../types.ts";
 import type { ShortLinkClient } from "../utils/shortlink.ts";
 
 export interface AgentServices {
@@ -37,6 +37,7 @@ export interface ToolContext {
   services: AgentServices;
   actor: ToolActor;
   ids: ModelIds;
+  getForkHistory?: () => TurnMessage[];
 }
 
 export interface Tool {

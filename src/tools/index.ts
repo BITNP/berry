@@ -5,6 +5,7 @@ import { qqDirectoryTool, searchQqEmojisTool } from "./qq.ts";
 import { ToolRegistry } from "./registry.ts";
 import { scheduleManageTool } from "./schedule.ts";
 import { shortenUrlTool } from "./shortlink.ts";
+import { inspectTapeTool } from "./tape.ts";
 
 export { memoryManageTool } from "./memory.ts";
 export { ToolRegistry } from "./registry.ts";
@@ -21,4 +22,5 @@ export const createDefaultMainToolRegistry = (
     qqDirectoryTool,
     searchQqEmojisTool,
     shortenUrlTool,
+    inspectTapeTool,
   );

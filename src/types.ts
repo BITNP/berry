@@ -78,11 +78,54 @@ export type TurnMessage =
       content: string;
     };
 
+export interface TapeHandoff {
+  summary: string;
+  confirmedFacts: string[];
+  openTasks: string[];
+  pendingFollowups: string[];
+  sourceEntryIds: number[];
+}
+
+export interface TapeAnchorPayload {
+  reason: "compact" | "reset";
+  sessionId: string;
+  afterMessageId?: number;
+  cutoffEntryId: number;
+  handoff?: TapeHandoff;
+}
+
+export type TapeEntryRecord =
+  | {
+      id: number;
+      tapeId: string;
+      kind: "message";
+      turnId: string;
+      chatKey: string;
+      role: TurnMessage["role"];
+      message: TurnMessage;
+      sidecarId: string | null;
+      createdAt: number;
+    }
+  | {
+      id: number;
+      tapeId: string;
+      kind: "anchor";
+      turnId: string;
+      chatKey: string;
+      role: "anchor";
+      anchor: TapeAnchorPayload;
+      sidecarId: null;
+      createdAt: number;
+    };
+
 export interface ConversationRecord {
   chatKey: string;
   sessionId: string;
   summary: string;
+  handoff: TapeHandoff | null;
+  anchorEntryId: number | null;
   messages: TurnMessage[];
+  entries: TapeEntryRecord[];
   pendingResults: OutputResult[];
   afterMessageId: number;
   updatedAt: number;

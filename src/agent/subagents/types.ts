@@ -9,6 +9,7 @@ export interface SubagentResult {
   brief: string;
   references: string[];
   mutated: boolean;
+  sidecarId?: string;
 }
 
 export interface SubagentDefinition {

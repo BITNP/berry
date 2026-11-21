@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { Type } from "typebox";
 
 import { resolveThinkingEffort } from "../../config/settings.ts";
@@ -20,6 +22,7 @@ const subagentOutputSchema = Type.Object(
 );
 
 const DEFAULT_SUBAGENT_MAX_ROUNDS = 32;
+const MAX_FORK_HISTORY_MESSAGES = 30;
 const SUBAGENT_OUTPUT_SUFFIX =
   '完成检索或操作后，最终只输出一个 JSON 对象：{"brief":"准确清晰的结论（完整覆盖关键事实即可，避免照搬大段原始日志）","references":["可选引用来源、节点URL或m_*句柄"]}';
 
@@ -56,6 +59,7 @@ export class SubagentRegistry {
     kind: string,
     task: string,
     ctx: ToolContext,
+    options?: { fork?: boolean },
   ): Promise<SubagentResult> {
     const def = this.#definitions.get(kind);
 
@@ -92,6 +96,11 @@ export class SubagentRegistry {
       `subagent:${def.kind}`,
       def.thinkingEffort,
     );
+    const forkedHistory =
+      options?.fork && ctx.getForkHistory
+        ? trimForkHistory(ctx.getForkHistory(), MAX_FORK_HISTORY_MESSAGES)
+        : [];
+    const forked = forkedHistory.length > 0;
 
     const result = await runChatToolLoop({
       purpose: `subagent:${def.kind}`,
@@ -99,18 +108,34 @@ export class SubagentRegistry {
       settings,
       store: ctx.services.store,
       systemPrompt: `${rolePrompt}\n${SUBAGENT_OUTPUT_SUFFIX}`,
-      history: [],
-      userContent: JSON.stringify({ task }),
+      history: forkedHistory,
+      userContent: JSON.stringify(
+        forked ? { task, forkedFromMain: true } : { task },
+      ),
       tools,
       maxRounds: def.maxRounds ?? DEFAULT_SUBAGENT_MAX_ROUNDS,
       outputSchema: subagentOutputSchema,
       thinkingEffort,
     });
 
+    const sidecarId = `sc_${randomUUID().slice(0, 8)}`;
+
+    await ctx.services.store.conversations.appendSidecar(
+      sidecarId,
+      {
+        chatKey: ctx.actor.chatKey,
+        kind: def.kind,
+        task,
+        forked,
+      },
+      result.turnMessages,
+    );
+
     return {
       brief: result.structured.brief,
       references: result.structured.references ?? [],
       mutated: result.mutated,
+      sidecarId,
     };
   }
 
@@ -122,7 +147,7 @@ export class SubagentRegistry {
     }
 
     return [
-      "- delegate_subagent(kind, task): 隔离执行具体任务并返回 brief：",
+      "- delegate_subagent(kind, task, fork?): 委派子代理执行多步检索或外部操作并返回 brief + sidecarId（传 fork=true 可从主上下文当前视图直接派生，避免重复探索）：",
       ...defs.map(
         (def) => `  * ${def.kind}: ${def.describeCapability(services)}`,
       ),
@@ -146,15 +171,17 @@ export class SubagentRegistry {
 
         const delegateTool = defineTool({
           name: "delegate_subagent",
-          description: `委派隔离的零历史任务子代理完成检索或执行操作，只返回精炼结论，避免污染全局主上下文。kind 可选：${kindSummary}。`,
+          description: `委派任务子代理完成多步检索或外部操作，执行轨迹存入独立 Sidecar Tape，只把精炼结论及 sidecarId 返回主上下文。当任务依赖主对话已有上下文时可传 fork=true 直接继承当前视图，免去重复探索。kind 可选：${kindSummary}。`,
           parameters: Type.Object(
             {
               kind: Type.String({ enum: defs.map((def) => def.kind) }),
               task: Type.String({ minLength: 1 }),
+              fork: Type.Optional(Type.Boolean()),
             },
             { additionalProperties: false },
           ),
-          execute: (args, runCtx) => this.run(args.kind, args.task, runCtx),
+          execute: (args, runCtx) =>
+            this.run(args.kind, args.task, runCtx, { fork: args.fork }),
         });
 
         return [delegateTool.bind(ctx)];
@@ -167,4 +194,22 @@ export class SubagentRegistry {
       (def) => !def.available || def.available(services),
     );
   }
+}
+
+function trimForkHistory<T extends { role: string }>(
+  history: T[],
+  maxMessages: number,
+): T[] {
+  if (history.length <= maxMessages) {
+    return history;
+  }
+
+  let start = history.length - maxMessages;
+
+  // Never start a forked slice on a dangling `tool` or `assistant` turn; advance to the next `user` turn.
+  while (start < history.length && history[start]!.role !== "user") {
+    start++;
+  }
+
+  return start < history.length ? history.slice(start) : [];
 }

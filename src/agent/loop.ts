@@ -43,6 +43,7 @@ export async function runChatToolLoop<S extends TSchema>(options: {
   maxTokens?: number;
   temperature?: number;
   thinkingEffort?: ThinkingEffort;
+  onBeforeToolBatch?: (completedHistory: TurnMessage[]) => void;
 }): Promise<ToolLoopResult<Static<S>>> {
   const logger = new Logger(`llm:${options.purpose}`);
   const cfg = options.settings.mainModel;
@@ -136,6 +137,10 @@ export async function runChatToolLoop<S extends TSchema>(options: {
     );
 
     if (functionCalls.length > 0) {
+      // Snapshot completed main messages before appending the in-flight assistant tool_calls turn,
+      // so any forked subagent gets valid OpenAI history without dangling unresolved tool calls.
+      options.onBeforeToolBatch?.(messages.slice(1) as TurnMessage[]);
+
       const assistantTurn: TurnMessage = {
         role: "assistant",
         content: assistantText || null,

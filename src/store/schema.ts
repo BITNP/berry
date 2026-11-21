@@ -59,6 +59,17 @@ export interface BerryTables {
     after_message_id: number;
     updated_at: number;
   };
+  tape_entries: {
+    id: Generated<number>;
+    tape_id: string;
+    kind: string;
+    turn_id: string;
+    chat_key: string;
+    role: string;
+    payload_json: string;
+    sidecar_id: string | null;
+    created_at: number;
+  };
   memories: {
     id: Generated<number>;
     scope: string;
@@ -566,6 +577,116 @@ const migrations: Record<string, Migration> = {
         .on("memories")
         .columns(["expires_at"])
         .execute();
+    },
+  },
+  "005_tape_entries": {
+    async up(db) {
+      await db.schema
+        .createTable("tape_entries")
+        .ifNotExists()
+        .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+        .addColumn("tape_id", "text", (c) => c.notNull())
+        .addColumn("kind", "text", (c) => c.notNull())
+        .addColumn("turn_id", "text", (c) => c.notNull().defaultTo(""))
+        .addColumn("chat_key", "text", (c) => c.notNull().defaultTo(""))
+        .addColumn("role", "text", (c) => c.notNull().defaultTo(""))
+        .addColumn("payload_json", "text", (c) => c.notNull())
+        .addColumn("sidecar_id", "text")
+        .addColumn("created_at", "integer", (c) => c.notNull())
+        .execute();
+
+      await db.schema
+        .createIndex("idx_tape_entries_tape_id")
+        .ifNotExists()
+        .on("tape_entries")
+        .columns(["tape_id", "id"])
+        .execute();
+
+      await db.schema
+        .createIndex("idx_tape_entries_tape_kind")
+        .ifNotExists()
+        .on("tape_entries")
+        .columns(["tape_id", "kind", "id"])
+        .execute();
+
+      // Migrate any legacy single-row conversation state into append-only tape entries.
+      const existingCount = await sql<{ count: number }>`
+        select count(*) as count from tape_entries where tape_id = 'global'
+      `.execute(db);
+
+      if (Number(existingCount.rows[0]?.count ?? 0) > 0) {
+        return;
+      }
+
+      const legacy = await sql<{
+        session_id: string;
+        summary: string;
+        messages_json: string;
+        updated_at: number;
+      }>`
+        select session_id, summary, messages_json, updated_at
+        from conversations
+        where chat_key = 'global'
+        limit 1
+      `.execute(db);
+      const row = legacy.rows[0];
+
+      if (!row) {
+        return;
+      }
+
+      const ts = Number(row.updated_at || Date.now());
+
+      if (row.summary?.trim()) {
+        await sql`
+          insert into tape_entries (tape_id, kind, turn_id, chat_key, role, payload_json, sidecar_id, created_at)
+          values (
+            'global',
+            'anchor',
+            '',
+            '',
+            'anchor',
+            ${JSON.stringify({
+              reason: "compact",
+              sessionId: row.session_id,
+              cutoffEntryId: 0,
+              handoff: {
+                summary: row.summary,
+                confirmedFacts: [],
+                openTasks: [],
+                pendingFollowups: [],
+                sourceEntryIds: [],
+              },
+            })},
+            null,
+            ${ts}
+          )
+        `.execute(db);
+      }
+
+      const parsed = JSON.parse(row.messages_json || "[]") as {
+        role?: string;
+      }[];
+
+      for (const msg of parsed) {
+        if (!msg || typeof msg.role !== "string") {
+          continue;
+        }
+
+        await sql`
+          insert into tape_entries (tape_id, kind, turn_id, chat_key, role, payload_json, sidecar_id, created_at)
+          values (
+            'global',
+            'message',
+            'legacy',
+            '',
+            ${msg.role},
+            ${JSON.stringify(msg)},
+            null,
+            ${ts}
+          )
+        `.execute(db);
+      }
     },
   },
 };

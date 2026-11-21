@@ -61,12 +61,50 @@ interface UsageBucket {
   avgDurationMs: number;
 }
 
+interface TapeHandoffView {
+  summary: string;
+  confirmedFacts: string[];
+  openTasks: string[];
+  pendingFollowups: string[];
+  sourceEntryIds: number[];
+}
+
+interface TapeEntryView {
+  id: number;
+  tapeId: string;
+  kind: "message" | "anchor";
+  turnId: string;
+  chatKey: string;
+  role: string;
+  sidecarId: string | null;
+  createdAt: number;
+  message?: {
+    role: string;
+    content: string | null;
+    tool_call_id?: string;
+    tool_calls?: {
+      id: string;
+      function: { name: string; arguments: string };
+    }[];
+  };
+  anchor?: {
+    reason: "compact" | "reset";
+    sessionId: string;
+    afterMessageId?: number;
+    cutoffEntryId: number;
+    handoff?: TapeHandoffView;
+  };
+}
+
 interface ConversationView {
   chatKey: string;
   sessionId: string;
   summary: string;
+  handoff: TapeHandoffView | null;
+  anchorEntryId: number | null;
   afterMessageId: number;
   updatedAt: number;
+  entries: TapeEntryView[];
   messages: {
     role: string;
     content: string | null;
@@ -111,6 +149,13 @@ const gateTotal = ref<number | null>(null);
 const gatePaneRef = ref<InstanceType<typeof GateMonitorPane> | null>(null);
 const usageBuckets = ref<UsageBucket[]>([]);
 const conversation = ref<ConversationView | null>(null);
+const contextMode = ref<"active" | "full">("active");
+const fullTapeEntries = ref<TapeEntryView[]>([]);
+const loadingTape = ref(false);
+const sidecarDrawerOpen = ref(false);
+const sidecarIdActive = ref<string | null>(null);
+const sidecarEntries = ref<TapeEntryView[]>([]);
+const loadingSidecar = ref(false);
 const resettingContext = ref(false);
 
 const filterPurpose = ref<string | null>(
@@ -141,45 +186,85 @@ const TURN_PREVIEW_LIMIT = 900;
 interface ContextTurnItem {
   key: string;
   index: number;
+  kind: "message" | "anchor";
   role: string;
+  chatKey: string;
   toolCallId?: string;
   toolNames: string[];
+  sidecarId: string | null;
+  anchorReason?: "compact" | "reset";
+  createdAt?: number;
   body: string;
   preview: string;
   isLong: boolean;
 }
 
-const contextItems = computed<ContextTurnItem[]>(() => {
-  const sessionId = conversation.value?.sessionId ?? "s";
-  const list = conversation.value?.messages ?? [];
-
-  return list.map((turn, idx) => {
-    const body = turn.content
-      ? prettyMaybeJson(turn.content)
-      : turn.tool_calls?.length
-        ? JSON.stringify(
-            turn.tool_calls.map((c) => ({
-              tool: c.function.name,
-              args: prettyMaybeJson(c.function.arguments),
-            })),
-            null,
-            2,
-          )
-        : "(empty)";
+function formatTapeEntry(entry: TapeEntryView): ContextTurnItem {
+  if (entry.kind === "anchor" && entry.anchor) {
+    const body = entry.anchor.handoff
+      ? JSON.stringify(entry.anchor.handoff, null, 2)
+      : `重置检查点（session: ${entry.anchor.sessionId}${entry.anchor.afterMessageId ? `, afterMessageId: ${entry.anchor.afterMessageId}` : ""}）`;
     const isLong = body.length > TURN_PREVIEW_LIMIT;
 
     return {
-      key: `${sessionId}-turn-${idx}`,
-      index: idx + 1,
-      role: turn.role,
-      toolCallId: turn.tool_call_id,
-      toolNames: (turn.tool_calls ?? []).map((c) => c.function.name),
+      key: `tape-${entry.tapeId}-${entry.id}`,
+      index: entry.id,
+      kind: "anchor",
+      role: "anchor",
+      chatKey: entry.chatKey,
+      toolNames: [],
+      sidecarId: null,
+      anchorReason: entry.anchor.reason,
+      createdAt: entry.createdAt,
       body,
       preview: isLong ? `${body.slice(0, TURN_PREVIEW_LIMIT)}\n…` : body,
       isLong,
     };
-  });
+  }
+
+  const turn = entry.message;
+  const body = turn?.content
+    ? prettyMaybeJson(turn.content)
+    : turn?.tool_calls?.length
+      ? JSON.stringify(
+          turn.tool_calls.map((c) => ({
+            tool: c.function.name,
+            args: prettyMaybeJson(c.function.arguments),
+          })),
+          null,
+          2,
+        )
+      : "(empty)";
+  const isLong = body.length > TURN_PREVIEW_LIMIT;
+
+  return {
+    key: `tape-${entry.tapeId}-${entry.id}`,
+    index: entry.id,
+    kind: "message",
+    role: entry.role,
+    chatKey: entry.chatKey,
+    toolCallId: turn?.tool_call_id,
+    toolNames: (turn?.tool_calls ?? []).map((c) => c.function.name),
+    sidecarId: entry.sidecarId,
+    createdAt: entry.createdAt,
+    body,
+    preview: isLong ? `${body.slice(0, TURN_PREVIEW_LIMIT)}\n…` : body,
+    isLong,
+  };
+}
+
+const contextItems = computed<ContextTurnItem[]>(() => {
+  const source =
+    contextMode.value === "full"
+      ? fullTapeEntries.value
+      : (conversation.value?.entries ?? []);
+
+  return source.map(formatTapeEntry);
 });
+
+const sidecarItems = computed<ContextTurnItem[]>(() =>
+  sidecarEntries.value.map(formatTapeEntry),
+);
 
 function toggleTurnExpand(key: string) {
   expandedTurns.value = {
@@ -247,6 +332,43 @@ async function loadCalls() {
   }
 }
 
+async function loadFullTape() {
+  loadingTape.value = true;
+
+  try {
+    const res = await apiFetch<{ entries: TapeEntryView[] }>(
+      "/api/admin/tape?tapeId=global&limit=200",
+    );
+
+    fullTapeEntries.value = res.entries;
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : "加载完整 Tape 失败");
+  } finally {
+    loadingTape.value = false;
+  }
+}
+
+async function openSidecar(sidecarId: string) {
+  sidecarIdActive.value = sidecarId;
+  sidecarDrawerOpen.value = true;
+  loadingSidecar.value = true;
+  sidecarEntries.value = [];
+
+  try {
+    const res = await apiFetch<{ entries: TapeEntryView[] }>(
+      `/api/admin/tape?tapeId=${encodeURIComponent(`sidecar:${sidecarId}`)}&limit=100`,
+    );
+
+    sidecarEntries.value = res.entries;
+  } catch (err) {
+    message.error(
+      err instanceof Error ? err.message : "加载子代理 Sidecar 失败",
+    );
+  } finally {
+    loadingSidecar.value = false;
+  }
+}
+
 async function loadMeta() {
   loadingMeta.value = true;
 
@@ -258,6 +380,10 @@ async function loadMeta() {
 
     usageBuckets.value = ov.usageBuckets;
     conversation.value = conv;
+
+    if (contextMode.value === "full") {
+      await loadFullTape();
+    }
   } catch (err) {
     message.error(err instanceof Error ? err.message : "加载上下文失败");
   } finally {
@@ -300,7 +426,11 @@ async function handleResetConversation() {
       "/api/admin/conversation/reset",
       { method: "POST" },
     );
-    message.success("全局上下文已重置");
+    if (contextMode.value === "full") {
+      await loadFullTape();
+    }
+
+    message.success("已追加重置检查点，历史轨迹仍保留在完整 Tape 中");
   } catch (err) {
     message.error(err instanceof Error ? err.message : "重置全局上下文失败");
   } finally {
@@ -688,12 +818,27 @@ onMounted(() => {
         <NTabPane name="context" tab="全局上下文">
           <NSpace v-if="conversation" :size="12" vertical>
             <div class="filter-bar space-between">
-              <NText class="mono sub-note" depth="3">
-                session: {{ conversation.sessionId }}，共
-                {{ contextItems.length }} 轮，afterMessageId:
-                {{ conversation.afterMessageId }}，更新于
-                {{ formatTime(conversation.updatedAt) }}
-              </NText>
+              <NSpace align="center" :size="10" wrap>
+                <NRadioGroup
+                  size="small"
+                  :value="contextMode"
+                  @update:value="
+                    (v: 'active' | 'full') => {
+                      contextMode = v;
+                      if (v === 'full') void loadFullTape();
+                    }
+                  "
+                >
+                  <NRadioButton value="active">当前活跃视图</NRadioButton>
+                  <NRadioButton value="full">完整 Tape 时间线</NRadioButton>
+                </NRadioGroup>
+                <NText class="mono sub-note" depth="3">
+                  session: {{ conversation.sessionId }}，显示
+                  {{ contextItems.length }} 条，afterMessageId:
+                  {{ conversation.afterMessageId }}，更新于
+                  {{ formatTime(conversation.updatedAt) }}
+                </NText>
+              </NSpace>
               <NPopconfirm @positive-click="handleResetConversation">
                 <template #trigger>
                   <NButton
@@ -704,20 +849,54 @@ onMounted(() => {
                     <template #icon>
                       <RotateCcw :size="14" />
                     </template>
-                    重置全局上下文
+                    追加重置检查点
                   </NButton>
                 </template>
-                将清空全局短期上下文轮次并刷新
-                sessionId，长期记忆保留不变。确认继续？
+                将在 Tape 尾部追加重置 Anchor（历史记录不删除，可在完整 Tape
+                中回放），长期记忆保留不变。确认继续？
               </NPopconfirm>
             </div>
 
             <NCard
-              v-if="conversation.summary"
+              v-if="conversation.handoff"
               size="small"
-              title="全局压缩摘要"
+              :title="`结构化交接摘要（Anchor #${conversation.anchorEntryId ?? '-'}）`"
             >
-              <div class="pre-wrap">{{ conversation.summary }}</div>
+              <NSpace :size="8" vertical>
+                <div class="pre-wrap">{{ conversation.handoff.summary }}</div>
+                <div
+                  v-if="conversation.handoff.confirmedFacts.length > 0"
+                  class="sub-note"
+                >
+                  <strong>已确认事实：</strong>
+                  {{ conversation.handoff.confirmedFacts.join("；") }}
+                </div>
+                <div
+                  v-if="conversation.handoff.openTasks.length > 0"
+                  class="sub-note"
+                >
+                  <strong>未完成任务：</strong>
+                  {{ conversation.handoff.openTasks.join("；") }}
+                </div>
+                <div
+                  v-if="conversation.handoff.pendingFollowups.length > 0"
+                  class="sub-note"
+                >
+                  <strong>待跟进事项：</strong>
+                  {{ conversation.handoff.pendingFollowups.join("；") }}
+                </div>
+                <NText
+                  v-if="conversation.handoff.sourceEntryIds.length > 0"
+                  class="mono sub-note"
+                  depth="3"
+                >
+                  溯源条目：#{{ conversation.handoff.sourceEntryIds[0] }} ~ #{{
+                    conversation.handoff.sourceEntryIds[
+                      conversation.handoff.sourceEntryIds.length - 1
+                    ]
+                  }}（共 {{ conversation.handoff.sourceEntryIds.length }} 条）
+                </NText>
+              </NSpace>
             </NCard>
 
             <NCard
@@ -732,7 +911,11 @@ onMounted(() => {
 
             <ChronoVirtualList
               class="context-vlist"
-              empty-text="全局上下文当前暂无短期轮次"
+              :empty-text="
+                loadingTape
+                  ? '正在加载完整 Tape...'
+                  : '全局上下文当前暂无短期轮次'
+              "
               :item-size="54"
               :items="contextItems"
               key-field="key"
@@ -742,8 +925,24 @@ onMounted(() => {
                   <div class="turn-box">
                     <div class="turn-head">
                       <span class="mono turn-time">#{{ item.index }}</span>
-                      <NTag size="tiny" :type="roleTagType(item.role)">
+                      <NTag
+                        v-if="item.kind === 'anchor'"
+                        size="tiny"
+                        :type="
+                          item.anchorReason === 'reset' ? 'warning' : 'success'
+                        "
+                      >
+                        {{
+                          item.anchorReason === "reset"
+                            ? "anchor: reset"
+                            : "anchor: compact"
+                        }}
+                      </NTag>
+                      <NTag v-else size="tiny" :type="roleTagType(item.role)">
                         {{ item.role }}
+                      </NTag>
+                      <NTag v-if="item.chatKey" size="tiny" type="default">
+                        {{ item.chatKey }}
                       </NTag>
                       <NTag
                         v-for="(toolName, tIdx) in item.toolNames"
@@ -753,6 +952,15 @@ onMounted(() => {
                       >
                         {{ toolName }}
                       </NTag>
+                      <NButton
+                        v-if="item.sidecarId"
+                        secondary
+                        size="tiny"
+                        type="primary"
+                        @click="openSidecar(item.sidecarId)"
+                      >
+                        Sidecar {{ item.sidecarId }}
+                      </NButton>
                       <span v-if="item.toolCallId" class="mono turn-time">
                         {{ item.toolCallId }}
                       </span>
@@ -912,6 +1120,52 @@ onMounted(() => {
           >
             该记录产生于追踪升级之前，仅包含用量统计。
           </NText>
+        </NSpace>
+      </NDrawerContent>
+    </NDrawer>
+
+    <NDrawer v-model:show="sidecarDrawerOpen" class="drawer-safe" :width="620">
+      <NDrawerContent
+        closable
+        :title="`子代理 Sidecar Tape (${sidecarIdActive ?? ''})`"
+      >
+        <NSpace :size="10" vertical>
+          <NText v-if="loadingSidecar" depth="3">正在加载 Sidecar 轨迹…</NText>
+          <NText v-else-if="sidecarItems.length === 0" depth="3">
+            暂无轨迹记录。
+          </NText>
+          <div v-for="item in sidecarItems" :key="item.key" class="turn-box">
+            <div class="turn-head">
+              <span class="mono turn-time">#{{ item.index }}</span>
+              <NTag size="tiny" :type="roleTagType(item.role)">
+                {{ item.role }}
+              </NTag>
+              <NTag
+                v-for="(toolName, tIdx) in item.toolNames"
+                :key="`${toolName}-${tIdx}`"
+                size="tiny"
+                type="info"
+              >
+                {{ toolName }}
+              </NTag>
+              <NButton
+                v-if="item.isLong"
+                class="ml-auto"
+                quaternary
+                size="tiny"
+                @click="toggleTurnExpand(item.key)"
+              >
+                {{
+                  expandedTurns[item.key]
+                    ? "收起"
+                    : `展开全文 (${item.body.length.toLocaleString()} 字)`
+                }}
+              </NButton>
+            </div>
+            <pre class="code-block mt-xs">{{
+              expandedTurns[item.key] ? item.body : item.preview
+            }}</pre>
+          </div>
         </NSpace>
       </NDrawerContent>
     </NDrawer>

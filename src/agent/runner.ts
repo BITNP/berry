@@ -73,6 +73,9 @@ const agentOutputSchema = Type.Object(
 const compactionOutputSchema = Type.Object(
   {
     summary: Type.String({ minLength: 1 }),
+    confirmedFacts: Type.Optional(Type.Array(Type.String())),
+    openTasks: Type.Optional(Type.Array(Type.String())),
+    pendingFollowups: Type.Optional(Type.Array(Type.String())),
   },
   { additionalProperties: false },
 );
@@ -108,7 +111,7 @@ export class BerryAgent {
     const settings = this.#services.getSettings();
     const allChats = await store.chats.list();
     const chat = allChats.find((c) => c.chatKey === input.chatKey) ?? null;
-    const conversation = await store.conversations.open();
+    const head = await store.conversations.open();
     const drainedResults = await store.conversations.drainPendingResults();
     const feedText = resultsAsText(drainedResults);
 
@@ -133,9 +136,7 @@ export class BerryAgent {
 
     const requestMessages = (
       await store.messages.getByIds(input.triggerMessageIds)
-    ).filter(
-      (m) => m.recalledAt === null && m.id > conversation.afterMessageId,
-    );
+    ).filter((m) => m.recalledAt === null && m.id > head.afterMessageId);
 
     if (input.source === "qq_batch" && requestMessages.length === 0) {
       return { units: [], mutated: false };
@@ -165,11 +166,11 @@ export class BerryAgent {
     const recentContext =
       firstId === undefined
         ? await store.messages.recent(input.chatKey, 12, {
-            afterId: conversation.afterMessageId,
+            afterId: head.afterMessageId,
           })
         : await store.messages.recent(input.chatKey, 20, {
             beforeId: firstId,
-            afterId: conversation.afterMessageId,
+            afterId: head.afterMessageId,
           });
 
     const speakerQQ = input.senderId ?? requestMessages.at(-1)?.userId ?? null;
@@ -178,6 +179,21 @@ export class BerryAgent {
     const identityUser = speakerQQ
       ? await directory.byQQ(speakerQQ).catch(() => null)
       : null;
+    const role = resolveAccessRole({
+      userId: speakerQQ,
+      adminQQs: settings.policy.adminQQs,
+      permissions: identityUser?.permissions,
+      isSystemSource:
+        input.source === "admin_inject" || input.source === "schedule",
+    });
+
+    // Assemble a permission-filtered Tape View:
+    // admin sees the full global cross-chat Tape + structured handoff;
+    // member/guest see only Tape entries from the current chatKey to prevent cross-chat leakage.
+    const conversation = await store.conversations.buildView({
+      role,
+      chatKey: input.chatKey,
+    });
 
     const memoryIndex = await store.memories.index(
       input.chatKey,
@@ -202,14 +218,6 @@ export class BerryAgent {
       mentionedBot: msg.mentionedBot,
       text: enrichedText.get(msg.id) ?? msg.text,
       time: formatDateTime(msg.sentAt, settings.bot.timezone),
-    });
-
-    const role = resolveAccessRole({
-      userId: speakerQQ,
-      adminQQs: settings.policy.adminQQs,
-      permissions: identityUser?.permissions,
-      isSystemSource:
-        input.source === "admin_inject" || input.source === "schedule",
     });
 
     const knownGroups = allChats
@@ -259,11 +267,16 @@ export class BerryAgent {
       ...(input.content ? { instruction: input.content } : {}),
     };
 
-    // Transient water-chat context + memory index are sent in this invocation only.
+    // Transient water-chat context + memory index + structured handoff hint are sent in this invocation only.
     const fullTurnPayload = {
       ...coreEnvelope,
-      ...(conversation.summary
-        ? { conversationSummary: conversation.summary }
+      ...(conversation.handoff
+        ? {
+            conversationHandoff: {
+              anchorEntryId: conversation.anchorEntryId,
+              ...conversation.handoff,
+            },
+          }
         : {}),
       recentContext: recentContext.map(mapMessage),
       ...(knownGroups.length > 0 ? { knownGroups } : {}),
@@ -278,6 +291,7 @@ export class BerryAgent {
       ? `${feedText}\n\n${JSON.stringify(coreEnvelope)}`
       : JSON.stringify(coreEnvelope);
 
+    let forkSnapshot: TurnMessage[] = [...conversation.messages];
     const toolContext: ToolContext = {
       services: this.#services,
       actor: {
@@ -289,6 +303,7 @@ export class BerryAgent {
         triggerMessageId: requestMessages.at(-1)?.id ?? null,
       },
       ids,
+      getForkHistory: () => forkSnapshot,
     };
 
     const systemPrompt = buildStaticSystemPrompt({
@@ -310,6 +325,9 @@ export class BerryAgent {
       maxRounds: 40,
       outputSchema: agentOutputSchema,
       thinkingEffort: resolveThinkingEffort(settings, "dialog"),
+      onBeforeToolBatch: (completedHistory) => {
+        forkSnapshot = completedHistory;
+      },
     });
 
     // Resolve opaque quote, reaction, and optional targetRef handles back to real OneBot IDs.
@@ -350,6 +368,7 @@ export class BerryAgent {
       const updated = await store.conversations.appendTurn(
         conversation.sessionId,
         [persistedUser, ...result.turnMessages],
+        { chatKey: input.chatKey },
       );
 
       if (updated) {
@@ -458,17 +477,20 @@ export class BerryAgent {
     const { store } = this.#services;
     const conversation = await store.conversations.get();
 
-    if (!conversation || conversation.messages.length === 0) {
+    if (!conversation || conversation.entries.length === 0) {
       return;
     }
+
+    const msgEntries = conversation.entries.filter(
+      (entry) => entry.kind === "message",
+    );
 
     const budget =
       settings.mainModel.contextTokens -
       settings.mainModel.maxOutputTokens -
       4096;
     const overTokenBudget = lastPromptTokens >= budget * 0.75;
-    const overMessageLimit =
-      conversation.messages.length >= COMPACTION_MAX_MESSAGES;
+    const overMessageLimit = msgEntries.length >= COMPACTION_MAX_MESSAGES;
 
     if (!overTokenBudget && !overMessageLimit) {
       return;
@@ -477,8 +499,8 @@ export class BerryAgent {
     // Split along clean user-turn boundaries without heuristic token estimation.
     const userIndices: number[] = [];
 
-    for (let i = 0; i < conversation.messages.length; i++) {
-      if (conversation.messages[i]!.role === "user") {
+    for (const [i, msgEntry] of msgEntries.entries()) {
+      if (msgEntry.role === "user") {
         userIndices.push(i);
       }
     }
@@ -498,6 +520,12 @@ export class BerryAgent {
       : Math.min(COMPACTION_KEEP_RECENT_TURNS, userIndices.length - 1);
     const turnCursor = Math.max(1, userIndices.length - keepTurns);
     const splitIndex = userIndices[turnCursor]!;
+    const archivedEntries = msgEntries.slice(0, splitIndex);
+    const cutoffEntryId = archivedEntries.at(-1)?.id;
+
+    if (!cutoffEntryId) {
+      return;
+    }
 
     this.#compacting = true;
 
@@ -508,11 +536,16 @@ export class BerryAgent {
         settings,
         store,
         systemPrompt:
-          '你是会话历史压缩器。将已有摘要和即将归档的历史对话合并为一份紧凑中文摘要，保留已确认结论、任务 ID、成员偏好和未决事项；丢弃冗余过程细节。只输出 JSON：{"summary":"..."}',
+          '你是会话历史压缩器。将已有结构化交接摘要（previousHandoff）和即将归档的 Tape 条目整理为紧凑中文结构化交接契约（Handoff），作为后续推理的索引提示（原始条目永久保留在 Tape 中可按 ID 回查）。只输出 JSON：{"summary":"一句话或几句总览","confirmedFacts":["已确认事实或结论"],"openTasks":["未完成任务或编号"],"pendingFollowups":["待跟进事项"]}',
         history: [],
         userContent: JSON.stringify({
-          previousSummary: conversation.summary,
-          archivedMessages: conversation.messages.slice(0, splitIndex),
+          previousHandoff: conversation.handoff,
+          archivedEntries: archivedEntries.map((entry) => ({
+            entryId: entry.id,
+            chatKey: entry.chatKey,
+            role: entry.role,
+            message: entry.message,
+          })),
         }),
         tools: [],
         maxRounds: 3,
@@ -526,16 +559,26 @@ export class BerryAgent {
         throw new Error("必须返回非空字符串 summary");
       }
 
-      const saved = await store.conversations.compact(
-        conversation.sessionId,
-        conversation.summary,
-        splitIndex,
+      const handoff = {
         summary,
+        confirmedFacts: (res.structured.confirmedFacts ?? []).filter(Boolean),
+        openTasks: (res.structured.openTasks ?? []).filter(Boolean),
+        pendingFollowups: (res.structured.pendingFollowups ?? []).filter(
+          Boolean,
+        ),
+        sourceEntryIds: archivedEntries.map((entry) => entry.id),
+      };
+      const anchor = await store.conversations.appendCompactAnchor(
+        conversation.sessionId,
+        cutoffEntryId,
+        handoff,
       );
 
-      if (saved) {
-        this.#logger.info("Conversation compacted", {
-          consumedMessages: splitIndex,
+      if (anchor) {
+        this.#logger.info("Conversation compacted via append-only anchor", {
+          anchorEntryId: anchor.id,
+          cutoffEntryId,
+          consumedEntries: archivedEntries.length,
           lastPromptTokens,
         });
       }

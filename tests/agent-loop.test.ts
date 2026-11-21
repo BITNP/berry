@@ -9,7 +9,10 @@ import {
   resolveThinkingEffort,
 } from "../src/config/settings.ts";
 import { defineTool } from "../src/tools/define.ts";
+import { inspectTapeTool } from "../src/tools/tape.ts";
+import type { ToolContext } from "../src/tools/types.ts";
 import {
+  captureText,
   chatReply,
   chatToolCalls,
   createTestBerryApp,
@@ -693,4 +696,373 @@ test("per-task thinkingEffort resolves defaults, category fallback, and exact ov
 
   assert.ok(coreCalls.items.length > 0);
   assert.ok(coreCalls.items.every((item) => item.purpose !== "gate"));
+});
+
+test("append-only Tape anchors, structured handoff, permission-filtered Views, forked subagent Sidecar Tape, and inspect_tape", async (t) => {
+  let forkedSubagentMessages: { role: string; content: string | null }[] = [];
+  const mainRequestHistoryLengths: Record<string, number> = {};
+  const mainRequestTextByPrompt: Record<string, string> = {};
+
+  const llmStub = await startStubServer((req, res, bodyText) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url !== "/v1/chat/completions") {
+      res.statusCode = 404;
+      res.end();
+
+      return;
+    }
+
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const sys = reqJson.messages[0]?.content ?? "";
+
+    if (sys.includes("会话历史压缩器")) {
+      res.end(
+        JSON.stringify(
+          chatReply({
+            summary: "已完成 Tape 架构方案对齐",
+            confirmedFacts: ["采用只追加 Tape 与 Anchor 检查点"],
+            openTasks: ["上线 Sidecar 抽屉"],
+            pendingFollowups: ["回归验证权限过滤视图"],
+          }),
+        ),
+      );
+
+      return;
+    }
+
+    if (sys.includes("专项整理子代理")) {
+      forkedSubagentMessages = reqJson.messages;
+      res.end(
+        JSON.stringify(
+          chatReply({
+            brief: "已基于主上下文 fork 整理出核心结论，无需重复检索。",
+            references: ["fork-view"],
+          }),
+        ),
+      );
+
+      return;
+    }
+
+    const lastMsg = reqJson.messages.at(-1);
+    const fullSerialized = JSON.stringify(reqJson.messages);
+
+    if (lastMsg?.role === "user" && lastMsg.content?.includes("FORK_ME")) {
+      res.end(
+        JSON.stringify(
+          chatToolCalls([
+            {
+              id: "call-fork-1",
+              name: "delegate_subagent",
+              args: {
+                kind: "fork_helper",
+                task: "基于刚才主对话里的讨论直接整理结论",
+                fork: true,
+              },
+            },
+          ]),
+        ),
+      );
+
+      return;
+    }
+
+    if (lastMsg?.role === "user") {
+      if (lastMsg.content?.includes("GROUP_B_ADMIN")) {
+        mainRequestHistoryLengths.adminGroupB = reqJson.messages.length - 2;
+        mainRequestTextByPrompt.adminGroupB = fullSerialized;
+      } else if (lastMsg.content?.includes("GROUP_B_NON_ADMIN")) {
+        mainRequestHistoryLengths.nonAdminGroupB = reqJson.messages.length - 2;
+        mainRequestTextByPrompt.nonAdminGroupB = fullSerialized;
+      }
+    }
+
+    res.end(
+      JSON.stringify(
+        chatReply(
+          { units: [{ kind: "qq_reply", text: "收到，已记录。" }] },
+          {
+            prompt_tokens: reqJson.messages.length > 10 ? 3500 : 200,
+            completion_tokens: 20,
+          },
+        ),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      devAuthBypass: true,
+      mainBaseUrl: `${llmStub.url}/v1`,
+    },
+    {
+      mainModel: {
+        contextTokens: 9000,
+        maxOutputTokens: 1000,
+      },
+      policy: {
+        adminQQs: ["10001"],
+      },
+    },
+    t,
+  );
+
+  app.subagents.register({
+    kind: "fork_helper",
+    title: "上下文派生助手",
+    summary: "支持从主视图 fork 整理任务",
+    describeCapability: () => "从主对话上下文直接派生处理。",
+    systemPrompt: "你是专项整理子代理。",
+    tools: [],
+  });
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "1001",
+    title: "技术保障群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "2002",
+    title: "外部交流群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  // 1) Admin speaks in group:1001 with confidential context.
+  const secretMsg = await captureText(app, {
+    kind: "group",
+    chatId: "1001",
+    id: "m-sec-1",
+    userId: "10001",
+    senderName: "管理员",
+    text: "核心机密代号 ALPHA_OMEGA_99",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:1001",
+    kind: "group",
+    chatId: "1001",
+    triggerMessageIds: [secretMsg.message.id],
+    senderId: "10001",
+    senderName: "管理员",
+  });
+
+  // 2) Forked subagent call inherits current main view without dangling unresolved tool_calls and persists Sidecar Tape.
+  const forkTrigger = await captureText(app, {
+    kind: "group",
+    chatId: "1001",
+    id: "m-fork-1",
+    userId: "10001",
+    senderName: "管理员",
+    text: "FORK_ME 整理一下刚才的核心代号",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:1001",
+    kind: "group",
+    chatId: "1001",
+    triggerMessageIds: [forkTrigger.message.id],
+    senderId: "10001",
+    senderName: "管理员",
+  });
+
+  assert.ok(
+    JSON.stringify(forkedSubagentMessages).includes("ALPHA_OMEGA_99"),
+    "forked subagent should inherit prior main context without re-exploring",
+  );
+  assert.ok(
+    forkedSubagentMessages.at(-1)?.content?.includes('"forkedFromMain":true'),
+  );
+
+  const activeConv = await app.store.conversations.get();
+  const sidecarToolEntry = activeConv?.entries.find(
+    (entry) => entry.kind === "message" && entry.sidecarId !== null,
+  );
+
+  assert.ok(sidecarToolEntry?.sidecarId, "tool entry should link sidecarId");
+
+  // 3) Permission-filtered View: non-admin in group:2002 cannot see group:1001 entries or global handoff,
+  //    while admin in group:2002 sees full cross-chat Tape.
+  const nonAdminMsg = await captureText(app, {
+    kind: "group",
+    chatId: "2002",
+    id: "m-ext-1",
+    userId: "50005",
+    senderName: "外部同学",
+    text: "GROUP_B_NON_ADMIN 刚才在聊啥",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:2002",
+    kind: "group",
+    chatId: "2002",
+    triggerMessageIds: [nonAdminMsg.message.id],
+    senderId: "50005",
+    senderName: "外部同学",
+  });
+
+  assert.equal(mainRequestHistoryLengths.nonAdminGroupB, 0);
+  assert.doesNotMatch(
+    mainRequestTextByPrompt.nonAdminGroupB ?? "",
+    /ALPHA_OMEGA_99/,
+  );
+
+  const adminInGroupBMsg = await captureText(app, {
+    kind: "group",
+    chatId: "2002",
+    id: "m-adm-b",
+    userId: "10001",
+    senderName: "管理员",
+    text: "GROUP_B_ADMIN 继续跟进",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:2002",
+    kind: "group",
+    chatId: "2002",
+    triggerMessageIds: [adminInGroupBMsg.message.id],
+    senderId: "10001",
+    senderName: "管理员",
+  });
+
+  assert.ok((mainRequestHistoryLengths.adminGroupB ?? 0) > 0);
+  assert.match(mainRequestTextByPrompt.adminGroupB ?? "", /ALPHA_OMEGA_99/);
+
+  // 4) Non-destructive compaction appends structured handoff anchor while keeping all prior entries intact.
+  const head = await app.store.conversations.open();
+  const extraTurns = Array.from({ length: 6 }, (_, i) => [
+    { role: "user" as const, content: `补充讨论 ${i}` },
+    { role: "assistant" as const, content: `结论 ${i}` },
+  ]).flat();
+
+  await app.store.conversations.appendTurn(head.sessionId, extraTurns, {
+    chatKey: "group:1001",
+  });
+  await app.agent.invoke({
+    source: "admin_inject",
+    chatKey: "group:1001",
+    kind: "group",
+    chatId: "1001",
+    triggerMessageIds: [],
+    content: "触发结构化压缩",
+  });
+
+  const afterCompact = await app.store.conversations.get();
+
+  assert.equal(afterCompact?.handoff?.summary, "已完成 Tape 架构方案对齐");
+  assert.deepEqual(afterCompact?.handoff?.confirmedFacts, [
+    "采用只追加 Tape 与 Anchor 检查点",
+  ]);
+  assert.ok((afterCompact?.handoff?.sourceEntryIds.length ?? 0) > 0);
+
+  const fullBeforeReset = await app.store.conversations.listEntries({
+    tapeId: "global",
+    limit: 200,
+  });
+
+  assert.ok(
+    fullBeforeReset.some(
+      (entry) => entry.kind === "anchor" && entry.anchor.reason === "compact",
+    ),
+  );
+  assert.ok(
+    fullBeforeReset.some(
+      (entry) =>
+        entry.kind === "message" &&
+        typeof entry.message.content === "string" &&
+        entry.message.content.includes("ALPHA_OMEGA_99"),
+    ),
+    "archived entries remain intact in append-only tape_entries",
+  );
+
+  // 5) inspect_tape lets admin inspect Sidecar Tape and archived sourceEntryIds; blocks non-admin.
+  const makeToolCtx = (role: "admin" | "member"): ToolContext => ({
+    services: {
+      store: app.store,
+      gateway: app.gateway,
+      media: app.media,
+      bunko: app.bunko,
+      shortlink: app.shortlink,
+      directory: app.directory,
+      guild: app.guild,
+      mcp: app.mcp,
+      getSettings: () => app.settings,
+    },
+    actor: {
+      chatKey: "group:1001",
+      senderQQ: role === "admin" ? "10001" : "50005",
+      actorSubject: null,
+      actorName: role,
+      role,
+    },
+    ids: new ModelIds(),
+  });
+
+  await assert.rejects(
+    () =>
+      inspectTapeTool
+        .bind(makeToolCtx("member"))
+        .execute({ sidecarId: sidecarToolEntry.sidecarId! }),
+    /仅管理员或网协管理层/,
+  );
+
+  const sidecarInspect = (await inspectTapeTool
+    .bind(makeToolCtx("admin"))
+    .execute({ sidecarId: sidecarToolEntry.sidecarId })) as {
+    count: number;
+    entries: { role?: string }[];
+  };
+
+  assert.ok(sidecarInspect.count >= 2);
+
+  const sourceIds = afterCompact.handoff.sourceEntryIds.slice(0, 2);
+  const entryInspect = (await inspectTapeTool
+    .bind(makeToolCtx("admin"))
+    .execute({ entryIds: sourceIds })) as {
+    entries: { id: number }[];
+  };
+
+  assert.deepEqual(
+    entryInspect.entries.map((e) => e.id),
+    sourceIds,
+  );
+
+  // 6) Non-destructive reset appends a reset anchor without deleting history; HTTP /api/admin/tape serves full timeline.
+  await app.store.conversations.reset();
+  const afterReset = await app.store.conversations.get();
+
+  assert.equal(afterReset?.messages.length, 0);
+
+  const { url } = await app.listen();
+  const fullTapeRes = (await (
+    await fetch(`${url}/api/admin/tape?tapeId=global&limit=200`)
+  ).json()) as { entries: { kind: string; anchor?: { reason: string } }[] };
+
+  assert.ok(
+    fullTapeRes.entries.some(
+      (entry) => entry.kind === "anchor" && entry.anchor?.reason === "reset",
+    ),
+  );
+  assert.ok(fullTapeRes.entries.length > fullBeforeReset.length);
+
+  const sidecarHttpRes = (await (
+    await fetch(
+      `${url}/api/admin/tape?tapeId=${encodeURIComponent(`sidecar:${sidecarToolEntry.sidecarId}`)}`,
+    )
+  ).json()) as { entries: unknown[] };
+
+  assert.ok(sidecarHttpRes.entries.length >= 2);
 });

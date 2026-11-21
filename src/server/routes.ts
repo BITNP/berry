@@ -133,6 +133,13 @@ const deleteMemoryQuerySchema = Type.Object({
   key: Type.String({ default: "" }),
 });
 
+const tapeQuerySchema = Type.Object({
+  tapeId: Type.String({ default: "global" }),
+  limit: Type.Integer({ minimum: 1, maximum: 500, default: 200 }),
+  beforeId: Type.Optional(Type.Integer({ minimum: 1 })),
+  afterId: Type.Optional(Type.Integer({ minimum: 1 })),
+});
+
 const triggerModeSchema = Type.Union([
   Type.Literal("off"),
   Type.Literal("mention_only"),
@@ -603,6 +610,20 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       const afterId = await berry.store.messages.maxId();
 
       return berry.store.conversations.reset(afterId);
+    }),
+  );
+
+  router.get(
+    "/api/admin/tape",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const query = await parseQuery(event, tapeQuerySchema);
+      const entries = await berry.store.conversations.listEntries(query);
+
+      return {
+        tapeId: query.tapeId,
+        entries,
+      };
     }),
   );
 
