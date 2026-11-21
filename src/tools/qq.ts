@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 
 import { searchQFaceCatalog } from "../gateway/qface.ts";
-import { isPrivilegedActor } from "./access.ts";
+import { isAdmin } from "./access.ts";
 import { resolveAuthorizedChat } from "./chat.ts";
 import { defineTool } from "./define.ts";
 
@@ -34,8 +34,8 @@ export const qqDirectoryTool = defineTool({
     const kw = args.query?.trim().toLowerCase() ?? "";
 
     if (args.scope === "groups") {
-      if (!isPrivilegedActor(ctx.actor)) {
-        throw new Error("普通权限无权查询机器人所在的 QQ 群列表");
+      if (!isAdmin(ctx.actor)) {
+        throw new Error("仅管理员或网协管理层可查询机器人所在的 QQ 群列表");
       }
 
       const all = await gateway.getGroupList();
@@ -55,8 +55,8 @@ export const qqDirectoryTool = defineTool({
     }
 
     if (args.scope === "friends") {
-      if (!isPrivilegedActor(ctx.actor)) {
-        throw new Error("普通权限无权查询机器人好友列表");
+      if (!isAdmin(ctx.actor)) {
+        throw new Error("仅管理员或网协管理层可查询机器人好友列表");
       }
 
       const all = await gateway.getFriendList();
@@ -76,7 +76,7 @@ export const qqDirectoryTool = defineTool({
       };
     }
 
-    const resolved = await resolveAuthorizedChat(ctx, args.groupRef);
+    const resolved = resolveAuthorizedChat(ctx, args.groupRef);
 
     if (resolved.kind !== "group") {
       throw new Error("查询群成员需要提供 groupRef 或在群聊内调用");

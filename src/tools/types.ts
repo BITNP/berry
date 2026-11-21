@@ -5,6 +5,7 @@ import type { RuntimeSettings } from "../config/settings.ts";
 import type { MessageGatewayClient } from "../gateway/client.ts";
 import type { GuildInternalClient } from "../guild/client.ts";
 import type { IdentityDirectory } from "../identity/keycloak.ts";
+import type { AccessRole } from "../identity/permissions.ts";
 import type { McpHub } from "../mcp/hub.ts";
 import type { MediaProcessor } from "../media/processor.ts";
 import type { Store } from "../store/index.ts";
@@ -28,9 +29,7 @@ export interface ToolActor {
   senderQQ: string | null;
   actorSubject: string | null;
   actorName: string | null;
-  actorIsAdmin: boolean;
-  actorIsPrivileged: boolean;
-  actorAdmitted: boolean;
+  role: AccessRole;
   triggerMessageId?: number | null;
 }
 

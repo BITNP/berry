@@ -4,7 +4,8 @@ import type { RuntimeSettings } from "../config/settings.ts";
 import { resolveThinkingEffort } from "../config/settings.ts";
 import { resolveReactionEmojiId } from "../gateway/qface.ts";
 import { renderMessageTextForModel } from "../gateway/segments.ts";
-import { hasManagementAccess } from "../identity/permissions.ts";
+import type { AccessRole } from "../identity/permissions.ts";
+import { resolveAccessRole } from "../identity/permissions.ts";
 import type { ToolRegistry } from "../tools/index.ts";
 import {
   createDefaultMainToolRegistry,
@@ -199,19 +200,13 @@ export class BerryAgent {
       time: formatDateTime(msg.sentAt, settings.bot.timezone),
     });
 
-    const actorIsAdmin =
-      input.source === "admin_inject" ||
-      Boolean(
-        speakerQQ &&
-        (settings.policy.adminQQs.includes(speakerQQ) ||
-          identityUser?.permissions.systemAdmin),
-      );
-    const actorIsPrivileged =
-      actorIsAdmin ||
-      input.source === "schedule" ||
-      hasManagementAccess(identityUser?.permissions);
-    const actorAdmitted =
-      actorIsPrivileged || Boolean(identityUser?.permissions.admitted);
+    const role = resolveAccessRole({
+      userId: speakerQQ,
+      adminQQs: settings.policy.adminQQs,
+      permissions: identityUser?.permissions,
+      isSystemSource:
+        input.source === "admin_inject" || input.source === "schedule",
+    });
 
     const knownGroups = allChats
       .filter((c) => {
@@ -219,16 +214,11 @@ export class BerryAgent {
           return false;
         }
 
-        if (actorIsPrivileged) {
-          return true;
-        }
-
-        return c.chatKey === input.chatKey && !c.internal;
+        return role === "admin" || c.chatKey === input.chatKey;
       })
       .map((c) => ({
         targetRef: ids.groupRef(c.chatId),
         title: c.title,
-        ...(c.internal ? { internal: true } : {}),
       }));
 
     const coreEnvelope = {
@@ -238,33 +228,18 @@ export class BerryAgent {
         kind: input.kind,
         targetRef: chatRef,
         title: chat?.title ?? "",
-        ...(chat?.internal ? { internal: true } : {}),
       },
       speaker: speakerQQ
         ? {
             userRef: ids.userRef(speakerQQ),
             displayName: speakerName,
-            tier: actorIsPrivileged ? "privileged" : "standard",
-            role: actorIsAdmin
-              ? "admin"
-              : actorIsPrivileged
-                ? "management"
-                : actorAdmitted
-                  ? "member"
-                  : "external",
-            isAdmin: actorIsAdmin,
-            isPrivileged: actorIsPrivileged,
+            role,
             keycloak: identityUser
               ? {
                   bound: true,
                   admitted: identityUser.permissions.admitted,
                   subject: identityUser.subject,
                   name: identityUser.name,
-                  managementAccess: Boolean(
-                    identityUser.permissions.managementAccess,
-                  ),
-                  manager: identityUser.permissions.manager,
-                  systemAdmin: identityUser.permissions.systemAdmin,
                   departments: identityUser.permissions.accessDepartments,
                   positions: identityUser.permissions.positions.map(
                     (p) => p.label,
@@ -306,9 +281,7 @@ export class BerryAgent {
         senderQQ: speakerQQ,
         actorSubject: identityUser?.subject ?? null,
         actorName: identityUser?.name ?? speakerName,
-        actorIsAdmin,
-        actorIsPrivileged,
-        actorAdmitted,
+        role,
         triggerMessageId: requestMessages.at(-1)?.id ?? null,
       },
       ids,
@@ -342,8 +315,7 @@ export class BerryAgent {
         input,
         requestMessages,
         speakerQQ,
-        actorIsAdmin,
-        actorIsPrivileged,
+        role,
       });
 
     for (const detail of dispatchErrors) {
@@ -416,14 +388,11 @@ export class BerryAgent {
     const identityUser = await this.#services.directory
       .byQQ(message.userId)
       .catch(() => null);
-    const actorIsAdmin = Boolean(
-      settings.policy.adminQQs.includes(message.userId) ||
-      identityUser?.permissions.systemAdmin,
-    );
-    const actorIsPrivileged =
-      actorIsAdmin || hasManagementAccess(identityUser?.permissions);
-    const actorAdmitted =
-      actorIsPrivileged || Boolean(identityUser?.permissions.admitted);
+    const role = resolveAccessRole({
+      userId: message.userId,
+      adminQQs: settings.policy.adminQQs,
+      permissions: identityUser?.permissions,
+    });
     const ids = new ModelIds();
     const userRef = ids.userRef(message.userId);
     const memoryTool = memoryManageTool.bind({
@@ -433,9 +402,7 @@ export class BerryAgent {
         senderQQ: message.userId,
         actorSubject: identityUser?.subject ?? null,
         actorName: identityUser?.name ?? message.senderName,
-        actorIsAdmin,
-        actorIsPrivileged,
-        actorAdmitted,
+        role,
         triggerMessageId: message.id,
       },
       ids,
@@ -584,29 +551,17 @@ export class BerryAgent {
       input: UnifiedInput;
       requestMessages: MessageRecord[];
       speakerQQ: string | null;
-      actorIsAdmin: boolean;
-      actorIsPrivileged: boolean;
+      role: AccessRole;
     },
   ): {
     dispatches: { targetChatKey: ChatKey; unit: OutputUnit }[];
     errors: string[];
   } {
     const logger = this.#logger;
-    const {
-      ids,
-      input,
-      requestMessages,
-      speakerQQ,
-      actorIsAdmin,
-      actorIsPrivileged,
-    } = ctx;
+    const { ids, input, requestMessages, speakerQQ, role } = ctx;
 
     function isTargetAuthorized(targetChatKey: ChatKey): boolean {
-      return (
-        targetChatKey === input.chatKey ||
-        input.source === "schedule" ||
-        actorIsAdmin
-      );
+      return targetChatKey === input.chatKey || role === "admin";
     }
 
     function resolveUnitTarget(targetRef?: string): ChatKey | null {
@@ -677,16 +632,6 @@ export class BerryAgent {
       }
 
       if (unit.kind === "qq_reaction") {
-        if (!actorIsPrivileged) {
-          logger.warn("Blocked qq_reaction for standard-privilege speaker", {
-            fromChatKey: input.chatKey,
-            speakerQQ,
-          });
-          errors.push("当前发言人仅具普通权限，已拦截表情回应");
-
-          continue;
-        }
-
         const resolvedMsg = resolveMsgHandle(unit.messageId);
 
         if (resolvedMsg) {

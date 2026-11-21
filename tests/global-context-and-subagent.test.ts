@@ -396,7 +396,10 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
     senderName: "普通同学",
   });
 
-  assert.match(subagentToolOutputs[1] ?? "", /无权读取其他用户的私聊消息/);
+  assert.match(
+    subagentToolOutputs[1] ?? "",
+    /仅管理员或网协管理层可跨群或跨会话读取历史消息/,
+  );
   assert.doesNotMatch(
     JSON.stringify(await app.store.conversations.get()),
     /_SECRET_THIRD_PARTY_DM_/,

@@ -30,11 +30,10 @@ export const inspectMediaTool = defineTool({
       if (meta.chatKey) {
         const parsedLookup = parseChatKey(meta.chatKey);
 
-        await assertCanReadChat(ctx, parsedLookup.kind, parsedLookup.chatId);
+        assertCanReadChat(ctx, parsedLookup.kind, parsedLookup.chatId);
         lookupKey = meta.chatKey;
       } else {
-        lookupKey = (await resolveAuthorizedChat(ctx, args.targetRef))
-          .targetChatKey;
+        lookupKey = resolveAuthorizedChat(ctx, args.targetRef).targetChatKey;
       }
 
       verifiedChat = true;
@@ -54,7 +53,7 @@ export const inspectMediaTool = defineTool({
     }
 
     if (!verifiedChat) {
-      await assertCanReadChat(ctx, msgRow.kind, msgRow.chatId);
+      assertCanReadChat(ctx, msgRow.kind, msgRow.chatId);
     }
 
     await media.waitForMessages([targetId]);

@@ -1,4 +1,4 @@
-import { isPrivilegedActor } from "../../tools/access.ts";
+import { isAdmin } from "../../tools/access.ts";
 import { mcpToolProvider } from "../../tools/mcp.ts";
 import type { SubagentDefinition } from "./types.ts";
 
@@ -8,9 +8,7 @@ export const mcpOperatorSubagent: SubagentDefinition = {
   summary: "调用已挂载的外部 MCP 工具",
   available: (services) => services.mcp.tools.length > 0,
   checkAvailability: (ctx) =>
-    isPrivilegedActor(ctx.actor)
-      ? null
-      : "仅管理员或网协管理层可调用外部 MCP 工具。",
+    isAdmin(ctx.actor) ? null : "仅管理员或网协管理层可调用外部 MCP 工具。",
   describeCapability: (services) =>
     `调用已接入的外部 MCP 工具（当前可用：${services.mcp.tools.map((t) => t.exposedName).join("、")}）。`,
   systemPrompt:

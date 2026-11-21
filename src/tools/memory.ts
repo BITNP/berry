@@ -1,14 +1,14 @@
 import { Type } from "typebox";
 
 import { parseChatKey } from "../utils/chat-key.ts";
-import { isPrivilegedActor } from "./access.ts";
+import { isAdmin } from "./access.ts";
 import { assertCanReadChat } from "./chat.ts";
 import { defineTool } from "./define.ts";
 
 export const memoryManageTool = defineTool({
   name: "memory_manage",
   description:
-    "读取、保存或删除长期记忆。普通权限仅可读取当前可见范围的记忆；写入或删除（global / chat / user）仅限管理员或网协管理层（非管理员禁止跨会话修改或操作他人个人记忆）。",
+    "读取、保存或删除长期记忆。所有用户可读取当前可见范围的记忆（全局、当前会话及本人个人记忆）；写入或删除仅限管理员或网协管理层。",
   parameters: Type.Object(
     {
       action: Type.Union([
@@ -57,10 +57,10 @@ export const memoryManageTool = defineTool({
       if (args.scope === "chat") {
         const parsed = parseChatKey(ownerId);
 
-        await assertCanReadChat(ctx, parsed.kind, parsed.chatId);
+        assertCanReadChat(ctx, parsed.kind, parsed.chatId);
       } else if (
         args.scope === "user" &&
-        !actor.actorIsAdmin &&
+        !isAdmin(actor) &&
         ownerId !== actor.senderQQ
       ) {
         throw new Error("无权读取其他用户的个人记忆");
@@ -72,21 +72,8 @@ export const memoryManageTool = defineTool({
       };
     }
 
-    // Write / delete guards: require privileged role (admin or management).
-    if (!isPrivilegedActor(actor)) {
+    if (!isAdmin(actor)) {
       throw new Error("仅管理员或网协管理层可修改或删除长期记忆");
-    }
-
-    if (args.scope === "chat") {
-      if (!actor.actorIsAdmin && ownerId !== actor.chatKey) {
-        throw new Error("禁止跨会话修改或删除其他会话的记忆");
-      }
-    } else if (
-      args.scope === "user" &&
-      !actor.actorIsAdmin &&
-      ownerId !== actor.senderQQ
-    ) {
-      throw new Error("仅可修改或删除本人的个人记忆");
     }
 
     if (args.action === "delete") {

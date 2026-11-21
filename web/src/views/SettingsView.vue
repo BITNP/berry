@@ -1064,7 +1064,7 @@ onMounted(() => {
                       value: 'members_and_admins',
                     },
                     {
-                      label: '仅高级权限（管理员/管理层）',
+                      label: '仅管理员（含网协管理层）',
                       value: 'admins_only',
                     },
                   ]"
@@ -1083,7 +1083,7 @@ onMounted(() => {
                   ]"
                 />
               </NFormItem>
-              <NFormItem label="高级权限直连跳过小模型（@/引用/私聊）">
+              <NFormItem label="管理员直连跳过小模型（@/引用/私聊）">
                 <NSwitch v-model:value="settings.policy.adminBypassGate" />
               </NFormItem>
             </div>

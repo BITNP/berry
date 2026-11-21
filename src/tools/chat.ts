@@ -2,53 +2,38 @@ import { Type } from "typebox";
 
 import type { ChatKey } from "../types.ts";
 import { makeChatKey, parseChatKey } from "../utils/chat-key.ts";
-import { isPrivilegedActor } from "./access.ts";
+import { isAdmin } from "./access.ts";
 import { defineTool } from "./define.ts";
 import type { Tool, ToolContext } from "./types.ts";
 
-export async function assertCanReadChat(
+export function assertCanReadChat(
   ctx: ToolContext,
   kind: "group" | "private",
   chatId: string,
-): Promise<void> {
-  const { actor, services } = ctx;
+): void {
   const targetChatKey = makeChatKey(kind, chatId);
 
-  if (kind === "private" && chatId !== actor.senderQQ && !actor.actorIsAdmin) {
-    throw new Error("无权读取其他用户的私聊消息");
-  }
-
-  const isPrivileged = isPrivilegedActor(actor);
-
-  if (!isPrivileged && targetChatKey !== actor.chatKey) {
+  if (!isAdmin(ctx.actor) && targetChatKey !== ctx.actor.chatKey) {
     throw new Error(
-      "普通权限仅可查阅当前会话记录，无权跨群或跨会话读取历史消息",
+      "仅管理员或网协管理层可跨群或跨会话读取历史消息，当前仅可查阅本会话记录",
     );
-  }
-
-  if (kind === "group" && !isPrivileged) {
-    const chatCfg = await services.store.chats.get(targetChatKey);
-
-    if (chatCfg?.internal) {
-      throw new Error("该群为网协内部工作群，仅限管理员或网协管理层查阅");
-    }
   }
 }
 
-export async function resolveAuthorizedChat(
+export function resolveAuthorizedChat(
   ctx: ToolContext,
   rawTargetRef?: string,
-): Promise<{
+): {
   targetChatKey: ChatKey;
   kind: "group" | "private";
   chatId: string;
-}> {
+} {
   const targetChatKey = rawTargetRef?.trim()
     ? ctx.ids.resolveTargetChatKey(rawTargetRef)
     : ctx.actor.chatKey;
   const parsed = parseChatKey(targetChatKey);
 
-  await assertCanReadChat(ctx, parsed.kind, parsed.chatId);
+  assertCanReadChat(ctx, parsed.kind, parsed.chatId);
 
   return { targetChatKey, kind: parsed.kind, chatId: parsed.chatId };
 }
@@ -56,7 +41,7 @@ export async function resolveAuthorizedChat(
 export const listChatsTool = defineTool({
   name: "list_chats",
   description:
-    "列出当前发言人有权访问的会话（管理员及网协管理层可列出群聊及本人私聊，普通权限仅可见当前非内部会话）。可传 includeGatewayGroups=true 补充拉取网关群列表（仅管理员及网协管理层）。",
+    "列出当前发言人有权访问的会话（管理员及网协管理层可列出全部会话；其他用户仅可见当前会话）。可传 includeGatewayGroups=true 补充拉取网关群列表（仅管理员及网协管理层）。",
   parameters: Type.Object(
     {
       includeGatewayGroups: Type.Optional(Type.Boolean()),
@@ -67,23 +52,11 @@ export const listChatsTool = defineTool({
     const { store, gateway } = ctx.services;
     const settings = ctx.services.getSettings();
     const { actor, ids } = ctx;
-    const isPrivileged = isPrivilegedActor(actor);
+    const admin = isAdmin(actor);
     const all = await store.chats.list();
-    const visible = all.filter((c) => {
-      if (actor.actorIsAdmin) {
-        return true;
-      }
-
-      if (c.kind === "private") {
-        return c.chatId === actor.senderQQ;
-      }
-
-      if (isPrivileged) {
-        return true;
-      }
-
-      return c.chatKey === actor.chatKey && !c.internal;
-    });
+    const visible = admin
+      ? all
+      : all.filter((c) => c.chatKey === actor.chatKey);
     const seenKeys = new Set<string>(visible.map((c) => c.chatKey));
     const items = visible.map((c) => ({
       targetRef:
@@ -92,10 +65,9 @@ export const listChatsTool = defineTool({
       title: c.title,
       enabled: c.enabled,
       triggerMode: c.triggerMode,
-      internal: c.internal,
     }));
 
-    if (args.includeGatewayGroups && isPrivileged && gateway.configured) {
+    if (args.includeGatewayGroups && admin && gateway.configured) {
       const gwGroups = await gateway.getGroupList().catch(() => []);
 
       for (const g of gwGroups) {
@@ -109,7 +81,6 @@ export const listChatsTool = defineTool({
             title: g.group_name,
             enabled: true,
             triggerMode: settings.policy.groupDefaultMode,
-            internal: false,
           });
         }
       }
@@ -140,7 +111,7 @@ export const searchChatMessagesTool = defineTool({
       targetChatKey,
       kind: targetKind,
       chatId: targetChatId,
-    } = await resolveAuthorizedChat(ctx, args.targetRef);
+    } = resolveAuthorizedChat(ctx, args.targetRef);
     const startTimeMs = args.startTimeIso
       ? Date.parse(args.startTimeIso)
       : undefined;
@@ -215,7 +186,7 @@ export const readChatWindowTool = defineTool({
       targetChatKey,
       kind: targetKind,
       chatId: targetChatId,
-    } = await resolveAuthorizedChat(ctx, args.targetRef);
+    } = resolveAuthorizedChat(ctx, args.targetRef);
     const limit = args.limit ?? 50;
 
     if (gateway.configured) {
@@ -293,7 +264,7 @@ export const fetchOlderHistoryTool = defineTool({
       targetChatKey,
       kind: targetKind,
       chatId: targetChatId,
-    } = await resolveAuthorizedChat(ctx, args.targetRef);
+    } = resolveAuthorizedChat(ctx, args.targetRef);
     const result = await gateway.syncChatHistory(targetKind, targetChatId, {
       mode: "older",
       count: args.countPerPage ?? 200,

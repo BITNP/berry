@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { Type } from "typebox";
 
 import type { BunkoDocumentView } from "../bunko/client.ts";
-import { isPrivilegedActor, requirePrivileged } from "./access.ts";
+import { isAdmin, requireAdmin } from "./access.ts";
 import { defineTool } from "./define.ts";
 import type { Tool, ToolContext } from "./types.ts";
 
@@ -11,7 +11,7 @@ async function isDocVisibleToActor(
   ctx: ToolContext,
   doc: BunkoDocumentView,
 ): Promise<boolean> {
-  if (isPrivilegedActor(ctx.actor)) {
+  if (isAdmin(ctx.actor)) {
     return true;
   }
 
@@ -19,7 +19,7 @@ async function isDocVisibleToActor(
     return true;
   }
 
-  if (!ctx.actor.actorAdmitted || doc.isPrivate) {
+  if (ctx.actor.role === "guest" || doc.isPrivate) {
     return false;
   }
 
@@ -41,7 +41,7 @@ export const bunkoListTreeTool = defineTool({
   ),
   execute: async (args, ctx) => {
     const { bunko } = ctx.services;
-    const privileged = isPrivilegedActor(ctx.actor);
+    const privileged = isAdmin(ctx.actor);
     const kw = args.query?.trim().toLowerCase() ?? "";
     const recursive = Boolean(args.recursive) || Boolean(kw);
     const limit = args.limit ?? 50;
@@ -223,10 +223,10 @@ export const bunkoReadDocumentTool = defineTool({
     const { bunko } = ctx.services;
     const docId = args.documentId.trim();
 
-    if (!isPrivilegedActor(ctx.actor)) {
+    if (!isAdmin(ctx.actor)) {
       const allowed = await bunko.canStandardUserRead(
         docId,
-        ctx.actor.actorAdmitted,
+        ctx.actor.role !== "guest",
       );
 
       if (!allowed) {
@@ -284,7 +284,7 @@ export const bunkoCreateDocumentTool = defineTool({
   description:
     "在 Bunko 云文档中新建一篇文档并可选写入初始 Markdown 正文（仅管理员或网协管理层可用）。正文须为标准 GFM Markdown 且 <= 128 KiB，禁止原始 HTML 标签、图片节点或公式节点。",
   mutating: true,
-  guard: requirePrivileged("在 Bunko 云文档创建文档"),
+  guard: requireAdmin("在 Bunko 云文档创建文档"),
   parameters: Type.Object(
     {
       title: Type.String({ minLength: 1, maxLength: 200 }),
@@ -321,7 +321,7 @@ export const bunkoAppendDocumentTool = defineTool({
   description:
     "向已有的 Bunko 云文档末尾幂等追加 Markdown 片段，实时同步给在线协同编辑者（仅管理员或网协管理层可用）。正文须为标准 GFM Markdown，禁止原始 HTML 标签、图片或公式节点。",
   mutating: true,
-  guard: requirePrivileged("在 Bunko 云文档追加文档内容"),
+  guard: requireAdmin("在 Bunko 云文档追加文档内容"),
   parameters: Type.Object(
     {
       documentId: Type.String({ minLength: 1 }),
@@ -364,7 +364,7 @@ export const bunkoDeleteDocumentTool = defineTool({
   description:
     "将指定的 Bunko 云文档移入回收站（软删除，仅管理员或网协管理层可用）。",
   mutating: true,
-  guard: requirePrivileged("在 Bunko 云文档删除文档"),
+  guard: requireAdmin("在 Bunko 云文档删除文档"),
   parameters: Type.Object(
     {
       documentId: Type.String({ minLength: 1 }),

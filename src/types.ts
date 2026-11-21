@@ -18,7 +18,6 @@ export interface ChatConfig {
   title: string;
   enabled: boolean;
   triggerMode: GroupTriggerMode;
-  internal: boolean;
   createdAt: number;
   updatedAt: number;
 }

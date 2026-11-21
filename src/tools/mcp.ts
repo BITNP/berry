@@ -1,11 +1,11 @@
 import type { AgentTool } from "../agent/loop.ts";
-import { isPrivilegedActor } from "./access.ts";
+import { isAdmin } from "./access.ts";
 import { defineToolProvider } from "./define.ts";
 
 export const mcpToolProvider = defineToolProvider({
   id: "mcp",
   resolve: (ctx) => {
-    if (!isPrivilegedActor(ctx.actor)) {
+    if (!isAdmin(ctx.actor)) {
       return [];
     }
 
