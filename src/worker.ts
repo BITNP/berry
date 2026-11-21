@@ -4,13 +4,17 @@ import type { JobKind, JobRecord } from "./types.ts";
 import { Logger } from "./utils/logger.ts";
 import { errorMessage } from "./utils/time.ts";
 
+const GATE_LANE_CONCURRENCY = 4;
+const DIALOG_LANE_CONCURRENCY = 4;
+const BACKGROUND_LANE_CONCURRENCY = 3;
+
 export class JobWorker {
   #store: Store;
   #registry: JobRegistry;
   #logger = new Logger("worker");
+  #started = false;
   #stopped = false;
   #running = new Map<string, number>();
-  #dialogActive = false;
   #inFlight = new Set<Promise<void>>();
   #timer: ReturnType<typeof setInterval> | null = null;
 
@@ -20,10 +24,11 @@ export class JobWorker {
   }
 
   public get running(): boolean {
-    return !this.#stopped;
+    return this.#started && !this.#stopped;
   }
 
   public start(): void {
+    this.#started = true;
     this.#stopped = false;
     this.wake();
     if (!this.#timer) {
@@ -33,33 +38,49 @@ export class JobWorker {
   }
 
   public wake(): void {
-    if (this.#stopped) {
+    if (!this.#started || this.#stopped) {
       return;
     }
 
-    // Single-consumer dialog lane enforces strict serialization of the global conversation.
-    this.#spawnLane("gate", this.#registry.kindsForLane("gate"), 2);
-    this.#spawnLane("dialog", this.#registry.kindsForLane("dialog"), 1);
-    this.#spawnLane("background", this.#registry.kindsForLane("background"), 1);
+    // Serialize per chatKey while allowing distinct chats to execute concurrently
+    // against the shared global timeline.
+    this.#spawnLane(
+      "gate",
+      this.#registry.kindsForLane("gate"),
+      GATE_LANE_CONCURRENCY,
+      true,
+    );
+    this.#spawnLane(
+      "dialog",
+      this.#registry.kindsForLane("dialog"),
+      DIALOG_LANE_CONCURRENCY,
+      true,
+    );
+    this.#spawnLane(
+      "background",
+      this.#registry.kindsForLane("background"),
+      BACKGROUND_LANE_CONCURRENCY,
+      false,
+    );
   }
 
   public async drainOnce(): Promise<void> {
     while (true) {
-      const dialogKinds = new Set(this.#registry.kindsForLane("dialog"));
-      const kinds = this.#dialogActive
-        ? this.#registry.allKinds().filter((kind) => !dialogKinds.has(kind))
-        : this.#registry.allKinds();
-      const job = await this.#store.jobs.claim(kinds, Date.now());
+      const job = await this.#store.jobs.claim(
+        this.#registry.allKinds(),
+        Date.now(),
+      );
 
       if (!job) {
         return;
       }
 
-      await this.#runOne(job);
+      await this.#runOne(job, false);
     }
   }
 
   public async stop(): Promise<void> {
+    this.#started = false;
     this.#stopped = true;
     if (this.#timer) {
       clearInterval(this.#timer);
@@ -69,14 +90,19 @@ export class JobWorker {
     await Promise.all(this.#inFlight);
   }
 
-  #spawnLane(lane: string, kinds: JobKind[], concurrency: number): void {
+  #spawnLane(
+    lane: string,
+    kinds: JobKind[],
+    concurrency: number,
+    serializeByChatKey: boolean,
+  ): void {
     if (kinds.length === 0) {
       return;
     }
 
     while ((this.#running.get(lane) ?? 0) < concurrency && !this.#stopped) {
       this.#running.set(lane, (this.#running.get(lane) ?? 0) + 1);
-      const task = this.#drainLane(lane, kinds)
+      const task = this.#drainLane(kinds, serializeByChatKey)
         .catch((error) => {
           this.#logger.warn("Worker lane error", {
             lane,
@@ -92,33 +118,28 @@ export class JobWorker {
     }
   }
 
-  async #drainLane(lane: string, kinds: JobKind[]): Promise<void> {
+  async #drainLane(
+    kinds: JobKind[],
+    serializeByChatKey: boolean,
+  ): Promise<void> {
     while (!this.#stopped) {
-      if (lane === "dialog" && this.#dialogActive) {
-        return;
-      }
-
-      const job = await this.#store.jobs.claim(kinds, Date.now());
+      const job = await this.#store.jobs.claim(kinds, Date.now(), {
+        serializeByChatKey,
+      });
 
       if (!job) {
         return;
       }
 
-      await this.#runOne(job);
+      await this.#runOne(job, true);
     }
   }
 
-  async #runOne(job: JobRecord): Promise<void> {
+  async #runOne(job: JobRecord, triggerWake: boolean): Promise<void> {
     const def = this.#registry.get(job.kind);
 
     if (!def) {
       throw new Error(`Unknown job kind: ${job.kind}`);
-    }
-
-    const isDialog = def.lane === "dialog";
-
-    if (isDialog) {
-      this.#dialogActive = true;
     }
 
     try {
@@ -142,8 +163,8 @@ export class JobWorker {
         error: msg,
       });
     } finally {
-      if (isDialog) {
-        this.#dialogActive = false;
+      if (triggerWake && !this.#stopped) {
+        this.wake();
       }
     }
   }

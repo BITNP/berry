@@ -51,7 +51,12 @@ export const createDefaultJobRegistry = (deps: {
         const p = job.payload;
 
         if (p.content) {
-          const prefix = p.source === "schedule" ? "定时任务: " : "指令: ";
+          const prefix =
+            p.source === "schedule"
+              ? "定时任务: "
+              : p.source === "subagent_result"
+                ? "子代理回传: "
+                : "指令: ";
 
           return `${prefix}${p.content.slice(0, 90)}`;
         }
@@ -118,4 +123,14 @@ export const createDefaultJobRegistry = (deps: {
         }
       },
       summarize: (job) => GUILD_TASK_LABELS[job.payload.task],
+    })
+    .register({
+      kind: "subagent_task",
+      label: "后台子代理",
+      lane: "background",
+      execute: (job) => deps.agent.runBackgroundSubagent(job.payload),
+      referencedMessageIds: (payload) =>
+        payload.triggerMessageId ? [payload.triggerMessageId] : [],
+      summarize: (job) =>
+        `${job.payload.kind}: ${job.payload.task.slice(0, 80)}`,
     });

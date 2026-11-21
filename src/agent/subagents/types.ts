@@ -39,9 +39,13 @@ export interface SubagentDefinition {
    */
   readonly tools: readonly ToolEntry[];
   /**
-   * Maximum tool-calling rounds for this subagent (defaults to 32).
+   * Maximum tool-calling rounds for this subagent.
    */
   readonly maxRounds?: number;
+  /**
+   * Optional wall-clock budget (ms) before wrapping up with a final answer.
+   */
+  readonly maxDurationMs?: number;
   /**
    * Optional thinking effort override for this subagent. Defaults to "low" when
    * mainModel.thinkingEffort is enabled, otherwise "none".

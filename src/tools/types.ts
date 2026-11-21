@@ -22,6 +22,7 @@ export interface AgentServices {
   guild: GuildInternalClient;
   mcp: McpHub;
   getSettings: () => RuntimeSettings;
+  wakeWorker?: () => void;
 }
 
 export interface ToolActor {

@@ -152,7 +152,7 @@ export type OutputUnit =
     };
 
 export interface UnifiedInput {
-  source: "qq_batch" | "schedule" | "admin_inject";
+  source: "qq_batch" | "schedule" | "admin_inject" | "subagent_result";
   chatKey: ChatKey;
   kind: ChatKind;
   chatId: string;
@@ -170,6 +170,18 @@ export interface JobPayloads {
     messageIds: number[];
   };
   invoke: UnifiedInput;
+  subagent_task: {
+    kind: string;
+    task: string;
+    chatKey: ChatKey;
+    chatKind: ChatKind;
+    chatId: string;
+    senderId: string | null;
+    senderName: string | null;
+    triggerMessageId: number | null;
+    fork: boolean;
+    forkHistory?: TurnMessage[];
+  };
   memory_update: {
     chatKey: ChatKey;
     messageId: number;

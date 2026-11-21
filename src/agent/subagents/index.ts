@@ -5,7 +5,10 @@ import { guildOperatorSubagent } from "./guild-operator.ts";
 import { mcpOperatorSubagent } from "./mcp-operator.ts";
 import { SubagentRegistry } from "./registry.ts";
 
-export { SubagentRegistry } from "./registry.ts";
+export {
+  ASYNC_SUBAGENT_MAX_DURATION_MS,
+  SubagentRegistry,
+} from "./registry.ts";
 export type { SubagentDefinition, SubagentResult } from "./types.ts";
 
 export const createDefaultSubagentRegistry = (): SubagentRegistry =>

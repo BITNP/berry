@@ -332,6 +332,7 @@ export class MessageGate {
 
     if (replyMessages.length > 0) {
       await this.#enqueueInvoke(replyMessages);
+      this.#wake();
     }
 
     this.#logger.info("Gate batch processed", {
@@ -346,20 +347,15 @@ export class MessageGate {
     const first = messages[0]!;
     const last = messages.at(-1)!;
 
-    await this.#store.jobs.enqueue(
-      "invoke",
-      `invoke:${first.chatKey}:${first.id}-${last.id}`,
-      first.chatKey,
-      {
-        source: "qq_batch",
-        chatKey: first.chatKey,
-        kind: first.kind,
-        chatId: first.chatId,
-        triggerMessageIds: messages.map((m) => m.id),
-        senderId: last.userId,
-        senderName: last.senderName,
-      },
-    );
+    await this.#store.jobs.coalesceInvoke({
+      source: "qq_batch",
+      chatKey: first.chatKey,
+      kind: first.kind,
+      chatId: first.chatId,
+      triggerMessageIds: messages.map((m) => m.id),
+      senderId: last.userId,
+      senderName: last.senderName,
+    });
   }
 
   async #enrichCandidates(

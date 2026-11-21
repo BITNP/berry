@@ -40,6 +40,7 @@ export async function runChatToolLoop<S extends TSchema>(options: {
   userContent: string;
   tools: AgentTool[];
   maxRounds: number;
+  maxDurationMs?: number;
   outputSchema?: S;
   maxTokens?: number;
   temperature?: number;
@@ -78,16 +79,25 @@ export async function runChatToolLoop<S extends TSchema>(options: {
   let lastPromptTokens = 0;
 
   const thinkingEffort = options.thinkingEffort ?? "none";
+  const startedAt = Date.now();
+  let wrappedUp = false;
 
   for (let round = 0; round < options.maxRounds; round++) {
+    const overTimeBudget =
+      options.maxDurationMs !== undefined &&
+      round > 0 &&
+      Date.now() - startedAt >= options.maxDurationMs;
     const isFinalRound =
-      round === options.maxRounds - 1 && openAITools.length > 0;
+      (round === options.maxRounds - 1 || overTimeBudget) &&
+      openAITools.length > 0;
 
-    if (isFinalRound && round > 0) {
+    if (isFinalRound && round > 0 && !wrappedUp) {
+      wrappedUp = true;
       messages.push({
         role: "user",
-        content:
-          "已达到工具调用上限，不再继续调用工具。请直接基于已获取的数据给出最终 JSON 答复。",
+        content: overTimeBudget
+          ? "已达到本次执行的时长预算，不再继续调用工具。请直接基于已获取的数据给出最终 JSON 答复。"
+          : "已达到工具调用上限，不再继续调用工具。请直接基于已获取的数据给出最终 JSON 答复。",
       });
     }
 

@@ -8,6 +8,7 @@ import {
   chatToolCalls,
   createTestBerryApp,
   startStubServer,
+  waitUntil,
 } from "./helpers.ts";
 
 test("global single context, isolated chat_analyst cross-group summary, privacy isolation, and admin-only #NEW#", async (t) => {
@@ -519,4 +520,366 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
   });
 
   assert.equal(globalMem.ownerId, "global");
+});
+
+test("JobWorker executes distinct chats concurrently on the shared global timeline while serializing and coalescing same-chat invokes", async (t) => {
+  const gwStub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    const action = req.url?.split("/").pop() ?? "";
+
+    res.end(
+      JSON.stringify({
+        status: "ok",
+        data: action.includes("history") ? { messages: [] } : { message_id: 1 },
+      }),
+    );
+  }, t);
+
+  let releaseGroup100First!: () => void;
+  const group100FirstGate = new Promise<void>((resolve) => {
+    releaseGroup100First = resolve;
+  });
+
+  let activeCalls = 0;
+  let maxConcurrentCalls = 0;
+  let group100Running = 0;
+  let maxGroup100Concurrent = 0;
+  const group100TurnTexts: string[][] = [];
+  let sawGroup200DuringGroup100 = false;
+
+  const llmStub = await startStubServer(async (_req, res, bodyText) => {
+    const body = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const lastUser = body.messages.at(-1)?.content ?? "";
+    const parsed = JSON.parse(lastUser) as {
+      chat: { title: string };
+      requestMessages: { text: string }[];
+    };
+    const isGroup100 = parsed.chat.title === "群A";
+    const texts = parsed.requestMessages.map((m) => m.text);
+
+    activeCalls++;
+    maxConcurrentCalls = Math.max(maxConcurrentCalls, activeCalls);
+
+    if (isGroup100) {
+      group100Running++;
+      maxGroup100Concurrent = Math.max(maxGroup100Concurrent, group100Running);
+      group100TurnTexts.push(texts);
+    } else if (group100Running > 0) {
+      sawGroup200DuringGroup100 = true;
+      releaseGroup100First();
+    }
+
+    try {
+      if (isGroup100 && texts.includes("群A第一条")) {
+        await group100FirstGate;
+      }
+
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify(
+          chatReply(
+            JSON.stringify({
+              units: [
+                {
+                  kind: "qq_reply",
+                  text: `回复 ${parsed.chat.title}: ${texts.join(" + ")}`,
+                },
+              ],
+            }),
+          ),
+        ),
+      );
+    } finally {
+      activeCalls--;
+      if (isGroup100) {
+        group100Running--;
+      }
+    }
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gwStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+      mainBaseUrl: `${llmStub.url}/v1`,
+      gateBaseUrl: `${llmStub.url}/v1`,
+    },
+    { policy: { adminQQs: ["10001"] } },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "100",
+    title: "群A",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "200",
+    title: "群B",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const mA1 = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "ob-a-1",
+    userId: "10001",
+    senderName: "管理员",
+    text: "群A第一条",
+  });
+  const mA2 = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "ob-a-2",
+    userId: "10001",
+    senderName: "管理员",
+    text: "群A连发1",
+  });
+  const mA3 = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "ob-a-3",
+    userId: "10001",
+    senderName: "管理员",
+    text: "群A连发2",
+  });
+  const mB1 = await captureText(app, {
+    kind: "group",
+    chatId: "200",
+    id: "ob-b-1",
+    userId: "10001",
+    senderName: "管理员",
+    text: "群B同时发言",
+  });
+
+  // Start group:100's first turn and group:200 concurrently.
+  await app.store.jobs.coalesceInvoke({
+    source: "qq_batch",
+    chatKey: "group:100",
+    kind: "group",
+    chatId: "100",
+    triggerMessageIds: [mA1.message.id],
+    senderId: "10001",
+    senderName: "管理员",
+  });
+  app.worker.start();
+
+  await waitUntil(() => group100Running === 1, 3000);
+
+  // While group:100 is still running, coalesce two rapid follow-up bursts for group:100
+  // and enqueue group:200 to prove cross-chat parallelism + same-chat coalescing.
+  await app.store.jobs.coalesceInvoke({
+    source: "qq_batch",
+    chatKey: "group:100",
+    kind: "group",
+    chatId: "100",
+    triggerMessageIds: [mA2.message.id],
+    senderId: "10001",
+    senderName: "管理员",
+  });
+  await app.store.jobs.coalesceInvoke({
+    source: "qq_batch",
+    chatKey: "group:100",
+    kind: "group",
+    chatId: "100",
+    triggerMessageIds: [mA3.message.id],
+    senderId: "10001",
+    senderName: "管理员",
+  });
+  await app.store.jobs.coalesceInvoke({
+    source: "qq_batch",
+    chatKey: "group:200",
+    kind: "group",
+    chatId: "200",
+    triggerMessageIds: [mB1.message.id],
+    senderId: "10001",
+    senderName: "管理员",
+  });
+  app.worker.wake();
+
+  await waitUntil(async () => {
+    const jobs = await app.store.jobs.list({ kind: "invoke" });
+
+    return jobs.length === 3 && jobs.every((j) => j.state === "done");
+  }, 5000);
+  await app.worker.stop();
+
+  assert.equal(sawGroup200DuringGroup100, true);
+  assert.ok(maxConcurrentCalls >= 2);
+  assert.equal(maxGroup100Concurrent, 1);
+  assert.deepEqual(group100TurnTexts, [
+    ["群A第一条"],
+    ["群A连发1", "群A连发2"],
+  ]);
+
+  const globalConv = await app.store.conversations.get();
+  const serialized = JSON.stringify(globalConv?.messages ?? []);
+
+  assert.match(serialized, /回复 群A: 群A第一条/);
+  assert.match(serialized, /回复 群B: 群B同时发言/);
+  assert.match(serialized, /回复 群A: 群A连发1 \+ 群A连发2/);
+});
+
+test("delegate_subagent(background=true) runs asynchronously and delivers follow-up via subagent_result", async (t) => {
+  const sentTexts: string[] = [];
+
+  const gwStub = await startStubServer((req, res, bodyText) => {
+    res.setHeader("Content-Type", "application/json");
+    const action = req.url?.split("/").pop() ?? "";
+    const parsed = bodyText
+      ? (JSON.parse(bodyText) as Record<string, unknown>)
+      : {};
+
+    if (action === "send_group_msg_async") {
+      sentTexts.push(JSON.stringify(parsed.message));
+    }
+
+    res.end(
+      JSON.stringify({
+        status: "ok",
+        data: action.includes("history") ? { messages: [] } : { message_id: 1 },
+      }),
+    );
+  }, t);
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const body = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const sys = body.messages[0]?.content ?? "";
+    const last = body.messages.at(-1);
+
+    res.setHeader("Content-Type", "application/json");
+
+    // Background chat_analyst subagent turn
+    if (sys.includes("聊天记录检索及摘要子代理")) {
+      res.end(
+        JSON.stringify(
+          chatReply(
+            JSON.stringify({
+              brief: "过去一周群里主要讨论了机房巡检排班和 UPS 告警。",
+              references: [],
+            }),
+          ),
+        ),
+      );
+
+      return;
+    }
+
+    // Main dialog receiving queued acknowledgement from delegate_subagent(background=true)
+    if (last?.role === "tool") {
+      assert.match(last.content ?? "", /"background":true/);
+      res.end(
+        JSON.stringify(
+          chatReply(
+            JSON.stringify({
+              units: [
+                { kind: "qq_reply", text: "好嘞我去翻下记录，查完发你～" },
+              ],
+            }),
+          ),
+        ),
+      );
+
+      return;
+    }
+
+    // Follow-up main dialog turn triggered by subagent_result
+    if ((last?.content ?? "").includes('"source":"subagent_result"')) {
+      assert.match(last?.content ?? "", /机房巡检排班/);
+      res.end(
+        JSON.stringify(
+          chatReply(
+            JSON.stringify({
+              units: [
+                {
+                  kind: "qq_reply",
+                  text: "查完了：过去一周群里主要讨论了机房巡检排班和 UPS 告警。",
+                },
+              ],
+            }),
+          ),
+        ),
+      );
+
+      return;
+    }
+
+    // Initial main dialog turn dispatches background subagent
+    res.end(
+      JSON.stringify(
+        chatToolCalls([
+          {
+            id: "call_bg_1",
+            name: "delegate_subagent",
+            args: {
+              kind: "chat_analyst",
+              task: "总结过去一周群里讨论的重点",
+              background: true,
+            },
+          },
+        ]),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gwStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+      mainBaseUrl: `${llmStub.url}/v1`,
+      gateBaseUrl: `${llmStub.url}/v1`,
+    },
+    { policy: { adminQQs: ["10001"] } },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "100",
+    title: "技术保障中心",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const msg = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "ob-bg-1",
+    userId: "10001",
+    senderName: "管理员",
+    text: "帮我总结过去一周大家聊了啥",
+    mentionedBot: true,
+  });
+
+  await app.store.jobs.coalesceInvoke({
+    source: "qq_batch",
+    chatKey: "group:100",
+    kind: "group",
+    chatId: "100",
+    triggerMessageIds: [msg.message.id],
+    senderId: "10001",
+    senderName: "管理员",
+  });
+
+  app.worker.start();
+  await waitUntil(() => sentTexts.length >= 2, 5000);
+  await app.worker.stop();
+
+  assert.match(sentTexts[0] ?? "", /我去翻下记录/);
+  assert.match(sentTexts[1] ?? "", /机房巡检排班/);
+
+  const subagentJobs = await app.store.jobs.list({ kind: "subagent_task" });
+
+  assert.equal(subagentJobs.length, 1);
+  assert.equal(subagentJobs[0]?.state, "done");
 });

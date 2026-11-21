@@ -14,6 +14,7 @@ import {
 import type { AgentServices, ToolContext } from "../tools/types.ts";
 import type {
   ChatKey,
+  JobPayloads,
   MessageRecord,
   OutputUnit,
   TurnMessage,
@@ -26,7 +27,10 @@ import { runChatToolLoop } from "./loop.ts";
 import { ModelIds } from "./model-ids.ts";
 import { buildStaticSystemPrompt, resultsAsText } from "./prompt.ts";
 import type { SubagentRegistry } from "./subagents/index.ts";
-import { createDefaultSubagentRegistry } from "./subagents/index.ts";
+import {
+  ASYNC_SUBAGENT_MAX_DURATION_MS,
+  createDefaultSubagentRegistry,
+} from "./subagents/index.ts";
 
 const outputUnitSchema = Type.Union([
   Type.Object(
@@ -393,6 +397,103 @@ export class BerryAgent {
     return { units, mutated: result.mutated };
   }
 
+  public async runBackgroundSubagent(
+    payload: JobPayloads["subagent_task"],
+  ): Promise<void> {
+    const { store, directory } = this.#services;
+    const settings = this.#services.getSettings();
+    const allChats = await store.chats.list();
+    const ids = new ModelIds();
+
+    for (const entry of allChats) {
+      if (entry.kind === "group") {
+        ids.groupRef(entry.chatId);
+      } else {
+        ids.userRef(entry.chatId);
+      }
+    }
+
+    for (const senderId of await store.messages.recentSenderIds(500)) {
+      ids.userRef(senderId);
+    }
+
+    const identityUser = payload.senderId
+      ? await directory.byQQ(payload.senderId).catch(() => null)
+      : null;
+    const role = resolveAccessRole({
+      userId: payload.senderId,
+      adminQQs: settings.policy.adminQQs,
+      permissions: identityUser?.permissions,
+    });
+
+    const toolContext: ToolContext = {
+      services: this.#services,
+      actor: {
+        chatKey: payload.chatKey,
+        senderQQ: payload.senderId,
+        actorSubject: identityUser?.subject ?? null,
+        actorName: identityUser?.name ?? payload.senderName,
+        role,
+        triggerMessageId: payload.triggerMessageId,
+      },
+      ids,
+      ...(payload.forkHistory?.length
+        ? { getForkHistory: () => payload.forkHistory! }
+        : {}),
+    };
+
+    let resultEnvelope: Record<string, unknown>;
+
+    try {
+      const result = await this.#subagents.run(
+        payload.kind,
+        payload.task,
+        toolContext,
+        {
+          fork: payload.fork,
+          maxDurationMs: ASYNC_SUBAGENT_MAX_DURATION_MS,
+        },
+      );
+
+      resultEnvelope = {
+        ok: true,
+        kind: payload.kind,
+        task: payload.task,
+        brief: result.brief,
+        references: result.references,
+        ...(result.sidecarId ? { sidecarId: result.sidecarId } : {}),
+      };
+    } catch (error) {
+      const message = errorMessage(error);
+
+      this.#logger.warn("Background subagent failed", {
+        kind: payload.kind,
+        chatKey: payload.chatKey,
+        error: message,
+      });
+      resultEnvelope = {
+        ok: false,
+        kind: payload.kind,
+        task: payload.task,
+        error: message,
+      };
+    }
+
+    await store.jobs.coalesceInvoke({
+      source: "subagent_result",
+      chatKey: payload.chatKey,
+      kind: payload.chatKind,
+      chatId: payload.chatId,
+      triggerMessageIds: payload.triggerMessageId
+        ? [payload.triggerMessageId]
+        : [],
+      senderId: payload.senderId ?? undefined,
+      senderName: payload.senderName ?? undefined,
+      content: `后台子代理 ${payload.kind} 已执行完毕，请结合以下结果直接回复原发言人（不要重复派发同一任务）：\n${JSON.stringify(resultEnvelope)}`,
+    });
+    this.#services.wakeWorker?.();
+  }
+
   public async updateMemoryFromMessage(
     chatKey: ChatKey,
     messageId: number,
@@ -482,62 +583,64 @@ export class BerryAgent {
       return;
     }
 
-    const { store } = this.#services;
-    const conversation = await store.conversations.get();
-
-    if (!conversation || conversation.entries.length === 0) {
-      return;
-    }
-
-    const msgEntries = conversation.entries.filter(
-      (entry) => entry.kind === "message",
-    );
-
-    const budget =
-      settings.mainModel.contextTokens -
-      settings.mainModel.maxOutputTokens -
-      4096;
-    const overTokenBudget = lastPromptTokens >= budget * 0.75;
-    const overMessageLimit = msgEntries.length >= COMPACTION_MAX_MESSAGES;
-
-    if (!overTokenBudget && !overMessageLimit) {
-      return;
-    }
-
-    // Split along clean user-turn boundaries without heuristic token estimation.
-    const userIndices: number[] = [];
-
-    for (const [i, msgEntry] of msgEntries.entries()) {
-      if (msgEntry.role === "user") {
-        userIndices.push(i);
-      }
-    }
-
-    if (userIndices.length <= 1) {
-      return;
-    }
-
-    const keepTurns = overTokenBudget
-      ? Math.max(
-          1,
-          Math.min(
-            COMPACTION_KEEP_RECENT_TURNS,
-            Math.floor((userIndices.length * 0.3 * budget) / lastPromptTokens),
-          ),
-        )
-      : Math.min(COMPACTION_KEEP_RECENT_TURNS, userIndices.length - 1);
-    const turnCursor = Math.max(1, userIndices.length - keepTurns);
-    const splitIndex = userIndices[turnCursor]!;
-    const archivedEntries = msgEntries.slice(0, splitIndex);
-    const cutoffEntryId = archivedEntries.at(-1)?.id;
-
-    if (!cutoffEntryId) {
-      return;
-    }
-
     this.#compacting = true;
 
     try {
+      const { store } = this.#services;
+      const conversation = await store.conversations.get();
+
+      if (!conversation || conversation.entries.length === 0) {
+        return;
+      }
+
+      const msgEntries = conversation.entries.filter(
+        (entry) => entry.kind === "message",
+      );
+
+      const budget =
+        settings.mainModel.contextTokens -
+        settings.mainModel.maxOutputTokens -
+        4096;
+      const overTokenBudget = lastPromptTokens >= budget * 0.75;
+      const overMessageLimit = msgEntries.length >= COMPACTION_MAX_MESSAGES;
+
+      if (!overTokenBudget && !overMessageLimit) {
+        return;
+      }
+
+      // Split along clean user-turn boundaries without heuristic token estimation.
+      const userIndices: number[] = [];
+
+      for (const [i, msgEntry] of msgEntries.entries()) {
+        if (msgEntry.role === "user") {
+          userIndices.push(i);
+        }
+      }
+
+      if (userIndices.length <= 1) {
+        return;
+      }
+
+      const keepTurns = overTokenBudget
+        ? Math.max(
+            1,
+            Math.min(
+              COMPACTION_KEEP_RECENT_TURNS,
+              Math.floor(
+                (userIndices.length * 0.3 * budget) / lastPromptTokens,
+              ),
+            ),
+          )
+        : Math.min(COMPACTION_KEEP_RECENT_TURNS, userIndices.length - 1);
+      const turnCursor = Math.max(1, userIndices.length - keepTurns);
+      const splitIndex = userIndices[turnCursor]!;
+      const archivedEntries = msgEntries.slice(0, splitIndex);
+      const cutoffEntryId = archivedEntries.at(-1)?.id;
+
+      if (!cutoffEntryId) {
+        return;
+      }
+
       const res = await runChatToolLoop({
         purpose: "compaction",
         chatKey: null,

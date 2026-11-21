@@ -149,7 +149,11 @@ export async function completeChat(options: {
         arguments: call.function.arguments.slice(0, 4000),
       }));
     const inputTokens = usage?.prompt_tokens ?? 0;
-    const cachedInputTokens = usage?.prompt_tokens_details?.cached_tokens ?? 0;
+    const cachedInputTokens =
+      usage?.prompt_tokens_details?.cached_tokens ??
+      (usage as { prompt_cache_hit_tokens?: number } | undefined)
+        ?.prompt_cache_hit_tokens ??
+      0;
     const cacheWarning =
       options.cacheCheck?.commit({
         inputTokens,

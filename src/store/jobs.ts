@@ -8,6 +8,7 @@ import type {
   JobPayload,
   JobPayloads,
   JobRecord,
+  UnifiedInput,
 } from "../types.ts";
 import type { EventBus } from "../utils/logger.ts";
 import type { BerryDatabase } from "./database.ts";
@@ -225,21 +226,111 @@ export class JobsStore {
     });
   }
 
+  // Merge pending qq_batch invoke jobs for the same chat so rapid bursts run as one turn.
+  public async coalesceInvoke(payload: UnifiedInput): Promise<void> {
+    if (payload.source !== "qq_batch") {
+      await this.enqueue(
+        "invoke",
+        `invoke:${payload.chatKey}:${payload.source}:${Date.now()}:${randomUUID().slice(0, 6)}`,
+        payload.chatKey,
+        payload,
+      );
+
+      return;
+    }
+
+    const now = Date.now();
+
+    await this.#database.writeTx(async (trx) => {
+      const pendingRows = await trx
+        .selectFrom("jobs")
+        .selectAll()
+        .where("kind", "=", "invoke")
+        .where("state", "=", "pending")
+        .where("chat_key", "=", payload.chatKey)
+        .orderBy("id", "asc")
+        .execute();
+
+      for (const row of pendingRows) {
+        const existing = JSON.parse(row.payload_json) as UnifiedInput;
+
+        if (existing.source !== "qq_batch") {
+          continue;
+        }
+
+        const mergedIds = [
+          ...new Set([
+            ...existing.triggerMessageIds,
+            ...payload.triggerMessageIds,
+          ]),
+        ].sort((a, b) => a - b);
+
+        await trx
+          .updateTable("jobs")
+          .set({
+            payload_json: JSON.stringify({
+              ...existing,
+              triggerMessageIds: mergedIds,
+              senderId: payload.senderId ?? existing.senderId,
+              senderName: payload.senderName ?? existing.senderName,
+            } satisfies UnifiedInput),
+            updated_at: now,
+          })
+          .where("id", "=", row.id)
+          .execute();
+
+        return;
+      }
+
+      const firstId = payload.triggerMessageIds[0] ?? 0;
+      const lastId = payload.triggerMessageIds.at(-1) ?? 0;
+
+      await trx
+        .insertInto("jobs")
+        .values({
+          kind: "invoke",
+          dedupe_key: `invoke:${payload.chatKey}:${firstId}-${lastId}:${now}:${randomUUID().slice(0, 6)}`,
+          chat_key: payload.chatKey,
+          payload_json: JSON.stringify(payload),
+          state: "pending",
+          attempts: 0,
+          run_after: now,
+          last_error: null,
+          created_at: now,
+          updated_at: now,
+        })
+        .execute();
+    });
+  }
+
   public async claim(
     kinds: JobKind[],
     now = Date.now(),
+    options: { serializeByChatKey?: boolean } = {},
   ): Promise<JobRecord | null> {
     if (kinds.length === 0) {
       return null;
     }
 
     const job = await this.#database.writeTx(async (trx) => {
-      const next = await trx
+      let query = trx
         .selectFrom("jobs")
         .selectAll()
         .where("state", "=", "pending")
         .where("kind", "in", kinds)
-        .where("run_after", "<=", now)
+        .where("run_after", "<=", now);
+
+      if (options.serializeByChatKey) {
+        query = query.where("chat_key", "not in", (eb) =>
+          eb
+            .selectFrom("jobs")
+            .select("chat_key")
+            .where("state", "=", "running")
+            .where("kind", "in", kinds),
+        );
+      }
+
+      const next = await query
         .orderBy("run_after", "asc")
         .orderBy("id", "asc")
         .limit(1)

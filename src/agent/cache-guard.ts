@@ -39,7 +39,7 @@ export const makeCacheSessionKey = (
 ): string => `${sessionId}:${sha256(summary)}:${scopeTag}`;
 
 export class DialogCacheGuard {
-  #baseline: BaselineSnapshot | null = null;
+  #baselines = new Map<string, BaselineSnapshot>();
   #logger = new Logger("cache-guard");
 
   public inspect(input: {
@@ -61,7 +61,8 @@ export class DialogCacheGuard {
     const systemHash = sha256(JSON.stringify(systemMsg));
     const messageHashes = nonSystem.map((msg) => sha256(JSON.stringify(msg)));
 
-    const prev = this.#baseline;
+    const bucketKey = input.chatKey ?? "__global__";
+    const prev = this.#baselines.get(bucketKey) ?? null;
     const baselineChanged = prev?.sessionKey !== input.sessionKey;
     const reasons: string[] = [];
 
@@ -99,14 +100,22 @@ export class DialogCacheGuard {
     return {
       reasons,
       commit: ({ inputTokens, cachedInputTokens, now = Date.now() }) => {
-        this.#baseline = {
+        if (!this.#baselines.has(bucketKey) && this.#baselines.size >= 64) {
+          const oldestKey = this.#baselines.keys().next().value;
+
+          if (oldestKey !== undefined) {
+            this.#baselines.delete(oldestKey);
+          }
+        }
+
+        this.#baselines.set(bucketKey, {
           sessionKey: input.sessionKey,
           toolsHash,
           systemHash,
           messageHashes,
           transientUserIndex: input.transientUserIndex ?? null,
           lastRequestAt: now,
-        };
+        });
 
         const lowHit =
           !baselineChanged &&

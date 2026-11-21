@@ -152,6 +152,8 @@ export class BerryApp {
       ];
     });
 
+    let workerRef: JobWorker;
+
     const media = new MediaProcessor(store, gateway, getSettings);
     const services: AgentServices = {
       store,
@@ -163,13 +165,12 @@ export class BerryApp {
       guild,
       mcp,
       getSettings,
+      wakeWorker: () => workerRef.wake(),
     };
 
     const subagents = createDefaultSubagentRegistry();
     const mainTools = createDefaultMainToolRegistry(subagents);
     const agent = new BerryAgent(services, { subagents, mainTools });
-
-    let workerRef: JobWorker;
 
     const gate = new MessageGate(
       store,

@@ -15,6 +15,7 @@ export interface JobActionLink {
 const JOB_TAG_BY_KIND: Record<string, JobTagType> = {
   gate_batch: "default",
   invoke: "primary",
+  subagent_task: "info",
   memory_update: "success",
   group_digest: "info",
   guild_task: "warning",
