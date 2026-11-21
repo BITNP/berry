@@ -8,7 +8,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY third_party ./third_party
 RUN pnpm install --frozen-lockfile --ignore-scripts
 
-COPY tsconfig.json tsconfig.web.json vite.config.ts ./
+COPY tsconfig.json tsconfig.node.json tsconfig.web.json vite.config.ts ./
 COPY src ./src
 COPY web ./web
 
