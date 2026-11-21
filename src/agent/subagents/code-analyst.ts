@@ -5,21 +5,50 @@ const CODE_ANALYST_PROMPT = `你是隔离运行的只读批量脚本分析子代
 
 沙盒全局只读 API 声明：
 \`\`\`ts
+type GuildUserRef = { subject: string; userName: string };
+type GuildTreeNode = {
+  id: number;
+  title: string;
+  completed: boolean;
+  dueAt: string | null;
+  tags: string[];
+  childCount: number;
+  commentCount: number;
+  url: string;
+  children: GuildTreeNode[];
+};
+type GuildNodeSummary = {
+  id: number;
+  parentId: number | null;
+  title: string;
+  dueAt: string | null;
+  completedAt: string | null;
+  tags: string[];
+  sortOrder: number;
+  childCount: number;
+  commentCount: number;
+  myRelation: "leader" | "member" | null;
+  updatedAt: string;
+};
+type GuildProgressItem =
+  | { kind: "comment"; comment: { id: number; nodeId: number; author: GuildUserRef; body: string; createdAt: string; reactions: { emoji: string; count: number; reactedByMe: boolean }[] } }
+  | { kind: "description_change"; descriptionChange: { id: number; nodeId: number; author: GuildUserRef; before: string; after: string; createdAt: string } };
+
 declare const api: {
   chats: {
-    list(opts?: { includeGatewayGroups?: boolean }): Promise<{ total: number; chats: { targetRef: string; kind: string; title: string; enabled: boolean; triggerMode: string }[] }>;
-    search(opts?: { targetRef?: string; query?: string; regex?: boolean; userRef?: string; contextLines?: number; startTimeIso?: string; endTimeIso?: string; limit?: number }): Promise<{ chatType: string; matchCount: number; count: number; messages: { id: number; matched?: boolean; quoteRef: string; userRef: string; senderName: string; text: string; sentAt: string }[] }>;
-    window(opts?: { targetRef?: string; beforeId?: number; limit?: number }): Promise<{ count: number; messages: { id: number; quoteRef: string; userRef: string; senderName: string; text: string; reactions: unknown[]; sentAt: string }[] }>;
+    list(opts?: { includeGatewayGroups?: boolean }): Promise<{ total: number; chats: { targetRef: string; kind: "group" | "private"; title: string; enabled: boolean; triggerMode: string }[] }>;
+    search(opts?: { targetRef?: string; query?: string; regex?: boolean; userRef?: string; contextLines?: number; startTimeIso?: string; endTimeIso?: string; limit?: number }): Promise<{ chatType: "group" | "private"; matchCount: number; count: number; localOldestSentAt: string | null; messages: { id: number; matched?: boolean; quoteRef: string; userRef: string; senderName: string; text: string; sentAt: string }[] }>;
+    window(opts?: { targetRef?: string; beforeId?: number; limit?: number }): Promise<{ count: number; localOldestSentAt: string | null; messages: { id: number; quoteRef: string; userRef: string; senderName: string; text: string; reactions: { emojiId: string; emojiName: string; count: number; userIds: string[] }[]; sentAt: string }[] }>;
   };
   guild: {
-    listTree(opts?: { rootId?: number; maxDepth?: number }): Promise<unknown>;
-    getNode(nodeId: number): Promise<unknown>;
-    nodeProgress(nodeId: number, limit?: number): Promise<unknown>;
+    listTree(opts?: { rootId?: number; maxDepth?: number }): Promise<{ totalNodes: number; rootCount: number; roots: GuildTreeNode[] }>;
+    getNode(nodeId: number): Promise<GuildNodeSummary & { description: string; createdBySubject: string; url: string; breadcrumb: { id: number; title: string }[]; directLeaders: GuildUserRef[]; directMembers: GuildUserRef[]; children: GuildNodeSummary[] }>;
+    nodeProgress(nodeId: number, limit?: number): Promise<{ items: GuildProgressItem[]; hasMore: boolean; nextBefore: { createdAt: string; kind: string; id: number } | null }>;
     resolveMember(opts: string | { query?: string; userRef?: string }): Promise<{ matches: { subject: string; name: string; username: string; qqBound: boolean; userRef: string | null; admitted: boolean; manager: boolean; positions: string[] }[] }>;
   };
   bunko: {
-    listTree(opts?: { folderId?: string; query?: string }): Promise<unknown>;
-    readDocument(opts: string | { documentId?: string; title?: string; maxChars?: number }): Promise<unknown>;
+    listTree(opts?: { folderId?: string; query?: string; recursive?: boolean; limit?: number }): Promise<{ folder?: { id: string; name: string; isPrivate: boolean } | null; breadcrumb?: string[]; query?: string | null; folders: { id: string; name: string; path?: string; isPrivate: boolean }[]; documents: { id: string; title: string; folderPath?: string; folderId: string | null; isPublic: boolean; isPrivate?: boolean; version: number; updatedAt: string; url: string }[] }>;
+    readDocument(opts: string | { documentId: string; startLine?: number; endLine?: number }): Promise<{ id: string; title: string; url: string; originalUrl?: string; breadcrumb: string[]; isPublic: boolean; isPrivate: boolean; version: number; headVersion: number; materialized: boolean; stale: boolean; totalLines: number; startLine: number; endLine: number; content: string }>;
   };
 };
 \`\`\`

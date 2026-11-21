@@ -30,12 +30,17 @@ export interface GuildNodeTreeItem {
   children: GuildNodeTreeItem[];
 }
 
+export interface GuildUserSummary {
+  subject: string;
+  userName: string;
+}
+
 export interface GuildNodeDetail extends GuildNodeSummary {
   description: string;
   createdBySubject: string;
   breadcrumb: { id: number; title: string }[];
-  directLeaders: { subject: string; userName: string }[];
-  directMembers: { subject: string; userName: string }[];
+  directLeaders: GuildUserSummary[];
+  directMembers: GuildUserSummary[];
   permissions: {
     canEdit: boolean;
     canDelete: boolean;
@@ -44,6 +49,37 @@ export interface GuildNodeDetail extends GuildNodeSummary {
     canAddChild: boolean;
   };
   children: GuildNodeSummary[];
+}
+
+export interface GuildProgressComment {
+  id: number;
+  nodeId: number;
+  author: GuildUserSummary;
+  body: string;
+  createdAt: string;
+  reactions: { emoji: string; count: number; reactedByMe: boolean }[];
+}
+
+export interface GuildProgressDescriptionChange {
+  id: number;
+  nodeId: number;
+  author: GuildUserSummary;
+  before: string;
+  after: string;
+  createdAt: string;
+}
+
+export type GuildProgressItem =
+  | { kind: "comment"; comment: GuildProgressComment }
+  | {
+      kind: "description_change";
+      descriptionChange: GuildProgressDescriptionChange;
+    };
+
+export interface GuildProgressList {
+  items: GuildProgressItem[];
+  hasMore: boolean;
+  nextBefore: { createdAt: string; kind: string; id: number } | null;
 }
 
 export interface GuildCreateNodeInput {
@@ -304,8 +340,8 @@ export class GuildInternalClient {
     actorSubject: string,
     nodeId: number,
     limit = 20,
-  ): Promise<unknown> {
-    return this.#request<unknown>(
+  ): Promise<GuildProgressList> {
+    return this.#request<GuildProgressList>(
       "GET",
       `/api/internal/nodes/${nodeId}/progress?limit=${limit}`,
       actorSubject,
