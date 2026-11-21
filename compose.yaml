@@ -1,6 +1,6 @@
 services:
   berry:
-    image: ghcr.io/bitnp/berry:latest
+    image: git.bitnp.net/bitnp/berry:latest
     restart: unless-stopped
     env_file:
       - .env
