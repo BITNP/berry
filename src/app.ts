@@ -183,10 +183,14 @@ export class BerryApp {
     const gatewayEvents = new GatewayEventSubscriber(
       env,
       store,
+      gateway,
       gate,
       media,
       getSettings,
-      () => gateway.clearLoginInfoCache(),
+      () => {
+        gateway.clearLoginInfoCache();
+        void gateway.backfillEmptyChatTitles().catch(() => {});
+      },
     );
     const scheduler = new ScheduleRunner(services, subagents, () =>
       workerRef.wake(),

@@ -11,6 +11,7 @@ import type { ChatKind } from "../types.ts";
 import { makeChatKey } from "../utils/chat-key.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
+import type { MessageGatewayClient } from "./client.ts";
 import { qfaceName } from "./qface.ts";
 import { parseOneBotSegments } from "./segments.ts";
 
@@ -54,6 +55,7 @@ export class GatewayEventSubscriber {
   #account: string;
   #token: string;
   #store: Store;
+  #gateway: MessageGatewayClient;
   #gate: MessageGate;
   #media: MediaProcessor;
   #getSettings: () => RuntimeSettings;
@@ -67,6 +69,7 @@ export class GatewayEventSubscriber {
   constructor(
     env: Pick<EnvConfig, "gatewayUrl" | "gatewayAccount" | "gatewayToken">,
     store: Store,
+    gateway: MessageGatewayClient,
     gate: MessageGate,
     media: MediaProcessor,
     getSettings: () => RuntimeSettings,
@@ -76,6 +79,7 @@ export class GatewayEventSubscriber {
     this.#account = env.gatewayAccount || "qq";
     this.#token = env.gatewayToken;
     this.#store = store;
+    this.#gateway = gateway;
     this.#gate = gate;
     this.#media = media;
     this.#getSettings = getSettings;
@@ -296,17 +300,23 @@ export class GatewayEventSubscriber {
       botQQ,
       settings.bot.names[0],
     );
-    const senderName =
-      payload.sender?.card?.trim() ||
-      payload.sender?.nickname?.trim() ||
-      userId;
+    const isBot = Boolean(botQQ && userId === botQQ);
+    const senderName = await this.#gateway.resolveSenderName({
+      userId,
+      isBot,
+      card: payload.sender?.card,
+      nickname: payload.sender?.nickname,
+    });
     const sentAt =
       typeof payload.time === "number" && payload.time > 0
         ? payload.time * 1000
         : Date.now();
-    const isBot = Boolean(botQQ && userId === botQQ);
 
-    await this.#store.chats.ensure(kind, chatId, {
+    await this.#gateway.ensureChatWithTitle(kind, chatId, {
+      titleHint:
+        kind === "private" && !isBot && senderName !== userId
+          ? senderName
+          : undefined,
       enabled:
         kind === "group"
           ? settings.policy.groupDefaultMode !== "off"

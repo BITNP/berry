@@ -550,10 +550,16 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         "请填写有效的会话类型和号码",
       );
 
+      const chatId = body.chatId.trim();
+      const title =
+        body.title?.trim() ||
+        (await berry.gateway.resolveChatTitle(body.kind, chatId)) ||
+        "";
+
       return berry.store.chats.upsert({
         kind: body.kind,
-        chatId: body.chatId.trim(),
-        title: body.title?.trim() ?? "",
+        chatId,
+        title,
         enabled: body.enabled ?? true,
         triggerMode:
           body.triggerMode ??
@@ -575,6 +581,8 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
           triggerMode: berry.settings.policy.groupDefaultMode,
         });
       }
+
+      await berry.gateway.backfillEmptyChatTitles();
 
       return {
         synced: groups.length,

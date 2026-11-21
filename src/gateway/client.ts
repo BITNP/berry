@@ -8,9 +8,11 @@ import type { RuntimeSettings } from "../config/settings.ts";
 import { isGroupAllowed } from "../config/settings.ts";
 import type { Store } from "../store/index.ts";
 import type {
+  ChatConfig,
   ChatKey,
   ChatKind,
   DeliveryRecord,
+  GroupTriggerMode,
   OneBotSegment,
   OutputUnit,
 } from "../types.ts";
@@ -75,6 +77,26 @@ interface SentMessageContext {
 const DEFAULT_POLL_DELAYS_MS = [350, 700, 1200, 2000, 3000, 4000, 5000];
 const DEFAULT_MAX_TRACK_MS = 10 * 60 * 1000;
 const LOGIN_INFO_FAILURE_COOLDOWN_MS = 10_000;
+const NAME_CACHE_TTL_MS = 10 * 60 * 1000;
+const NAME_FAILURE_COOLDOWN_MS = 30_000;
+const PLACEHOLDER_SENDER_NAMES = new Set(["临时会话"]);
+
+export interface StrangerInfo {
+  user_id: number;
+  nickname?: string;
+  nick?: string;
+  remark?: string;
+}
+
+export function cleanOneBotName(raw: string | null | undefined): string | null {
+  const trimmed = raw?.trim() ?? "";
+
+  if (!trimmed || PLACEHOLDER_SENDER_NAMES.has(trimmed)) {
+    return null;
+  }
+
+  return trimmed;
+}
 
 export interface GatewayClientOptions {
   pollDelaysMs?: number[];
@@ -98,6 +120,15 @@ export class MessageGatewayClient {
   #inFlightWarms = new Map<string, Promise<void>>();
   #loginInfo: { user_id: number; nickname: string } | null = null;
   #loginInfoRetryAfter = 0;
+  #groupNameCache = new Map<
+    string,
+    { value: string | null; expiresAt: number }
+  >();
+
+  #userNameCache = new Map<
+    string,
+    { value: string | null; expiresAt: number }
+  >();
 
   constructor(
     env: Pick<EnvConfig, "gatewayUrl" | "gatewayAccount" | "gatewayToken">,
@@ -193,6 +224,18 @@ export class MessageGatewayClient {
   public clearLoginInfoCache(): void {
     this.#loginInfo = null;
     this.#loginInfoRetryAfter = 0;
+
+    for (const [key, entry] of this.#groupNameCache) {
+      if (entry.value === null) {
+        this.#groupNameCache.delete(key);
+      }
+    }
+
+    for (const [key, entry] of this.#userNameCache) {
+      if (entry.value === null) {
+        this.#userNameCache.delete(key);
+      }
+    }
   }
 
   public async getLoginInfo(): Promise<{
@@ -238,10 +281,68 @@ export class MessageGatewayClient {
     }
 
     const { body } = await this.callAction<GroupInfo[]>("get_group_list");
-
-    return (body.data ?? []).filter((group) =>
+    const groups = (body.data ?? []).filter((group) =>
       this.#isGroupAllowed(String(group.group_id)),
     );
+    const expiresAt = Date.now() + NAME_CACHE_TTL_MS;
+
+    for (const group of groups) {
+      const name = cleanOneBotName(group.group_name);
+
+      if (name) {
+        this.#groupNameCache.set(String(group.group_id), {
+          value: name,
+          expiresAt,
+        });
+      }
+    }
+
+    return groups;
+  }
+
+  public async getGroupInfo(groupId: string): Promise<GroupInfo | null> {
+    if (!this.configured || !this.#isGroupAllowed(groupId)) {
+      return null;
+    }
+
+    const numericId = Number(groupId);
+
+    if (!Number.isFinite(numericId)) {
+      return null;
+    }
+
+    try {
+      const { body } = await this.callAction<GroupInfo>("get_group_info", {
+        group_id: numericId,
+      });
+
+      return body.status === "failed" ? null : (body.data ?? null);
+    } catch {
+      return null;
+    }
+  }
+
+  public async getGroupName(groupId: string): Promise<string | null> {
+    if (!this.configured || !this.#isGroupAllowed(groupId)) {
+      return null;
+    }
+
+    const now = Date.now();
+    const cached = this.#groupNameCache.get(groupId);
+
+    if (cached && cached.expiresAt > now) {
+      return cached.value;
+    }
+
+    const info = await this.getGroupInfo(groupId);
+    const name = cleanOneBotName(info?.group_name);
+
+    this.#groupNameCache.set(groupId, {
+      value: name,
+      expiresAt: now + (name ? NAME_CACHE_TTL_MS : NAME_FAILURE_COOLDOWN_MS),
+    });
+
+    return name;
   }
 
   #isGroupAllowed(groupId: string): boolean {
@@ -275,8 +376,172 @@ export class MessageGatewayClient {
       await this.callAction<
         { user_id: number; nickname: string; remark?: string }[]
       >("get_friend_list");
+    const friends = body.data ?? [];
+    const expiresAt = Date.now() + NAME_CACHE_TTL_MS;
 
-    return body.data ?? [];
+    for (const friend of friends) {
+      const name =
+        cleanOneBotName(friend.remark) ?? cleanOneBotName(friend.nickname);
+
+      if (name) {
+        this.#userNameCache.set(String(friend.user_id), {
+          value: name,
+          expiresAt,
+        });
+      }
+    }
+
+    return friends;
+  }
+
+  public async getStrangerInfo(userId: string): Promise<StrangerInfo | null> {
+    if (!this.configured) {
+      return null;
+    }
+
+    const numericId = Number(userId);
+
+    if (!Number.isFinite(numericId)) {
+      return null;
+    }
+
+    try {
+      const { body } = await this.callAction<StrangerInfo>(
+        "get_stranger_info",
+        { user_id: numericId },
+      );
+
+      return body.status === "failed" ? null : (body.data ?? null);
+    } catch {
+      return null;
+    }
+  }
+
+  public async getUserDisplayName(userId: string): Promise<string | null> {
+    if (!this.configured) {
+      return null;
+    }
+
+    const now = Date.now();
+    const cached = this.#userNameCache.get(userId);
+
+    if (cached && cached.expiresAt > now) {
+      return cached.value;
+    }
+
+    const info = await this.getStrangerInfo(userId);
+    const name =
+      cleanOneBotName(info?.remark) ??
+      cleanOneBotName(info?.nickname) ??
+      cleanOneBotName(info?.nick);
+
+    this.#userNameCache.set(userId, {
+      value: name,
+      expiresAt: now + (name ? NAME_CACHE_TTL_MS : NAME_FAILURE_COOLDOWN_MS),
+    });
+
+    return name;
+  }
+
+  public async resolveChatTitle(
+    kind: ChatKind,
+    chatId: string,
+  ): Promise<string | null> {
+    return kind === "group"
+      ? this.getGroupName(chatId)
+      : this.getUserDisplayName(chatId);
+  }
+
+  public async resolveSenderName(input: {
+    userId: string;
+    isBot: boolean;
+    card?: string | null;
+    nickname?: string | null;
+  }): Promise<string> {
+    if (input.isBot) {
+      return this.#getSettings?.().bot.names[0]?.trim() || "树莓娘";
+    }
+
+    const direct =
+      cleanOneBotName(input.card) ?? cleanOneBotName(input.nickname);
+
+    if (direct) {
+      return direct;
+    }
+
+    return (await this.getUserDisplayName(input.userId)) ?? input.userId;
+  }
+
+  public async ensureChatWithTitle(
+    kind: ChatKind,
+    chatId: string,
+    options: {
+      titleHint?: string | null;
+      enabled: boolean;
+      triggerMode: GroupTriggerMode;
+    },
+  ): Promise<ChatConfig> {
+    const hint = cleanOneBotName(options.titleHint);
+    const chat = await this.#store.chats.ensure(kind, chatId, {
+      ...(hint ? { title: hint } : {}),
+      enabled: options.enabled,
+      triggerMode: options.triggerMode,
+    });
+
+    if (chat.title.trim()) {
+      return chat;
+    }
+
+    const resolved = await this.resolveChatTitle(kind, chatId);
+
+    if (!resolved) {
+      return chat;
+    }
+
+    return this.#store.chats.ensure(kind, chatId, {
+      title: resolved,
+      enabled: chat.enabled,
+      triggerMode: chat.triggerMode,
+    });
+  }
+
+  public async backfillEmptyChatTitles(): Promise<number> {
+    if (!this.configured) {
+      return 0;
+    }
+
+    const chats = (await this.#store.chats.list()).filter(
+      (chat) => !chat.title.trim(),
+    );
+
+    if (chats.length === 0) {
+      return 0;
+    }
+
+    if (chats.some((chat) => chat.kind === "group")) {
+      await this.getGroupList().catch(() => []);
+    }
+
+    if (chats.some((chat) => chat.kind === "private")) {
+      await this.getFriendList().catch(() => []);
+    }
+
+    let updated = 0;
+
+    for (const chat of chats) {
+      const resolved = await this.resolveChatTitle(chat.kind, chat.chatId);
+
+      if (resolved) {
+        await this.#store.chats.ensure(chat.kind, chat.chatId, {
+          title: resolved,
+          enabled: chat.enabled,
+          triggerMode: chat.triggerMode,
+        });
+        updated++;
+      }
+    }
+
+    return updated;
   }
 
   public async getForwardMsg(forwardId: string): Promise<unknown[]> {
@@ -539,7 +804,7 @@ export class MessageGatewayClient {
       (a, b) => Number(a.time ?? 0) - Number(b.time ?? 0),
     );
 
-    await this.#store.chats.ensure(kind, chatId, {
+    await this.ensureChatWithTitle(kind, chatId, {
       enabled:
         kind === "group"
           ? (settings?.policy.groupDefaultMode ?? "mention_only") !== "off"
@@ -571,13 +836,17 @@ export class MessageGatewayClient {
       );
       const sender = raw.sender as
         { nickname?: string; card?: string } | undefined;
-      const senderName =
-        sender?.card?.trim() || sender?.nickname?.trim() || userId;
+      const isBot = Boolean(botQQ && userId === botQQ);
+      const senderName = await this.resolveSenderName({
+        userId,
+        isBot,
+        card: sender?.card,
+        nickname: sender?.nickname,
+      });
       const sentAt =
         typeof raw.time === "number" && raw.time > 0
           ? raw.time * 1000
           : Date.now();
-      const isBot = Boolean(botQQ && userId === botQQ);
 
       const { created } = await this.#store.messages.capture({
         kind,
@@ -952,7 +1221,7 @@ export class MessageGatewayClient {
     const { kind, chatId } = parseChatKey(ctx.chatKey);
     const settings = this.#getSettings?.();
 
-    await this.#store.chats.ensure(kind, chatId, {
+    await this.ensureChatWithTitle(kind, chatId, {
       enabled:
         kind === "group"
           ? (settings?.policy.groupDefaultMode ?? "mention_only") !== "off"
@@ -968,7 +1237,7 @@ export class MessageGatewayClient {
       chatId,
       onebotMessageId,
       userId: ctx.botQQ || "bot",
-      senderName: "树莓娘",
+      senderName: settings?.bot.names[0]?.trim() || "树莓娘",
       text: ctx.text,
       segments: ctx.segments,
       replyToMessageId: ctx.replyToMessageId,

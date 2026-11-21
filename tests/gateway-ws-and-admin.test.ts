@@ -866,3 +866,213 @@ test("MessageGatewayClient caches login info until cleared on WS reconnect and c
   assert.equal((await app.gateway.getLoginInfo())?.nickname, "新树莓娘");
   assert.equal(calls, 3);
 });
+
+test("chat titles and temporary-session sender names resolve via OneBot info APIs and backfill empty titles", async (t) => {
+  let groupInfoCalls = 0;
+  let strangerInfoCalls = 0;
+
+  const stub = await startStubServer((req, res, bodyText) => {
+    const body = bodyText
+      ? (JSON.parse(bodyText) as Record<string, unknown>)
+      : {};
+
+    res.setHeader("Content-Type", "application/json");
+
+    if (req.url === "/api/v1/accounts/qq/get_group_info") {
+      groupInfoCalls++;
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: {
+            group_id: body.group_id,
+            group_name:
+              body.group_id === 1_054_204_419 ? "技术保障中心⚠️" : "其他测试群",
+          },
+        }),
+      );
+
+      return;
+    }
+
+    if (req.url === "/api/v1/accounts/qq/get_stranger_info") {
+      strangerInfoCalls++;
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: {
+            user_id: body.user_id,
+            nick: body.user_id === 1_215_926_530 ? "Kat" : "路人甲",
+            nickname: body.user_id === 1_215_926_530 ? "Kat" : "路人甲",
+            remark: "",
+          },
+        }),
+      );
+
+      return;
+    }
+
+    if (req.url === "/api/v1/accounts/qq/get_group_list") {
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: [{ group_id: 341_792_987, group_name: "网协大群" }],
+        }),
+      );
+
+      return;
+    }
+
+    if (req.url === "/api/v1/accounts/qq/get_friend_list") {
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: [{ user_id: 55_555, nickname: "原昵称", remark: "好友备注" }],
+        }),
+      );
+
+      return;
+    }
+
+    if (req.url === "/api/v1/accounts/qq/get_friend_msg_history") {
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: {
+            messages: [
+              {
+                self_id: 3_173_748_223,
+                user_id: 3_173_748_223,
+                time: 1_700_000_001,
+                message_id: "hist-bot-1",
+                message_type: "private",
+                sub_type: "group",
+                sender: { user_id: 3_173_748_223, nickname: "临时会话" },
+                message: "树莓娘的临时会话消息",
+              },
+              {
+                self_id: 3_173_748_223,
+                user_id: 1_215_926_530,
+                time: 1_700_000_002,
+                message_id: "hist-user-1",
+                message_type: "private",
+                sub_type: "group",
+                sender: { user_id: 1_215_926_530, nickname: "临时会话" },
+                message: "用户的临时会话消息",
+              },
+            ],
+          },
+        }),
+      );
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: stub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+    },
+    {
+      bot: { botQQ: "3173748223", names: ["树莓娘"] },
+    },
+    t,
+  );
+
+  // 1. Live group event resolves group title once and caches it.
+  await app.gatewayEvents.handleEvent({
+    post_type: "message",
+    message_type: "group",
+    group_id: 1_054_204_419,
+    user_id: 1_215_926_530,
+    self_id: 3_173_748_223,
+    message_id: "live-g-1",
+    time: 1_700_000_010,
+    message: "群消息 1",
+    sender: { card: "技术部-Kat" },
+  });
+  await app.gatewayEvents.handleEvent({
+    post_type: "message",
+    message_type: "group",
+    group_id: 1_054_204_419,
+    user_id: 1_215_926_530,
+    self_id: 3_173_748_223,
+    message_id: "live-g-2",
+    time: 1_700_000_011,
+    message: "群消息 2",
+    sender: { card: "技术部-Kat" },
+  });
+
+  assert.equal(
+    (await app.store.chats.get("group:1054204419"))?.title,
+    "技术保障中心⚠️",
+  );
+  assert.equal(groupInfoCalls, 1);
+
+  // 2. Live and historical temp-session messages replace placeholder "临时会话" for both bot and user.
+  await app.gatewayEvents.handleEvent({
+    post_type: "message",
+    message_type: "private",
+    sub_type: "group",
+    user_id: 1_215_926_530,
+    self_id: 3_173_748_223,
+    message_id: "live-dm-1",
+    time: 1_700_000_012,
+    message: "实时临时会话",
+    sender: { nickname: "临时会话" },
+  });
+  await app.gateway.syncChatHistory("private", "1215926530", { count: 10 });
+  const dmChat = await app.store.chats.get("private:1215926530");
+  const liveDm = await app.store.messages.findByOnebotId(
+    "private:1215926530",
+    "live-dm-1",
+  );
+  const botHist = await app.store.messages.findByOnebotId(
+    "private:1215926530",
+    "hist-bot-1",
+  );
+  const userHist = await app.store.messages.findByOnebotId(
+    "private:1215926530",
+    "hist-user-1",
+  );
+
+  assert.equal(dmChat?.title, "Kat");
+  assert.equal(liveDm?.senderName, "Kat");
+  assert.equal(botHist?.senderName, "树莓娘");
+  assert.equal(userHist?.senderName, "Kat");
+  assert.equal(strangerInfoCalls, 1);
+
+  // 3. Backfill fills empty titles for both groups and private chats without overwriting manual titles.
+  await app.store.chats.ensure("group", "341792987", {
+    enabled: true,
+    triggerMode: "mention_only",
+  });
+  await app.store.chats.ensure("private", "55555", {
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+  await app.store.chats.ensure("group", "99999", {
+    title: "手动命名群",
+    enabled: true,
+    triggerMode: "mention_only",
+  });
+
+  const filled = await app.gateway.backfillEmptyChatTitles();
+
+  assert.equal(filled, 2);
+  assert.equal(
+    (await app.store.chats.get("group:341792987"))?.title,
+    "网协大群",
+  );
+  assert.equal((await app.store.chats.get("private:55555"))?.title, "好友备注");
+  assert.equal((await app.store.chats.get("group:99999"))?.title, "手动命名群");
+});
