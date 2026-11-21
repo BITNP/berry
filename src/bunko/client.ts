@@ -71,15 +71,6 @@ export interface BunkoDocumentAccess {
   folderId: string | null;
 }
 
-export interface BunkoAclEntry {
-  id: string;
-  resourceType: string;
-  resourceId: string;
-  principalType: string;
-  principalId: string;
-  permission: string;
-}
-
 export interface BunkoFolderSummary {
   id: string;
   name: string;
@@ -133,14 +124,6 @@ export class BunkoClient {
     return Boolean(this.#apiUrl && this.#apiKey);
   }
 
-  public get publicUrl(): string {
-    return this.#publicUrl;
-  }
-
-  public get workspaceSlug(): string {
-    return this.#workspaceSlug;
-  }
-
   public docUrl(docId: string): string {
     if (!this.#publicUrl || !docId) {
       return "";
@@ -175,18 +158,12 @@ export class BunkoClient {
     const queue: { id: string | null; prefix: string }[] = [
       { id: null, prefix: "" },
     ];
-    const visited = new Set<string>();
 
     while (queue.length > 0 && result.length < maxFolders) {
       const current = queue.shift()!;
       const listing = await this.listTree(current.id);
 
       for (const folder of listing.folders) {
-        if (visited.has(folder.id)) {
-          continue;
-        }
-
-        visited.add(folder.id);
         const path = current.prefix
           ? `${current.prefix}/${folder.name}`
           : folder.name;
@@ -195,7 +172,7 @@ export class BunkoClient {
           id: folder.id,
           name: folder.name,
           path,
-          isPrivate: Boolean(folder.isPrivate),
+          isPrivate: folder.isPrivate,
         });
         queue.push({ id: folder.id, prefix: path });
 
@@ -239,17 +216,6 @@ export class BunkoClient {
     );
   }
 
-  public async listAcl(
-    resourceType: "folder" | "document",
-    resourceId: string,
-  ): Promise<BunkoAclEntry[]> {
-    const res = await this.#request<{ items?: BunkoAclEntry[] }>("/acl", {
-      query: { resourceType, resourceId },
-    });
-
-    return res.items ?? [];
-  }
-
   public async createDocument(input: {
     title: string;
     folderId?: string | null;
@@ -283,18 +249,12 @@ export class BunkoClient {
     markdown: string,
     idempotencyKey: string,
   ): Promise<{ version: number }> {
-    const key = idempotencyKey.trim();
-
-    if (!key || Buffer.byteLength(key, "utf8") > 128) {
-      throw new Error("Idempotency-Key 必须为 1 至 128 字节的 UTF-8 字符串");
-    }
-
     return this.#request<{ version: number }>(
       `/documents/${encodeURIComponent(documentId)}/content/append`,
       {
         method: "POST",
         headers: {
-          "Idempotency-Key": key,
+          "Idempotency-Key": idempotencyKey.trim(),
         },
         body: { markdown },
       },

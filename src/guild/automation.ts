@@ -12,8 +12,9 @@ import type { MessageGatewayClient } from "../gateway/client.ts";
 import type { IdentityDirectory } from "../identity/keycloak.ts";
 import type { Store } from "../store/index.ts";
 import { computeNextRunAt } from "../store/schedules.ts";
-import { makeChatKey } from "../types.ts";
+import { makeChatKey } from "../utils/chat-key.ts";
 import { Logger } from "../utils/logger.ts";
+import type { ShortLinkClient } from "../utils/shortlink.ts";
 import { errorMessage, formatDateTime, formatDay } from "../utils/time.ts";
 import type { GuildEvent, GuildInternalClient } from "./client.ts";
 
@@ -48,6 +49,7 @@ export class GuildAutomationRunner {
   #directory: IdentityDirectory;
   #gateway: MessageGatewayClient;
   #bunko: BunkoClient;
+  #shortlink: ShortLinkClient;
   #getSettings: () => RuntimeSettings;
   #logger = new Logger("guild:auto");
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -67,6 +69,7 @@ export class GuildAutomationRunner {
     directory: IdentityDirectory,
     gateway: MessageGatewayClient,
     bunko: BunkoClient,
+    shortlink: ShortLinkClient,
     getSettings: () => RuntimeSettings,
   ) {
     this.#env = env;
@@ -75,6 +78,7 @@ export class GuildAutomationRunner {
     this.#directory = directory;
     this.#gateway = gateway;
     this.#bunko = bunko;
+    this.#shortlink = shortlink;
     this.#getSettings = getSettings;
   }
 
@@ -174,7 +178,7 @@ export class GuildAutomationRunner {
   }
 
   public async runDueReminders(): Promise<{ notified: number }> {
-    this.#requireEnabled();
+    this.#guild.assertEnabled();
 
     const settings = this.#getSettings();
     const saved = await this.#store.cursors.get(DUE_CURSOR);
@@ -220,7 +224,7 @@ export class GuildAutomationRunner {
   }
 
   public async runAssignments(): Promise<{ notified: number }> {
-    this.#requireEnabled();
+    this.#guild.assertEnabled();
 
     return this.#enqueueEventWork(async () => {
       const settings = this.#getSettings();
@@ -234,17 +238,13 @@ export class GuildAutomationRunner {
         return { notified: 0 };
       }
 
-      let cursor = this.#parseCursor(saved);
+      let cursor = Number(saved);
       let notified = 0;
 
       while (true) {
         const batch = await this.#guild.listEvents(cursor, 100);
 
         for (const ev of batch.items) {
-          if (ev.id <= cursor) {
-            continue;
-          }
-
           if (await this.#processEvent(ev, settings)) {
             notified++;
           }
@@ -254,7 +254,7 @@ export class GuildAutomationRunner {
 
         await this.#store.cursors.set(EVENT_CURSOR, String(cursor));
 
-        if (!batch.hasMore || batch.items.length === 0) {
+        if (!batch.hasMore) {
           break;
         }
       }
@@ -270,7 +270,7 @@ export class GuildAutomationRunner {
     created: boolean;
     periodStart: string;
   }> {
-    this.#requireEnabled();
+    this.#guild.assertEnabled();
     if (!this.#bunko.enabled) {
       throw new Error(
         "Bunko 云文档未配置（BERRY_BUNKO_API_URL / BERRY_BUNKO_API_KEY），无法归档公会周报",
@@ -283,7 +283,6 @@ export class GuildAutomationRunner {
       period.start.toISOString(),
       period.end.toISOString(),
     );
-    const snapshotMs = Date.parse(data.snapshotAt);
 
     const endDisplay = formatDay(
       period.end.getTime() - 86_400 * 1000,
@@ -355,7 +354,7 @@ export class GuildAutomationRunner {
     const markdown = `# ${title}
 
 统计区间：[${period.start.toISOString()}, ${period.end.toISOString()})
-状态采集时间：${formatDateTime(Number.isFinite(snapshotMs) ? snapshotMs : Date.now(), "Asia/Shanghai")} (UTC+8)
+状态采集时间：${formatDateTime(Date.parse(data.snapshotAt), "Asia/Shanghai")} (UTC+8)
 
 - 周内新增：${data.createdCount}
 - 周内完成：${data.completedCount}
@@ -372,19 +371,20 @@ ${summary}
       markdown,
       idempotencyKey: `guild-weekly:${period.label}:${Math.floor(atMs / 1000)}`,
     });
+    const url = await this.#shortlink.shortenOrFallback(published.url);
 
     await this.#store.cursors.set(WEEKLY_CURSOR, period.label);
     this.#logger.info("Published guild weekly report to Bunko", {
       documentId: published.documentId,
       title: published.title,
       created: published.created,
-      url: published.url,
+      url,
     });
 
     return {
       documentId: published.documentId,
       title: published.title,
-      url: published.url,
+      url,
       created: published.created,
       periodStart: period.label,
     };
@@ -463,9 +463,8 @@ ${summary}
           }
 
           await this.#enqueueEventWork(async () => {
-            const currentCursor = this.#parseCursor(
-              await this.#store.cursors.get(EVENT_CURSOR),
-            );
+            const savedCursor = await this.#store.cursors.get(EVENT_CURSOR);
+            const currentCursor = savedCursor ? Number(savedCursor) : 0;
 
             if (parsed.id <= currentCursor) {
               return;
@@ -508,20 +507,12 @@ ${summary}
     }
   }
 
-  #requireEnabled(): void {
-    if (!this.#guild.enabled) {
-      throw new Error(
-        "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
-      );
-    }
-  }
-
   #ensureEventCursor(): Promise<number> {
     return this.#enqueueEventWork(async () => {
       const saved = await this.#store.cursors.get(EVENT_CURSOR);
 
       if (saved !== null) {
-        return this.#parseCursor(saved);
+        return Number(saved);
       }
 
       const seed = await this.#guild.listEvents(0, 1);
@@ -543,16 +534,6 @@ ${summary}
     return run;
   }
 
-  #parseCursor(raw: string | null): number {
-    if (!raw) {
-      return 0;
-    }
-
-    const parsed = Number.parseInt(raw, 10);
-
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
-  }
-
   async #processEvent(
     ev: GuildEvent,
     settings: RuntimeSettings,
@@ -561,7 +542,7 @@ ${summary}
       return false;
     }
 
-    const payload = ev.payload ?? {};
+    const { payload } = ev;
     const subject =
       typeof payload.subject === "string" ? payload.subject.trim() : "";
 
@@ -575,8 +556,7 @@ ${summary}
       return false;
     }
 
-    const role = payload.role === "leader" ? "leader" : "member";
-    const roleLabel = role === "leader" ? "负责人" : "成员";
+    const roleLabel = payload.role === "leader" ? "负责人" : "成员";
     const rawTitle =
       typeof payload.nodeTitle === "string" ? payload.nodeTitle.trim() : "";
     const title = rawTitle || (ev.nodeId ? `节点 #${ev.nodeId}` : "公会任务");
@@ -635,9 +615,7 @@ ${summary}
       return;
     }
 
-    const dueAt = Number(storedNext);
-
-    if (!Number.isFinite(dueAt) || now < dueAt) {
+    if (now < Number(storedNext)) {
       return;
     }
 

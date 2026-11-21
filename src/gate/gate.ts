@@ -51,7 +51,7 @@ export class MessageGate {
 
     const identity = await this.#directory.byQQ(userId).catch(() => null);
     const isAdmin = Boolean(identity?.permissions.systemAdmin);
-    const isPrivileged = isAdmin || hasManagementAccess(identity?.permissions);
+    const isPrivileged = hasManagementAccess(identity?.permissions);
     const isAdmitted = isPrivileged || Boolean(identity?.permissions.admitted);
 
     return { isAdmin, isPrivileged, isAdmitted };
@@ -310,10 +310,8 @@ export class MessageGate {
     const byId = new Map(activeCandidates.map((m) => [m.id, m]));
 
     for (const decision of results) {
-      const msg = byId.get(decision.messageId);
-      const isPrivilegedSender = msg
-        ? senderPrivileges[msg.userId] === "privileged"
-        : false;
+      const msg = byId.get(decision.messageId)!;
+      const isPrivilegedSender = senderPrivileges[msg.userId] === "privileged";
       const effectiveAction =
         decision.action === "memory" && !isPrivilegedSender
           ? "ignore"
@@ -332,10 +330,6 @@ export class MessageGate {
         model,
         durationMs,
       });
-
-      if (!msg) {
-        continue;
-      }
 
       if (effectiveAction === "reply") {
         replyMessages.push(msg);

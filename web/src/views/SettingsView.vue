@@ -338,7 +338,7 @@ async function loadSettings() {
     const [cfgRes, mcpRes, ovRes, bunkoRes] = await Promise.all([
       apiFetch<{
         settings: RuntimeSettingsView;
-        thinkingTasks?: ThinkingTaskOption[];
+        thinkingTasks: ThinkingTaskOption[];
         envSummary: EnvSummaryView;
       }>("/api/admin/settings"),
       apiFetch<{ statuses: McpStatusRow[]; tools: McpToolRow[] }>(
@@ -356,16 +356,10 @@ async function loadSettings() {
       })),
     ]);
 
-    settings.value = {
-      ...cfgRes.settings,
-      mainModel: {
-        ...cfgRes.settings.mainModel,
-        taskThinkingEffort: cfgRes.settings.mainModel.taskThinkingEffort ?? {},
-      },
-    };
-    thinkingTasks.value = cfgRes.thinkingTasks ?? [];
+    settings.value = cfgRes.settings;
+    thinkingTasks.value = cfgRes.thinkingTasks;
     envSummary.value = cfgRes.envSummary;
-    bunkoFolders.value = bunkoRes.folders ?? [];
+    bunkoFolders.value = bunkoRes.folders;
     mcpStatuses.value = mcpRes.statuses;
     mcpTools.value = mcpRes.tools;
     storage.value = ovRes.storage;
@@ -374,8 +368,8 @@ async function loadSettings() {
 
     if (ws?.kind === "weekly") {
       customWeeklyEnabled.value = true;
-      weeklyDays.value = ws.weekdays?.length ? [...ws.weekdays] : ["sun"];
-      weeklyTime.value = ws.time || "20:00";
+      weeklyDays.value = [...ws.weekdays];
+      weeklyTime.value = ws.time;
     } else {
       customWeeklyEnabled.value = false;
       weeklyDays.value = ["sun"];

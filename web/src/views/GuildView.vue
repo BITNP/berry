@@ -78,7 +78,7 @@ interface GuildJobRow {
   id: number;
   kind: string;
   chatKey: string;
-  payload: { task?: "due" | "assignments" | "weekly" };
+  payload: { task: "due" | "assignments" | "weekly" };
   state: "pending" | "running" | "done" | "failed";
   lastError: string | null;
   updatedAt: number;
@@ -113,17 +113,10 @@ const activeGuildJobs = computed(() =>
 const activeJobFor = (
   task: "due" | "assignments" | "weekly",
 ): GuildJobRow | null =>
-  activeGuildJobs.value.find(
-    (j) => j.payload?.task === task || j.chatKey === `guild:${task}`,
-  ) ?? null;
+  activeGuildJobs.value.find((j) => j.payload.task === task) ?? null;
 
-function taskLabelForJob(job: GuildJobRow): string {
-  const key =
-    job.payload?.task ??
-    (job.chatKey.replace(/^guild:/, "") as "due" | "assignments" | "weekly");
-
-  return GUILD_TASK_LABELS[key] ?? job.chatKey;
-}
+const taskLabelForJob = (job: GuildJobRow): string =>
+  GUILD_TASK_LABELS[job.payload.task];
 
 const detailOpen = ref(false);
 const selectedAudit = ref<GuildAuditRow | null>(null);
@@ -252,11 +245,7 @@ const auditColumns: DataTableColumns<GuildAuditRow> = [
     key: "action",
     width: 100,
     render: (row) =>
-      h(
-        NTag,
-        { size: "small" },
-        { default: () => actionLabels[row.action] || row.action },
-      ),
+      h(NTag, { size: "small" }, { default: () => actionLabels[row.action] }),
   },
   {
     title: "目标节点",
@@ -377,19 +366,14 @@ useLiveRefresh({
 useLiveRefresh({
   events: ["job_update"],
   debounceMs: 250,
-  match: (_type, data) =>
-    Boolean(
-      data &&
-      typeof data === "object" &&
-      (data as { kind?: string }).kind === "guild_task",
-    ),
+  match: (_type, data) => (data as { kind?: string }).kind === "guild_task",
   refresh: async () => {
     await Promise.all([loadGuildJobs(), loadGuild()]);
   },
 });
 
 useEventStream((type, data) => {
-  if (type === "job_update" && data && typeof data === "object") {
+  if (type === "job_update") {
     const ev = data as { kind?: string; state?: string; chatKey?: string };
 
     if (

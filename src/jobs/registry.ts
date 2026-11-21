@@ -82,9 +82,7 @@ export class JobRegistry {
       }
 
       for (const id of def.referencedMessageIds(job.payload)) {
-        if (Number.isInteger(id) && id > 0) {
-          ids.add(id);
-        }
+        ids.add(id);
       }
     }
 

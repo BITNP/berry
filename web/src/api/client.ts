@@ -22,15 +22,6 @@ async function ensureCsrfToken(): Promise<string> {
   return csrfTokenCache;
 }
 
-export class ApiError extends Error {
-  public readonly status: number;
-
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
-
 export async function apiFetch<T>(
   path: string,
   options: RequestInit = {},
@@ -82,7 +73,7 @@ export async function apiFetch<T>(
         : "";
     const msg = rawMsg || `请求失败 (HTTP ${res.status})`;
 
-    throw new ApiError(res.status, msg);
+    throw new Error(msg);
   }
 
   return parsed as T;

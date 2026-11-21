@@ -183,25 +183,21 @@ export class MaintenanceStore {
         .execute();
 
       for (const job of activeJobs) {
-        try {
-          const payload = JSON.parse(job.payload_json) as {
-            messageId?: number;
-            messageIds?: number[];
-            triggerMessageIds?: number[];
-          };
+        const payload = JSON.parse(job.payload_json) as {
+          messageId?: number;
+          messageIds?: number[];
+          triggerMessageIds?: number[];
+        };
 
-          if (typeof payload.messageId === "number") {
-            protectedIds.add(payload.messageId);
-          }
+        if (payload.messageId !== undefined) {
+          protectedIds.add(payload.messageId);
+        }
 
-          for (const id of [
-            ...(payload.messageIds ?? []),
-            ...(payload.triggerMessageIds ?? []),
-          ]) {
-            protectedIds.add(id);
-          }
-        } catch {
-          // Ignore malformed job payload.
+        for (const id of [
+          ...(payload.messageIds ?? []),
+          ...(payload.triggerMessageIds ?? []),
+        ]) {
+          protectedIds.add(id);
         }
       }
 

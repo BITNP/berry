@@ -8,7 +8,7 @@ import {
   parseSettings,
   resolveThinkingEffort,
 } from "../src/config/settings.ts";
-import { defineTool } from "../src/tools/index.ts";
+import { defineTool } from "../src/tools/define.ts";
 import {
   chatReply,
   chatToolCalls,
@@ -404,6 +404,7 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
       media: app.media,
       knowledge: app.knowledge,
       bunko: app.bunko,
+      shortlink: app.shortlink,
       directory: app.directory,
       guild: app.guild,
       mcp: app.mcp,

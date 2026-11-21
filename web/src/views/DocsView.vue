@@ -47,13 +47,13 @@ async function loadFiles() {
   try {
     const res = await apiFetch<{
       items: DocFileRow[];
-      bunkoConfigured?: boolean;
-      bunkoWorkspaceUrl?: string;
+      bunkoConfigured: boolean;
+      bunkoWorkspaceUrl: string;
     }>("/api/admin/docs");
 
     files.value = res.items;
-    bunkoConfigured.value = Boolean(res.bunkoConfigured);
-    bunkoWorkspaceUrl.value = res.bunkoWorkspaceUrl ?? "";
+    bunkoConfigured.value = res.bunkoConfigured;
+    bunkoWorkspaceUrl.value = res.bunkoWorkspaceUrl;
 
     if (selectedFile.value) {
       const exists = res.items.some((f) => f.path === selectedFile.value?.path);

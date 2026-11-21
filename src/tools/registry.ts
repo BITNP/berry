@@ -1,6 +1,42 @@
 import type { AgentTool } from "../agent/loop.ts";
 import type { AgentServices, ToolContext, ToolEntry } from "./types.ts";
-import { resolveTools } from "./types.ts";
+
+export function resolveTools(
+  entries: readonly ToolEntry[],
+  ctx: ToolContext,
+): AgentTool[] {
+  const resolved: AgentTool[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of entries) {
+    let items: readonly AgentTool[];
+
+    if (entry.kind === "tool") {
+      if (entry.available && !entry.available(ctx.services)) {
+        continue;
+      }
+
+      if (entry.guard?.(ctx)) {
+        continue;
+      }
+
+      items = [entry.bind(ctx)];
+    } else {
+      items = entry.resolve(ctx);
+    }
+
+    for (const tool of items) {
+      if (seen.has(tool.name)) {
+        throw new Error(`Duplicate resolved tool name: ${tool.name}`);
+      }
+
+      seen.add(tool.name);
+      resolved.push(tool);
+    }
+  }
+
+  return resolved;
+}
 
 export class ToolRegistry {
   #entries: ToolEntry[] = [];

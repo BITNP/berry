@@ -10,7 +10,7 @@ import { Type } from "typebox";
 import * as Value from "typebox/value";
 
 import type { ChatKey, ChatKind } from "../types.ts";
-import { makeChatKey, parseChatKey } from "../types.ts";
+import { makeChatKey, parseChatKey } from "../utils/chat-key.ts";
 
 function normalizeRecord(
   raw: unknown,
@@ -112,7 +112,7 @@ export const idParamSchema = Type.Object({
   id: Type.Integer({ minimum: 1 }),
 });
 
-export const chatKeyParamSchema = Type.Object({
+const chatKeyParamSchema = Type.Object({
   chatKey: Type.String({ minLength: 1 }),
 });
 

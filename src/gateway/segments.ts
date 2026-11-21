@@ -70,7 +70,7 @@ function summarizeJsonCard(rawData: unknown): string {
   return "[卡片消息]";
 }
 
-export function normalizeSegments(rawMessage: unknown): OneBotSegment[] {
+function normalizeSegments(rawMessage: unknown): OneBotSegment[] {
   if (Array.isArray(rawMessage)) {
     return rawMessage
       .filter(

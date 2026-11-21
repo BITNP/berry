@@ -1,8 +1,8 @@
 import { Type } from "typebox";
 
-import { parseChatKey } from "../types.ts";
+import { parseChatKey } from "../utils/chat-key.ts";
 import { assertCanReadChat, resolveAuthorizedChat } from "./chat.ts";
-import { defineTool } from "./types.ts";
+import { defineTool } from "./define.ts";
 
 export const inspectMediaTool = defineTool({
   name: "inspect_media",
@@ -21,15 +21,23 @@ export const inspectMediaTool = defineTool({
     const { store, media } = ctx.services;
     const { ids } = ctx;
     let targetId = args.messageId ?? null;
+    let verifiedChat = false;
 
     if (!targetId && args.quoteRef) {
       const meta = ids.resolveMessageMeta(args.quoteRef);
-      const lookupKey =
-        meta.chatKey ??
-        (await resolveAuthorizedChat(ctx, args.targetRef)).targetChatKey;
-      const parsedLookup = parseChatKey(lookupKey);
+      let lookupKey: string;
 
-      await assertCanReadChat(ctx, parsedLookup.kind, parsedLookup.chatId);
+      if (meta.chatKey) {
+        const parsedLookup = parseChatKey(meta.chatKey);
+
+        await assertCanReadChat(ctx, parsedLookup.kind, parsedLookup.chatId);
+        lookupKey = meta.chatKey;
+      } else {
+        lookupKey = (await resolveAuthorizedChat(ctx, args.targetRef))
+          .targetChatKey;
+      }
+
+      verifiedChat = true;
       const msg = await store.messages.findByOnebotId(lookupKey, meta.rawId);
 
       targetId = msg?.id ?? null;
@@ -45,7 +53,10 @@ export const inspectMediaTool = defineTool({
       throw new Error("未找到指定消息");
     }
 
-    await assertCanReadChat(ctx, msgRow.kind, msgRow.chatId);
+    if (!verifiedChat) {
+      await assertCanReadChat(ctx, msgRow.kind, msgRow.chatId);
+    }
+
     await media.waitForMessages([targetId]);
     let assets = await store.assets.listForMessage(targetId);
 

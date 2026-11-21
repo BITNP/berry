@@ -62,10 +62,6 @@ export class Store {
     return new Store(database, events);
   }
 
-  public get dataDir(): string {
-    return this.database.dataDir;
-  }
-
   public get knowledgeDir(): string {
     return this.database.knowledgeDir;
   }

@@ -39,37 +39,6 @@ function clipText(
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
-function decodeToolCalls(raw: string | null): LlmToolCallSummary[] {
-  if (!raw) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-
-    if (!Array.isArray(parsed)) {
-      return [];
-    }
-
-    return parsed
-      .filter(
-        (item): item is LlmToolCallSummary =>
-          Boolean(item) &&
-          typeof item === "object" &&
-          typeof (item as { name?: unknown }).name === "string",
-      )
-      .map((item) => ({
-        name: item.name,
-        arguments:
-          typeof item.arguments === "string"
-            ? item.arguments
-            : JSON.stringify(item.arguments ?? {}),
-      }));
-  } catch {
-    return [];
-  }
-}
-
 const decodeLlmCall = (
   row: Selectable<BerryTables["llm_usage"]>,
 ): LlmCallRecord => ({
@@ -79,22 +48,24 @@ const decodeLlmCall = (
   model: row.model,
   chatKey: row.chat_key,
   status: row.status === "error" ? "error" : "ok",
-  inputTokens: Number(row.input_tokens),
-  cachedInputTokens: Number(row.cached_input_tokens),
-  outputTokens: Number(row.output_tokens),
-  durationMs: Number(row.duration_ms),
+  inputTokens: row.input_tokens,
+  cachedInputTokens: row.cached_input_tokens,
+  outputTokens: row.output_tokens,
+  durationMs: row.duration_ms,
   requestPreview: row.request_preview,
   responseText: row.response_text,
-  toolCalls: decodeToolCalls(row.tool_calls_json),
+  toolCalls: row.tool_calls_json
+    ? (JSON.parse(row.tool_calls_json) as LlmToolCallSummary[])
+    : [],
   error: row.error,
-  createdAt: Number(row.created_at),
+  createdAt: row.created_at,
 });
 
 export class UsageStore {
   #database: BerryDatabase;
-  #events?: EventBus;
+  #events: EventBus;
 
-  constructor(database: BerryDatabase, events?: EventBus) {
+  constructor(database: BerryDatabase, events: EventBus) {
     this.#database = database;
     this.#events = events;
   }
@@ -145,7 +116,7 @@ export class UsageStore {
 
     const record = decodeLlmCall(row);
 
-    this.#events?.emit({ type: "llm_call", data: record });
+    this.#events.emit({ type: "llm_call", data: record });
 
     return record;
   }

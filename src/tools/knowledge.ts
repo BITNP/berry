@@ -1,7 +1,7 @@
 import { Type } from "typebox";
 
+import { defineTool } from "./define.ts";
 import type { Tool } from "./types.ts";
-import { defineTool } from "./types.ts";
 
 export const listKnowledgeFilesTool = defineTool({
   name: "list_knowledge_files",

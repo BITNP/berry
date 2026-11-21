@@ -1,15 +1,12 @@
 import { Type } from "typebox";
 
 import { resolveThinkingEffort } from "../../config/settings.ts";
+import { defineTool, defineToolProvider } from "../../tools/define.ts";
+import { resolveTools } from "../../tools/registry.ts";
 import type {
   AgentServices,
   ToolContext,
   ToolProvider,
-} from "../../tools/types.ts";
-import {
-  defineTool,
-  defineToolProvider,
-  resolveTools,
 } from "../../tools/types.ts";
 import { runChatToolLoop } from "../loop.ts";
 import type { SubagentDefinition, SubagentResult } from "./types.ts";

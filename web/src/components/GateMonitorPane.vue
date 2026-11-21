@@ -260,15 +260,9 @@ useLiveRefresh({
   enabled: () =>
     !props.paused && detailOpen.value && selectedRow.value !== null,
   match: (_type, data) => {
-    const row = selectedRow.value;
-
-    if (!row || !data || typeof data !== "object") {
-      return true;
-    }
-
     const ev = data as { chatKey?: string | null };
 
-    return !ev.chatKey || ev.chatKey === row.chatKey;
+    return !ev.chatKey || ev.chatKey === selectedRow.value!.chatKey;
   },
   refresh: async () => {
     if (selectedRow.value) {
@@ -341,7 +335,7 @@ const columns: DataTableColumns<GateDecisionRow> = [
     title: "阶段",
     key: "stage",
     width: 90,
-    render: (row) => stageLabelMap[row.stage] || row.stage,
+    render: (row) => stageLabelMap[row.stage],
   },
   {
     title: "置信度",

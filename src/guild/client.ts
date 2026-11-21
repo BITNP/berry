@@ -212,18 +212,16 @@ export class GuildInternalClient {
       siblings.sort((a, b) => a.sortOrder - b.sortOrder || a.id - b.id);
     }
 
-    const maxDepth = Math.min(8, Math.max(1, options.maxDepth ?? 6));
+    const maxDepth = options.maxDepth ?? 6;
     const buildNode = (
       node: GuildNodeSummary,
       depth: number,
-      visited: Set<number>,
     ): GuildNodeTreeItem => {
-      visited.add(node.id);
       const kids =
         depth < maxDepth
-          ? (byParent.get(node.id) ?? [])
-              .filter((child) => !visited.has(child.id))
-              .map((child) => buildNode(child, depth + 1, visited))
+          ? (byParent.get(node.id) ?? []).map((child) =>
+              buildNode(child, depth + 1),
+            )
           : [];
 
       return {
@@ -247,7 +245,7 @@ export class GuildInternalClient {
     return {
       totalNodes: all.length,
       rootCount: (byParent.get(null) ?? []).length,
-      roots: topNodes.map((root) => buildNode(root, 1, new Set())),
+      roots: topNodes.map((root) => buildNode(root, 1)),
     };
   }
 
@@ -259,14 +257,12 @@ export class GuildInternalClient {
     const all = await this.listNodes(actorSubject);
     const byId = new Map(all.map((node) => [node.id, node]));
     const needle = query.trim().toLowerCase();
-    const capped = Math.min(200, Math.max(1, limit));
 
     const pathOf = (node: GuildNodeSummary): string[] => {
       const chain: string[] = [];
       let current: GuildNodeSummary | undefined = node;
-      let guard = 0;
 
-      while (current && guard++ < 30) {
+      while (current) {
         chain.unshift(current.title);
         current =
           current.parentId === null ? undefined : byId.get(current.parentId);
@@ -284,7 +280,7 @@ export class GuildInternalClient {
         )
       : all;
 
-    return matches.slice(0, capped).map((node) => ({
+    return matches.slice(0, limit).map((node) => ({
       ...node,
       pathTitles: pathOf(node),
       url: this.nodeUrl(node.id),
@@ -420,18 +416,18 @@ export class GuildInternalClient {
   }
 
   public async *streamEvents(
-    after: number | undefined,
+    after: number,
     signal: AbortSignal,
     onOpen?: () => void,
   ): AsyncGenerator<GuildSseFrame> {
-    this.#assertEnabled();
+    this.assertEnabled();
 
     const res = await this.#api.raw("/api/internal/events/stream", {
       method: "GET",
-      query: after === undefined ? undefined : { after },
+      query: { after },
       headers: {
-        Accept: "text/event-stream",
-        ...(after === undefined ? {} : { "Last-Event-ID": String(after) }),
+        "Accept": "text/event-stream",
+        "Last-Event-ID": String(after),
       },
       responseType: "stream",
       timeout: undefined,
@@ -488,7 +484,7 @@ export class GuildInternalClient {
     });
   }
 
-  #assertEnabled(): void {
+  public assertEnabled(): void {
     if (!this.enabled) {
       throw new Error(
         "Guild 内部服务接口未配置（BERRY_GUILD_API_URL / BERRY_GUILD_INTERNAL_TOKEN）",
@@ -505,7 +501,7 @@ export class GuildInternalClient {
       body?: unknown;
     } = {},
   ): Promise<T> {
-    this.#assertEnabled();
+    this.assertEnabled();
 
     try {
       return await this.#api<T>(path, {

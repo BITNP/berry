@@ -39,9 +39,9 @@ function summarizeMessageContent(
 }
 
 function buildRequestPreview(
-  messages: ChatCompletionMessageParam[] | undefined,
+  messages: ChatCompletionMessageParam[],
 ): string | null {
-  if (!messages || messages.length === 0) {
+  if (messages.length === 0) {
     return null;
   }
 
@@ -55,15 +55,10 @@ function buildRequestPreview(
 
   for (const msg of tail) {
     const header =
-      msg.role === "tool" && "tool_call_id" in msg
-        ? `[tool:${msg.tool_call_id}]`
-        : `[${msg.role}]`;
+      msg.role === "tool" ? `[tool:${msg.tool_call_id}]` : `[${msg.role}]`;
     const body = summarizeMessageContent(msg.content);
     const calls =
-      msg.role === "assistant" &&
-      "tool_calls" in msg &&
-      Array.isArray(msg.tool_calls) &&
-      msg.tool_calls.length > 0
+      msg.role === "assistant" && msg.tool_calls?.length
         ? msg.tool_calls
             .map((c) =>
               c.type === "function"

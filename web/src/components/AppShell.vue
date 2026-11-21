@@ -52,7 +52,7 @@ interface ShellStatus {
   gatewayHealth: { configured: boolean; reachable: boolean };
   gatewayStreamConnected: boolean;
   pendingJobs: number;
-  activeBackgroundJobs?: number;
+  activeBackgroundJobs: number;
 }
 
 const route = useRoute();
@@ -352,14 +352,14 @@ onUnmounted(() => {
           </div>
 
           <NButton
-            v-if="(status?.activeBackgroundJobs ?? 0) > 0"
+            v-if="status && status.activeBackgroundJobs > 0"
             secondary
             size="tiny"
             type="info"
             @click="router.push('/logs?tab=jobs&lane=background')"
           >
             <span class="dot ok" />
-            后台任务 {{ status?.activeBackgroundJobs }}
+            后台任务 {{ status.activeBackgroundJobs }}
           </NButton>
 
           <NTooltip v-if="status">

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { ChatKey } from "../types.ts";
-import { makeChatKey } from "../types.ts";
+import { makeChatKey } from "../utils/chat-key.ts";
 
 export class ModelIds {
   #toRef = new Map<string, string>();

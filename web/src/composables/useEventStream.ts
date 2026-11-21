@@ -37,7 +37,7 @@ let sharedSource: EventSource | null = null;
 let everOpened = false;
 
 function ensureSharedSource() {
-  if (sharedSource || typeof EventSource === "undefined") {
+  if (sharedSource) {
     return;
   }
 
@@ -245,8 +245,6 @@ export function useLiveRefresh(options: {
       timer = null;
     }
   });
-
-  return { trigger: schedule };
 }
 
 export function useLiveClock(active: () => boolean, intervalMs = 1000) {

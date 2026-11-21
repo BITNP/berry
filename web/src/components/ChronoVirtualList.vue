@@ -107,10 +107,6 @@ function attachContentObserver() {
   disconnectObserver();
   observedEl = itemsEl;
 
-  if (typeof ResizeObserver === "undefined") {
-    return;
-  }
-
   contentObserver = new ResizeObserver(() => {
     if (!pinnedToBottom.value || !props.followBottom) {
       return;
@@ -176,8 +172,6 @@ function handleScroll(event: Event) {
     pendingNewCount.value = 0;
   } else if (!isProgrammatic && currentTop < lastScrollTop - 2) {
     pinnedToBottom.value = false;
-  } else if (!isProgrammatic && !pinnedToBottom.value) {
-    pinnedToBottom.value = false;
   }
 
   lastScrollTop = currentTop;
@@ -191,10 +185,6 @@ function handleScroll(event: Event) {
   ) {
     emit("loadOlder");
   }
-}
-
-function jumpToBottom() {
-  snapToBottom();
 }
 
 watch(
@@ -292,10 +282,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disconnectObserver();
 });
-
-defineExpose({
-  scrollToBottom: jumpToBottom,
-});
 </script>
 
 <template>
@@ -338,7 +324,7 @@ defineExpose({
         round
         size="tiny"
         :type="pendingNewCount > 0 ? 'primary' : 'default'"
-        @click="jumpToBottom"
+        @click="snapToBottom"
       >
         <template #icon>
           <ArrowDown :size="13" />

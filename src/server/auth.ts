@@ -16,7 +16,6 @@ import { Type } from "typebox";
 
 import type { EnvConfig } from "../config/env.ts";
 import {
-  MANAGEMENT_ACCESS_ROLE,
   hasManagementAccess,
   permissionsFromClaims,
 } from "../identity/permissions.ts";
@@ -37,7 +36,7 @@ const callbackQuerySchema = Type.Object({
 const SESSION_COOKIE = "berry_session";
 const PENDING_TTL_MS = 10 * 60 * 1000;
 
-export { MANAGEMENT_ACCESS_ROLE, hasManagementAccess as hasConsoleAccess };
+export { hasManagementAccess as hasConsoleAccess };
 
 interface PendingLogin {
   nonce: string;

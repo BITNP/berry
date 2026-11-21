@@ -6,7 +6,7 @@ import type {
   ChatKind,
   GroupTriggerMode,
 } from "../types.ts";
-import { makeChatKey, parseChatKey } from "../types.ts";
+import { makeChatKey, parseChatKey } from "../utils/chat-key.ts";
 import type { BerryDatabase } from "./database.ts";
 import type { BerryTables } from "./schema.ts";
 

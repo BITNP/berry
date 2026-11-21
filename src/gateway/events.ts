@@ -8,7 +8,7 @@ import type { MessageGate } from "../gate/gate.ts";
 import type { MediaProcessor } from "../media/processor.ts";
 import type { Store } from "../store/index.ts";
 import type { ChatKind } from "../types.ts";
-import { makeChatKey } from "../types.ts";
+import { makeChatKey } from "../utils/chat-key.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
 import { qfaceName } from "./qface.ts";
@@ -41,7 +41,7 @@ export interface OneBotEvent {
 
 function buildEventWsUrl(baseUrl: string, account: string): string {
   const url = new URL(
-    `${baseUrl.replace(/\/+$/, "")}/api/v1/accounts/${encodeURIComponent(account || "qq")}/ws/event`,
+    `${baseUrl}/api/v1/accounts/${encodeURIComponent(account)}/ws/event`,
   );
 
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
@@ -178,7 +178,7 @@ export class GatewayEventSubscriber {
     this.#socket = null;
     socket?.close(1000, "shutdown");
 
-    await this.#eventQueue.catch(() => undefined);
+    await this.#eventQueue;
   }
 
   public async handleEvent(payload: OneBotEvent): Promise<{
@@ -423,7 +423,7 @@ export class GatewayEventSubscriber {
   }
 
   #enqueueEvent(event: OneBotEvent): void {
-    const task = this.#eventQueue.then(async () => {
+    this.#eventQueue = this.#eventQueue.then(async () => {
       if (!this.#started) {
         return;
       }
@@ -437,10 +437,5 @@ export class GatewayEventSubscriber {
         });
       }
     });
-
-    this.#eventQueue = task.then(
-      () => undefined,
-      () => undefined,
-    );
   }
 }

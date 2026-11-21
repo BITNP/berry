@@ -88,13 +88,43 @@ function collectSecrets(): string[] {
 }
 
 const LEVEL_NAMES: Record<number, LogLevel> = {
-  10: "debug",
   20: "debug",
   30: "info",
   40: "warn",
   50: "error",
-  60: "error",
 };
+
+interface ParsedPinoLine {
+  level: LogLevel;
+  time: number;
+  scope: string;
+  message: string;
+  context: Record<string, unknown>;
+}
+
+function parsePinoLine(raw: string): ParsedPinoLine {
+  const {
+    level: rawLevel,
+    time,
+    scope,
+    msg,
+    ...context
+  } = JSON.parse(raw) as {
+    level: number;
+    time: number;
+    scope: string;
+    msg: string;
+    [key: string]: unknown;
+  };
+
+  return {
+    level: LEVEL_NAMES[rawLevel] ?? "info",
+    time,
+    scope,
+    message: msg,
+    context,
+  };
+}
 
 const MAX_LOG_BUFFER = 2000;
 
@@ -124,14 +154,13 @@ export class LogHub {
     context: Record<string, unknown>,
     time = Date.now(),
   ): LogEntry {
-    const secrets = this.secrets();
     const entry: LogEntry = {
       id: this.#nextId++,
       time,
       level,
       scope,
-      message: redactString(message, secrets),
-      context: redactSecretValues(context, secrets) as Record<string, unknown>,
+      message,
+      context,
     };
 
     this.#entries.push(entry);
@@ -213,27 +242,10 @@ const memorySink = new Writable({
       const line = String(chunk).trim();
 
       if (line) {
-        const parsed = JSON.parse(line) as Record<string, unknown>;
-        const {
-          level: rawLevel,
-          time: rawTime,
-          scope: rawScope,
-          msg: rawMsg,
-          pid: _pid,
-          hostname: _hostname,
-          ...rest
-        } = parsed;
-
-        const level =
-          typeof rawLevel === "number"
-            ? (LEVEL_NAMES[rawLevel] ?? "info")
-            : "info";
-        const time = typeof rawTime === "number" ? rawTime : Date.now();
-        const scope = typeof rawScope === "string" ? rawScope : "berry";
-        const message = typeof rawMsg === "string" ? rawMsg : "";
+        const { level, scope, message, context, time } = parsePinoLine(line);
 
         for (const hub of activeHubs) {
-          hub.pushRaw(level, scope, message, rest, time);
+          hub.pushRaw(level, scope, message, context, time);
         }
       }
     } catch {
@@ -519,34 +531,7 @@ const prettyStream =
             const raw = String(chunk).trim();
 
             if (raw) {
-              const parsed = JSON.parse(raw) as Record<string, unknown>;
-              const {
-                level: rawLevel,
-                time: rawTime,
-                scope: rawScope,
-                msg: rawMsg,
-                pid: _pid,
-                hostname: _hostname,
-                ...rest
-              } = parsed;
-
-              const level =
-                typeof rawLevel === "number"
-                  ? (LEVEL_NAMES[rawLevel] ?? "info")
-                  : "info";
-              const time = typeof rawTime === "number" ? rawTime : Date.now();
-              const scope = typeof rawScope === "string" ? rawScope : "berry";
-              const message = typeof rawMsg === "string" ? rawMsg : "";
-
-              process.stdout.write(
-                formatPrettyLogLine({
-                  time,
-                  level,
-                  scope,
-                  message,
-                  context: rest,
-                }),
-              );
+              process.stdout.write(formatPrettyLogLine(parsePinoLine(raw)));
             }
           } catch {
             process.stdout.write(chunk);

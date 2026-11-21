@@ -294,7 +294,9 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   assert.ok(
     await app.store.messages.findByOnebotId("group:555666", "ob-paused-1"),
   );
-  assert.equal(await app.store.jobs.countPending(), 0);
+  const jobCounts = await app.store.jobs.counts();
+
+  assert.equal(jobCounts.pending + jobCounts.running, 0);
 
   const backfill = (await (
     await fetch(`${url}/api/admin/chats/group%3A555666/backfill`, {

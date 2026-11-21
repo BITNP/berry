@@ -2,9 +2,10 @@ import { Type } from "typebox";
 
 import { scheduleSpecSchema } from "../config/settings.ts";
 import type { ScheduleSpec } from "../types.ts";
-import { parseChatKey } from "../types.ts";
+import { parseChatKey } from "../utils/chat-key.ts";
+import { isPrivilegedActor } from "./access.ts";
+import { defineTool } from "./define.ts";
 import type { ToolActor } from "./types.ts";
-import { defineTool, isPrivilegedActor } from "./types.ts";
 
 const MIN_NON_ADMIN_INTERVAL_SECONDS = 300;
 

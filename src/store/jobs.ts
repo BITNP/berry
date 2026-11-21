@@ -471,16 +471,6 @@ export class JobsStore {
     return { pending, running, failed, backgroundActive };
   }
 
-  public async countPending(): Promise<number> {
-    const row = await this.#database.db
-      .selectFrom("jobs")
-      .select((eb) => eb.fn.countAll<number>().as("count"))
-      .where("state", "in", ["pending", "running"])
-      .executeTakeFirstOrThrow();
-
-    return Number(row.count);
-  }
-
   #emitJobUpdate(
     id: number,
     kind: JobKind,

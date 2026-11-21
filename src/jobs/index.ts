@@ -5,11 +5,6 @@ import type { ScheduleRunner } from "../scheduler/runner.ts";
 import type { GuildTaskKind } from "../types.ts";
 import { JobRegistry } from "./registry.ts";
 
-export type {
-  DescribedJobMeta,
-  JobDefinition,
-  JobSummaryContext,
-} from "./registry.ts";
 export { JobRegistry } from "./registry.ts";
 
 const GUILD_TASK_LABELS: Record<GuildTaskKind, string> = {
@@ -30,9 +25,9 @@ export const createDefaultJobRegistry = (deps: {
       label: "消息分流",
       lane: "gate",
       execute: (job) => deps.gate.processBatch(job),
-      referencedMessageIds: (payload) => payload.messageIds ?? [],
+      referencedMessageIds: (payload) => payload.messageIds,
       summarize: (job, { messagesById }) => {
-        const ids = job.payload.messageIds ?? [];
+        const ids = job.payload.messageIds;
         const first = ids.length > 0 ? messagesById.get(ids[0]!) : undefined;
 
         if (!first) {
@@ -51,7 +46,7 @@ export const createDefaultJobRegistry = (deps: {
       execute: async (job) => {
         await deps.agent.invoke(job.payload);
       },
-      referencedMessageIds: (payload) => payload.triggerMessageIds ?? [],
+      referencedMessageIds: (payload) => payload.triggerMessageIds,
       summarize: (job, { messagesById }) => {
         const p = job.payload;
 
@@ -61,7 +56,7 @@ export const createDefaultJobRegistry = (deps: {
           return `${prefix}${p.content.slice(0, 90)}`;
         }
 
-        const ids = p.triggerMessageIds ?? [];
+        const ids = p.triggerMessageIds;
         const first = ids.length > 0 ? messagesById.get(ids[0]!) : undefined;
 
         if (first) {
@@ -70,7 +65,7 @@ export const createDefaultJobRegistry = (deps: {
           return ids.length > 1 ? `${head}（共 ${ids.length} 条）` : head;
         }
 
-        return p.senderName ? `${p.senderName} 触发` : (p.source ?? "对话应答");
+        return p.senderName ? `${p.senderName} 触发` : p.source;
       },
     })
     .register({
@@ -82,15 +77,14 @@ export const createDefaultJobRegistry = (deps: {
           job.payload.chatKey,
           job.payload.messageId,
         ),
-      referencedMessageIds: (payload) =>
-        typeof payload.messageId === "number" ? [payload.messageId] : [],
+      referencedMessageIds: (payload) => [payload.messageId],
       summarize: (job, { messagesById }) => {
         const id = job.payload.messageId;
-        const msg = typeof id === "number" ? messagesById.get(id) : undefined;
+        const msg = messagesById.get(id);
 
         return msg
           ? `${msg.senderName}: ${msg.text.slice(0, 80)}`
-          : `消息 #${String(id ?? "")}`;
+          : `消息 #${id}`;
       },
     })
     .register({
@@ -100,17 +94,12 @@ export const createDefaultJobRegistry = (deps: {
       execute: (job) => deps.scheduler.runGroupDigest(job),
       summarize: (job) => {
         const { startTimeMs, endTimeMs } = job.payload;
+        const hours = Math.max(
+          1,
+          Math.round((endTimeMs - startTimeMs) / 3_600_000),
+        );
 
-        if (startTimeMs && endTimeMs) {
-          const hours = Math.max(
-            1,
-            Math.round((endTimeMs - startTimeMs) / 3_600_000),
-          );
-
-          return `近 ${hours} 小时群聊摘要`;
-        }
-
-        return "群聊讨论摘要";
+        return `近 ${hours} 小时群聊摘要`;
       },
     })
     .register({
@@ -128,6 +117,5 @@ export const createDefaultJobRegistry = (deps: {
           await deps.guildAutomation.runWeeklyReport();
         }
       },
-      summarize: (job) =>
-        GUILD_TASK_LABELS[job.payload.task] ?? job.payload.task,
+      summarize: (job) => GUILD_TASK_LABELS[job.payload.task],
     });

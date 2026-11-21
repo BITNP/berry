@@ -1,64 +1,17 @@
 import { randomUUID } from "node:crypto";
 
 import type { Selectable } from "kysely";
-import type { ChatCompletionMessageFunctionToolCall } from "openai/resources/chat/completions";
 
 import type {
   ConversationRecord,
   OutputResult,
   TurnMessage,
 } from "../types.ts";
-import { GLOBAL_CONVERSATION_KEY } from "../types.ts";
 import type { EventBus } from "../utils/logger.ts";
 import type { BerryDatabase } from "./database.ts";
 import type { BerryDb, BerryTables } from "./schema.ts";
 
-function decodeTurnMessages(rawJson: string): TurnMessage[] {
-  const raw = JSON.parse(rawJson) as unknown[];
-  const out: TurnMessage[] = [];
-
-  for (const entry of raw) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-
-    const item = entry as Record<string, unknown>;
-
-    switch (item.role) {
-      case "user": {
-        out.push({ role: "user", content: String(item.content ?? "") });
-
-        break;
-      }
-
-      case "assistant": {
-        const toolCalls = Array.isArray(item.tool_calls)
-          ? (item.tool_calls as ChatCompletionMessageFunctionToolCall[])
-          : undefined;
-
-        out.push({
-          role: "assistant",
-          content: typeof item.content === "string" ? item.content : null,
-          ...(toolCalls?.length ? { tool_calls: toolCalls } : {}),
-        });
-
-        break;
-      }
-
-      case "tool": {
-        out.push({
-          role: "tool",
-          tool_call_id: String(item.tool_call_id ?? ""),
-          content: String(item.content ?? ""),
-        });
-
-        break;
-      }
-    }
-  }
-
-  return out;
-}
+const GLOBAL_CONVERSATION_KEY = "global";
 
 const decodeConversation = (
   row: Selectable<BerryTables["conversations"]>,
@@ -66,7 +19,7 @@ const decodeConversation = (
   chatKey: row.chat_key,
   sessionId: row.session_id,
   summary: row.summary,
-  messages: decodeTurnMessages(row.messages_json),
+  messages: JSON.parse(row.messages_json) as TurnMessage[],
   pendingResults: JSON.parse(row.pending_results_json) as OutputResult[],
   afterMessageId: row.after_message_id,
   updatedAt: row.updated_at,
@@ -74,9 +27,9 @@ const decodeConversation = (
 
 export class ConversationsStore {
   #database: BerryDatabase;
-  #events?: EventBus;
+  #events: EventBus;
 
-  constructor(database: BerryDatabase, events?: EventBus) {
+  constructor(database: BerryDatabase, events: EventBus) {
     this.#database = database;
     this.#events = events;
   }
@@ -188,7 +141,7 @@ export class ConversationsStore {
       }
 
       const nextMessages = [
-        ...decodeTurnMessages(row.messages_json),
+        ...(JSON.parse(row.messages_json) as TurnMessage[]),
         ...turnMessages,
       ];
 
@@ -207,7 +160,7 @@ export class ConversationsStore {
     });
 
     if (updated) {
-      this.#events?.emit({
+      this.#events.emit({
         type: "conversation_update",
         data: { sessionId: updated.sessionId },
       });
@@ -236,7 +189,7 @@ export class ConversationsStore {
         return false;
       }
 
-      const current = decodeTurnMessages(row.messages_json);
+      const current = JSON.parse(row.messages_json) as TurnMessage[];
 
       if (consumedCount <= 0 || consumedCount > current.length) {
         return false;
@@ -259,7 +212,7 @@ export class ConversationsStore {
     });
 
     if (compacted) {
-      this.#events?.emit({
+      this.#events.emit({
         type: "conversation_update",
         data: { sessionId },
       });
@@ -292,7 +245,7 @@ export class ConversationsStore {
       return decodeConversation(row);
     });
 
-    this.#events?.emit({
+    this.#events.emit({
       type: "conversation_update",
       data: { sessionId: record.sessionId },
     });

@@ -106,15 +106,4 @@ export class AdminSessionsStore {
       await trx.deleteFrom("admin_sessions").where("id", "=", id).execute();
     });
   }
-
-  public async pruneExpired(): Promise<void> {
-    const now = Date.now();
-
-    await this.#database.writeTx(async (trx) => {
-      await trx
-        .deleteFrom("admin_sessions")
-        .where("expires_at", "<=", now)
-        .execute();
-    });
-  }
 }

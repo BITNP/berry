@@ -9,7 +9,6 @@ export interface AuthUser {
   avatar: string | null;
   permissions: {
     systemAdmin: boolean;
-    managementAccess?: boolean;
     manager: boolean;
     accessDepartments: string[];
     managedDepartments: string[];

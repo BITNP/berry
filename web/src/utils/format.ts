@@ -45,16 +45,6 @@ export function formatTime(ms: number | null | undefined): string {
   }).format(new Date(ms));
 }
 
-export function formatIso(iso: string | null | undefined): string {
-  if (!iso) {
-    return "—";
-  }
-
-  const parsed = Date.parse(iso);
-
-  return Number.isNaN(parsed) ? iso : formatTime(parsed);
-}
-
 export function formatPercent(numerator: number, denominator: number): string {
   if (denominator <= 0) {
     return "0.0%";

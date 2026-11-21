@@ -26,13 +26,14 @@ import {
 import { mcpToolProvider } from "../src/tools/mcp.ts";
 import { memoryManageTool } from "../src/tools/memory.ts";
 import { qqDirectoryTool } from "../src/tools/qq.ts";
+import { resolveTools } from "../src/tools/registry.ts";
 import { scheduleManageTool } from "../src/tools/schedule.ts";
+import { shortenUrlTool } from "../src/tools/shortlink.ts";
 import type {
   AgentServices,
   ToolActor,
   ToolContext,
 } from "../src/tools/types.ts";
-import { resolveTools } from "../src/tools/types.ts";
 import {
   captureText,
   chatReply,
@@ -49,6 +50,7 @@ const makeServices = (
   media: app.media,
   knowledge: app.knowledge,
   bunko: app.bunko,
+  shortlink: app.shortlink,
   directory: app.directory,
   guild: app.guild,
   mcp: app.mcp,
@@ -1330,6 +1332,7 @@ test("Bunko tools enforce standard-user ACL visibility, privileged writes/append
     userId: "7001",
     senderName: "管理层",
     text: "周报和群聊摘要都迁到 Bunko 了",
+    sentAt: Date.now() - 10_000,
   });
 
   await app.scheduler.enqueueDigestNow("8888", 24);
@@ -1341,5 +1344,117 @@ test("Bunko tools enforce standard-user ACL visibility, privileged writes/append
         d.title.includes("核心技术群 讨论摘要") &&
         (d.markdown ?? "").includes("Bunko 迁移方案"),
     ),
+  );
+});
+
+test("ShortLinkClient shortens long URLs via p.bitnp.net form protocol, caches, validates responses, and gates shorten_url to privileged users", async (t) => {
+  let requests = 0;
+  let mode: "ok" | "bad_origin" | "error" = "ok";
+
+  const shortStub = await startStubServer((req, res, bodyText) => {
+    requests++;
+
+    if (mode === "error") {
+      res.statusCode = 503;
+      res.end("down");
+
+      return;
+    }
+
+    assert.equal(req.method, "POST");
+    assert.equal(req.url, "/create");
+    assert.equal(req.headers.origin, shortStub.url);
+    const form = new URLSearchParams(bodyText);
+
+    assert.ok(form.get("url")?.startsWith("https://"));
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    if (mode === "bad_origin") {
+      res.end(
+        `<input id="short-url" value="https://evil.example/abc123" readonly />`,
+      );
+
+      return;
+    }
+
+    res.end(
+      `<input value='${shortStub.url}/b1tnp9' id='short-url' readonly />`,
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      shortlinkOrigin: shortStub.url,
+    },
+    {},
+    t,
+  );
+  const services = makeServices(app);
+  const ids = new ModelIds();
+
+  const memberActor: ToolActor = {
+    chatKey: "group:1001",
+    senderQQ: "6001",
+    actorSubject: "sub-member",
+    actorName: "普通部员",
+    actorIsAdmin: false,
+    actorIsPrivileged: false,
+    actorAdmitted: true,
+  };
+  const managementActor: ToolActor = {
+    chatKey: "group:1001",
+    senderQQ: "7001",
+    actorSubject: "sub-mgmt",
+    actorName: "管理层",
+    actorIsAdmin: false,
+    actorIsPrivileged: true,
+    actorAdmitted: true,
+  };
+
+  // Standard user cannot see or invoke shorten_url.
+  assert.deepEqual(
+    resolveTools([shortenUrlTool], makeCtx(services, ids, memberActor)),
+    [],
+  );
+  await assert.rejects(
+    () =>
+      shortenUrlTool.bind(makeCtx(services, ids, memberActor)).execute({
+        url: "https://docs.bit-staging.bitnp.net/bitnp/doc/123456",
+      }),
+    /仅管理员或网协管理层/,
+  );
+
+  // Privileged user shortens long URL and second call hits cache.
+  const longUrl =
+    "https://docs.bit-staging.bitnp.net/bitnp/doc/01a1fd0b-4ba6-727a-a903-37abe65ec987";
+  const first = (await shortenUrlTool
+    .bind(makeCtx(services, ids, managementActor))
+    .execute({ url: longUrl })) as { shortUrl: string };
+  const second = await app.shortlink.shortenOrFallback(longUrl);
+
+  assert.equal(first.shortUrl, `${shortStub.url}/b1tnp9`);
+  assert.equal(second, `${shortStub.url}/b1tnp9`);
+  assert.equal(requests, 1);
+
+  // Already-shortened origin returns as-is without network calls.
+  assert.equal(
+    await app.shortlink.shortenOrFallback(`${shortStub.url}/b1tnp9`),
+    `${shortStub.url}/b1tnp9`,
+  );
+  assert.equal(requests, 1);
+
+  // Invalid shortlink response is rejected by shorten() and gracefully falls back in shortenOrFallback().
+  mode = "bad_origin";
+  const anotherLongUrl =
+    "https://docs.bit-staging.bitnp.net/bitnp/doc/01a1fd0b-4ba6-727a-a903-37abe65ec988";
+
+  await assert.rejects(
+    () => app.shortlink.shorten(anotherLongUrl),
+    /未返回有效的短链接/,
+  );
+  mode = "error";
+  assert.equal(
+    await app.shortlink.shortenOrFallback(anotherLongUrl),
+    anotherLongUrl,
   );
 });

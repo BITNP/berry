@@ -4,7 +4,7 @@ import { Cron } from "croner";
 import type { Selectable } from "kysely";
 
 import type { ChatKind, ScheduleRecord, ScheduleSpec } from "../types.ts";
-import { makeChatKey } from "../types.ts";
+import { makeChatKey } from "../utils/chat-key.ts";
 import type { EventBus } from "../utils/logger.ts";
 import type { BerryDatabase } from "./database.ts";
 import type { BerryTables } from "./schema.ts";
@@ -184,9 +184,9 @@ const decodeSchedule = (
 
 export class SchedulesStore {
   #database: BerryDatabase;
-  #events?: EventBus;
+  #events: EventBus;
 
-  constructor(database: BerryDatabase, events?: EventBus) {
+  constructor(database: BerryDatabase, events: EventBus) {
     this.#database = database;
     this.#events = events;
   }
@@ -254,7 +254,7 @@ export class SchedulesStore {
 
     const record = decodeSchedule(row);
 
-    this.#events?.emit({
+    this.#events.emit({
       type: "schedule_update",
       data: { id: record.id },
     });
@@ -313,7 +313,7 @@ export class SchedulesStore {
     const record = row ? decodeSchedule(row) : null;
 
     if (record) {
-      this.#events?.emit({
+      this.#events.emit({
         type: "schedule_update",
         data: { id: record.id },
       });
@@ -333,7 +333,7 @@ export class SchedulesStore {
     });
 
     if (deleted) {
-      this.#events?.emit({
+      this.#events.emit({
         type: "schedule_update",
         data: { id },
       });
@@ -376,7 +376,7 @@ export class SchedulesStore {
         .execute();
     });
 
-    this.#events?.emit({
+    this.#events.emit({
       type: "schedule_update",
       data: { id: record.id },
     });

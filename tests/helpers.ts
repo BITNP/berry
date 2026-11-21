@@ -106,6 +106,7 @@ export async function createTestBerryApp(
     BERRY_MAIN_MODEL: "gpt-test-main",
     BERRY_GATE_API_KEY: "test-gate-key",
     BERRY_GATE_MODEL: "gpt-test-gate",
+    BERRY_SHORTLINK_ORIGIN: "",
   });
 
   Object.assign(env, overrides);

@@ -3,8 +3,9 @@ import { Type } from "typebox";
 import type { DirectoryUser } from "../identity/keycloak.ts";
 import type { GuildAuditAction } from "../types.ts";
 import { errorMessage } from "../utils/time.ts";
+import { requirePrivileged } from "./access.ts";
+import { defineTool } from "./define.ts";
 import type { Tool, ToolContext } from "./types.ts";
-import { defineTool, requirePrivileged } from "./types.ts";
 
 const guildWriteGuard = requirePrivileged("执行公会看板写操作");
 
@@ -19,10 +20,6 @@ const formatDirectoryMember = (user: DirectoryUser) => ({
 });
 
 function requireActorSubject(ctx: ToolContext): string {
-  if (!ctx.services.guild.enabled) {
-    throw new Error("公会内部服务接口未配置，无法操作公会看板");
-  }
-
   if (!ctx.actor.actorSubject) {
     throw new Error(
       "当前发言人尚未在网协通行证绑定 QQ 号，无法代理查询或操作公会看板",

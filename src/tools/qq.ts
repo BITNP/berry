@@ -1,8 +1,9 @@
 import { Type } from "typebox";
 
 import { searchQFaceCatalog } from "../gateway/qface.ts";
+import { isPrivilegedActor } from "./access.ts";
 import { resolveAuthorizedChat } from "./chat.ts";
-import { defineTool, isPrivilegedActor } from "./types.ts";
+import { defineTool } from "./define.ts";
 
 export const qqDirectoryTool = defineTool({
   name: "qq_directory",

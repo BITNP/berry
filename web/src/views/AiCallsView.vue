@@ -879,7 +879,7 @@ onMounted(() => {
               <NButton
                 quaternary
                 size="tiny"
-                @click="copyText(selectedCall.responseText || '')"
+                @click="copyText(selectedCall.responseText)"
               >
                 <template #icon>
                   <Copy :size="12" />

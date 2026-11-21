@@ -78,12 +78,12 @@ interface JobCounts {
 interface JobRow {
   id: number;
   kind: string;
-  label?: string;
-  lane?: JobLane;
+  label: string;
+  lane: JobLane;
   dedupeKey: string;
   chatKey: string;
   payload: Record<string, unknown>;
-  summary?: string;
+  summary: string;
   state: "pending" | "running" | "done" | "failed";
   attempts: number;
   lastError: string | null;
@@ -100,7 +100,7 @@ interface DeliveryRow {
   attempts: number;
   error: string | null;
   onebotMessageId: string | null;
-  createdAt?: number;
+  createdAt: number;
   updatedAt: number;
 }
 
@@ -387,24 +387,17 @@ const visibleEntries = computed(() => {
   });
 });
 
-const jobKindMap = computed(
-  () => new Map(jobKinds.value.map((item) => [item.kind, item])),
-);
-
-function jobMeta(row: Pick<JobRow, "kind" | "label" | "lane">): {
+const jobMeta = (
+  row: Pick<JobRow, "kind" | "label" | "lane">,
+): {
   label: string;
   lane: JobLane;
   tagType: JobTagType;
-} {
-  const registered = jobKindMap.value.get(row.kind);
-  const lane = row.lane ?? registered?.lane ?? "background";
-
-  return {
-    label: row.label ?? registered?.label ?? row.kind,
-    lane,
-    tagType: jobTagType(row.kind, lane),
-  };
-}
+} => ({
+  label: row.label,
+  lane: row.lane,
+  tagType: jobTagType(row.kind, row.lane),
+});
 
 const selectedJobLinks = computed(() =>
   selectedJob.value ? jobActionLinks(selectedJob.value) : [],
@@ -496,7 +489,7 @@ const visibleJobs = computed(() => {
       j.chatKey.toLowerCase().includes(kw) ||
       meta.label.toLowerCase().includes(kw) ||
       j.kind.toLowerCase().includes(kw) ||
-      (j.summary ?? "").toLowerCase().includes(kw) ||
+      j.summary.toLowerCase().includes(kw) ||
       (j.lastError ?? "").toLowerCase().includes(kw)
     );
   });
@@ -726,12 +719,11 @@ async function loadDeliveryCalls(
       return;
     }
 
-    const anchorMs = row.createdAt ?? row.updatedAt;
     const chronological = [...res.items].reverse();
 
     deliveryRelatedCalls.value = selectTurnCallsForDelivery(
       chronological,
-      anchorMs,
+      row.createdAt,
     );
   } catch {
     if (!options.silent && selectedDelivery.value?.id === targetId) {
@@ -756,7 +748,7 @@ function toggleJobStateFilter(state: JobRow["state"]) {
 
 const { paused: streamPaused, togglePause } = useEventStream(
   (type, data) => {
-    if (type === "log" && data && typeof data === "object") {
+    if (type === "log") {
       const entry = data as LogEntryView;
 
       entries.value.push(entry);
@@ -797,12 +789,7 @@ useLiveRefresh({
   paused: streamPaused,
   enabled: () => jobDrawerOpen.value && selectedJob.value !== null,
   match: (_type, data) => {
-    const job = selectedJob.value;
-
-    if (!job || !data || typeof data !== "object") {
-      return true;
-    }
-
+    const job = selectedJob.value!;
     const ev = data as { id?: number; chatKey?: string | null };
 
     if (ev.id !== undefined && ev.id === job.id) {
@@ -828,15 +815,9 @@ useLiveRefresh({
   paused: streamPaused,
   enabled: () => deliveryDrawerOpen.value && selectedDelivery.value !== null,
   match: (_type, data) => {
-    const del = selectedDelivery.value;
-
-    if (!del || !data || typeof data !== "object") {
-      return true;
-    }
-
     const ev = data as { chatKey?: string | null };
 
-    return !ev.chatKey || ev.chatKey === del.chatKey;
+    return !ev.chatKey || ev.chatKey === selectedDelivery.value!.chatKey;
   },
   refresh: async () => {
     if (selectedDelivery.value) {
@@ -902,19 +883,13 @@ async function loadJobs() {
 
     const res = await apiFetch<{
       items: JobRow[];
-      kinds?: JobTypeDescriptor[];
-      counts?: JobCounts;
+      kinds: JobTypeDescriptor[];
+      counts: JobCounts;
     }>(`/api/admin/jobs?${qs.toString()}`);
 
     jobs.value = res.items;
-
-    if (res.kinds) {
-      jobKinds.value = res.kinds;
-    }
-
-    if (res.counts) {
-      jobCounts.value = res.counts;
-    }
+    jobKinds.value = res.kinds;
+    jobCounts.value = res.counts;
 
     if (selectedJob.value) {
       const updated = res.items.find(

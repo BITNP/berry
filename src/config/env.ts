@@ -25,6 +25,7 @@ export interface EnvConfig {
   bunkoApiKey: string;
   bunkoPublicUrl: string;
   bunkoWorkspaceSlug: string;
+  shortlinkOrigin: string;
   botQQ: string;
   allowedGroups: string[];
   mainBaseUrl: string;
@@ -85,10 +86,7 @@ function readDigitList(
     return [];
   }
 
-  const values = raw
-    .split(/[\s,]+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
+  const values = raw.split(/[\s,]+/).filter(Boolean);
 
   for (const item of values) {
     if (!/^\d+$/.test(item)) {
@@ -143,6 +141,11 @@ export function loadEnvConfig(
     bunkoApiKey: readEnv(env, "BERRY_BUNKO_API_KEY"),
     bunkoPublicUrl: readEnv(env, "BERRY_BUNKO_PUBLIC_URL").replace(/\/+$/, ""),
     bunkoWorkspaceSlug: readEnv(env, "BERRY_BUNKO_WORKSPACE_SLUG", "bitnp"),
+    shortlinkOrigin: readEnv(
+      env,
+      "BERRY_SHORTLINK_ORIGIN",
+      "https://p.bitnp.net",
+    ).replace(/\/+$/, ""),
     botQQ: readEnv(env, "BERRY_BOT_QQ"),
     allowedGroups: readDigitList(env, "BERRY_ALLOWED_GROUPS"),
     mainBaseUrl: readEnv(

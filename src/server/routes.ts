@@ -189,9 +189,7 @@ const patchChatBodySchema = Type.Object({
 });
 
 const backfillBodySchema = Type.Object({
-  count: Type.Optional(
-    Type.Integer({ minimum: 1, maximum: 500, default: 200 }),
-  ),
+  count: Type.Integer({ minimum: 1, maximum: 500, default: 200 }),
 });
 
 const digestBodySchema = Type.Object({
@@ -659,7 +657,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
 
       const { count } = await parseBody(event, backfillBodySchema);
       const result = await berry.gateway.syncChatHistory(kind, chatId, {
-        count: count ?? 200,
+        count,
         mode: "latest",
         maxPages: 1,
         stepBackIfLatestCached: true,
@@ -739,9 +737,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       const byId = new Map<string, string>();
 
       for (const s of speakers) {
-        if (s.userId && !byId.has(s.userId)) {
-          byId.set(s.userId, s.name);
-        }
+        byId.set(s.userId, s.name);
       }
 
       for (const c of chats) {
@@ -786,10 +782,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       await berry.auth.requireAdmin(event);
       const body = await parseBody(event, upsertMemoryBodySchema);
 
-      return berry.store.memories.upsert({
-        ...body,
-        ownerId: body.scope === "global" ? "global" : body.ownerId,
-      });
+      return berry.store.memories.upsert(body);
     }),
   );
 
@@ -803,11 +796,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       );
 
       return {
-        deleted: await berry.store.memories.remove(
-          scope,
-          scope === "global" ? "global" : ownerId,
-          key,
-        ),
+        deleted: await berry.store.memories.remove(scope, ownerId, key),
       };
     }),
   );
@@ -1102,8 +1091,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       ]);
 
       const msgIds = berry.jobs.collectMessageIds(rows);
-      const msgRows =
-        msgIds.length > 0 ? await berry.store.messages.getByIds(msgIds) : [];
+      const msgRows = await berry.store.messages.getByIds(msgIds);
       const messagesById = new Map(msgRows.map((m) => [m.id, m]));
 
       return {

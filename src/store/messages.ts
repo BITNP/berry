@@ -7,7 +7,7 @@ import type {
   MessageRecord,
   OneBotSegment,
 } from "../types.ts";
-import { makeChatKey } from "../types.ts";
+import { makeChatKey } from "../utils/chat-key.ts";
 import type { EventBus } from "../utils/logger.ts";
 import type { BerryDatabase } from "./database.ts";
 import type { BerryTables } from "./schema.ts";
@@ -50,9 +50,9 @@ export interface CaptureMessageInput {
 
 export class MessagesStore {
   #database: BerryDatabase;
-  #events?: EventBus;
+  #events: EventBus;
 
-  constructor(database: BerryDatabase, events?: EventBus) {
+  constructor(database: BerryDatabase, events: EventBus) {
     this.#database = database;
     this.#events = events;
   }
@@ -114,7 +114,7 @@ export class MessagesStore {
     });
 
     if (result.created) {
-      this.#events?.emit({
+      this.#events.emit({
         type: "message_update",
         data: { chatKey, messageId: result.message.id },
       });
@@ -193,7 +193,7 @@ export class MessagesStore {
     });
 
     if (changed) {
-      this.#events?.emit({
+      this.#events.emit({
         type: "message_update",
         data: { chatKey, messageId: null },
       });

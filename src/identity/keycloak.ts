@@ -25,12 +25,12 @@ interface CachedDirectoryUser {
 }
 
 interface KeycloakUserRaw {
-  id?: string;
+  id: string;
   username?: string;
   firstName?: string;
   lastName?: string;
   enabled?: boolean;
-  attributes?: Record<string, unknown>;
+  attributes?: Record<string, string[]>;
 }
 
 export class IdentityDirectory {
@@ -112,8 +112,8 @@ export class IdentityDirectory {
       throw new Error(`Keycloak user lookup failed: HTTP ${res.status}`);
     }
 
-    const user = await this.#hydrateUser(res._data);
-    const resolved = user?.enabled ? user : null;
+    const resolved =
+      res._data.enabled === false ? null : await this.#hydrateUser(res._data);
 
     this.#bySubject.set(
       subject,
@@ -162,15 +162,10 @@ export class IdentityDirectory {
       return null;
     }
 
-    let matched: DirectoryUser | null = null;
-
-    if (matchedRaws.length === 1) {
-      const hydrated = await this.#hydrateUser(matchedRaws[0]!);
-
-      if (hydrated?.enabled && hydrated.qq === clean) {
-        matched = hydrated;
-      }
-    }
+    const matched =
+      matchedRaws.length === 1
+        ? await this.#hydrateUser(matchedRaws[0]!)
+        : null;
 
     this.#byQQ.set(
       clean,
@@ -220,33 +215,18 @@ export class IdentityDirectory {
         continue;
       }
 
-      const hydrated = await this.#hydrateUser(raw);
-
-      if (hydrated) {
-        users.push(hydrated);
-      }
+      users.push(await this.#hydrateUser(raw));
     }
 
     return users;
   }
 
-  async #hydrateUser(raw: KeycloakUserRaw): Promise<DirectoryUser | null> {
-    if (!raw.id) {
-      return null;
-    }
-
-    const rolesRes = await this.#adminGet<{ name?: string }[]>(
+  async #hydrateUser(raw: KeycloakUserRaw): Promise<DirectoryUser> {
+    const rolesRes = await this.#adminGet<{ name: string }[]>(
       `/users/${encodeURIComponent(raw.id)}/role-mappings/realm/composite`,
     );
-    const roles: string[] = [];
-
-    if (rolesRes.ok && Array.isArray(rolesRes._data)) {
-      for (const item of rolesRes._data) {
-        if (item.name?.trim()) {
-          roles.push(item.name);
-        }
-      }
-    }
+    const roles =
+      rolesRes.ok && rolesRes._data ? rolesRes._data.map((r) => r.name) : [];
 
     const fullName = [raw.firstName, raw.lastName]
       .filter((part): part is string => Boolean(part?.trim()))
@@ -266,11 +246,11 @@ export class IdentityDirectory {
   #extractQQ(raw: KeycloakUserRaw): string | null {
     const values = raw.attributes?.[this.#qqAttr];
 
-    if (!Array.isArray(values) || values.length !== 1) {
+    if (values?.length !== 1) {
       return null;
     }
 
-    const text = String(values[0] ?? "").trim();
+    const text = values[0]!.trim();
 
     return /^\d+$/.test(text) ? text : null;
   }
@@ -311,10 +291,6 @@ export class IdentityDirectory {
       throw error;
     }
 
-    if (!body.access_token) {
-      throw new Error("Keycloak token response missing access_token");
-    }
-
     const ttlSec = Math.max(30, body.expires_in ?? 60);
 
     this.#token = body.access_token;
@@ -328,22 +304,22 @@ export class IdentityDirectory {
     path: string,
     query?: Record<string, string | number>,
   ): Promise<FetchResponse<T>> {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const token = await this.#accessToken();
-      const res = await this.#adminApi.raw<T>(path, {
+    const fetchOnce = async () =>
+      this.#adminApi.raw<T>(path, {
         query,
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${await this.#accessToken()}` },
         ignoreResponseError: true,
       });
 
-      if (res.status !== 401 || attempt === 1) {
-        return res;
-      }
+    const res = await fetchOnce();
 
-      this.#token = "";
-      this.#tokenExpiresAt = 0;
+    if (res.status !== 401) {
+      return res;
     }
 
-    throw new Error("Unreachable");
+    this.#token = "";
+    this.#tokenExpiresAt = 0;
+
+    return fetchOnce();
   }
 }

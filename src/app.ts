@@ -30,6 +30,7 @@ import { Store } from "./store/index.ts";
 import type { AgentServices, ToolRegistry } from "./tools/index.ts";
 import { createDefaultMainToolRegistry } from "./tools/index.ts";
 import { EventBus, LogHub, Logger } from "./utils/logger.ts";
+import { ShortLinkClient } from "./utils/shortlink.ts";
 import { JobWorker } from "./worker.ts";
 
 export class BerryApp {
@@ -43,6 +44,7 @@ export class BerryApp {
   public readonly directory: IdentityDirectory;
   public readonly guild: GuildInternalClient;
   public readonly bunko: BunkoClient;
+  public readonly shortlink: ShortLinkClient;
   public readonly knowledge: KnowledgeBase;
   public readonly mcp: McpHub;
   public readonly classifier: SmallModelClassifier;
@@ -73,6 +75,7 @@ export class BerryApp {
     directory: IdentityDirectory;
     guild: GuildInternalClient;
     bunko: BunkoClient;
+    shortlink: ShortLinkClient;
     knowledge: KnowledgeBase;
     mcp: McpHub;
     classifier: SmallModelClassifier;
@@ -98,6 +101,7 @@ export class BerryApp {
     this.directory = options.directory;
     this.guild = options.guild;
     this.bunko = options.bunko;
+    this.shortlink = options.shortlink;
     this.knowledge = options.knowledge;
     this.mcp = options.mcp;
     this.classifier = options.classifier;
@@ -124,29 +128,34 @@ export class BerryApp {
 
     await store.jobs.recoverOnStartup();
 
-    let activeSettings = settings;
-    const getSettings = () => activeSettings;
+    let instanceRef: BerryApp | null = null;
+    const getSettings = () => (instanceRef ? instanceRef.settings : settings);
 
     const gateway = new MessageGatewayClient(env, store, { getSettings });
     const avatars = new AvatarCache(store);
     const directory = new IdentityDirectory(env);
     const guild = new GuildInternalClient(env);
     const bunko = new BunkoClient(env);
+    const shortlink = new ShortLinkClient(env.shortlinkOrigin);
     const knowledge = new KnowledgeBase(store.knowledgeDir);
     const mcp = new McpHub();
     const classifier = new SmallModelClassifier(store);
 
-    logs.setSecretProvider(() => [
-      env.gatewayToken,
-      env.guildInternalToken,
-      env.bunkoApiKey,
-      env.oidcClientSecret,
-      env.keycloakClientSecret,
-      activeSettings.mainModel.apiKey,
-      activeSettings.gateModel.apiKey,
-      activeSettings.media.visionApiKey,
-      activeSettings.media.audioApiKey,
-    ]);
+    logs.setSecretProvider(() => {
+      const current = getSettings();
+
+      return [
+        env.gatewayToken,
+        env.guildInternalToken,
+        env.bunkoApiKey,
+        env.oidcClientSecret,
+        env.keycloakClientSecret,
+        current.mainModel.apiKey,
+        current.gateModel.apiKey,
+        current.media.visionApiKey,
+        current.media.audioApiKey,
+      ];
+    });
 
     const media = new MediaProcessor(store, gateway, getSettings);
     const services: AgentServices = {
@@ -155,6 +164,7 @@ export class BerryApp {
       media,
       knowledge,
       bunko,
+      shortlink,
       directory,
       guild,
       mcp,
@@ -194,6 +204,7 @@ export class BerryApp {
       directory,
       gateway,
       bunko,
+      shortlink,
       getSettings,
     );
 
@@ -219,6 +230,7 @@ export class BerryApp {
       directory,
       guild,
       bunko,
+      shortlink,
       knowledge,
       mcp,
       classifier,
@@ -234,16 +246,7 @@ export class BerryApp {
       auth,
     });
 
-    instance.updateSettings = async (next: RuntimeSettings) => {
-      const saved = await store.settings.save(next);
-
-      activeSettings = saved;
-      instance.settings = saved;
-      await mcp.sync(saved.mcpServers);
-      guildAutomation.syncState();
-
-      return saved;
-    };
+    instanceRef = instance;
 
     if (options.startBackground !== false) {
       await mcp.sync(settings.mcpServers);
@@ -256,8 +259,15 @@ export class BerryApp {
     return instance;
   }
 
-  public updateSettings: (next: RuntimeSettings) => Promise<RuntimeSettings> =
-    async (next) => next;
+  public async updateSettings(next: RuntimeSettings): Promise<RuntimeSettings> {
+    const saved = await this.store.settings.save(next);
+
+    this.settings = saved;
+    await this.mcp.sync(saved.mcpServers);
+    this.guildAutomation.syncState();
+
+    return saved;
+  }
 
   public async listen(
     webDistDir = resolve(import.meta.dirname, "../dist/web"),

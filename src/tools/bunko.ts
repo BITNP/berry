@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import { Type } from "typebox";
 
 import type { BunkoDocumentView } from "../bunko/client.ts";
+import { isPrivilegedActor, requirePrivileged } from "./access.ts";
+import { defineTool } from "./define.ts";
 import type { Tool, ToolContext } from "./types.ts";
-import { defineTool, isPrivilegedActor, requirePrivileged } from "./types.ts";
 
 async function isDocVisibleToActor(
   ctx: ToolContext,
@@ -108,7 +109,6 @@ export const bunkoListTreeTool = defineTool({
     const queue: { id: string | null; path: string }[] = [
       { id: rootFolderId, path: "" },
     ];
-    const visited = new Set<string>();
     const folders: {
       id: string;
       name: string;
@@ -157,11 +157,6 @@ export const bunkoListTreeTool = defineTool({
           continue;
         }
 
-        if (visited.has(folder.id)) {
-          continue;
-        }
-
-        visited.add(folder.id);
         const nextPath = currentPath
           ? `${currentPath}/${folder.name}`
           : folder.name;
@@ -261,10 +256,14 @@ export const bunkoReadDocumentTool = defineTool({
             .join("\n")
         : "";
 
+    const rawUrl = bunko.docUrl(doc.id);
+    const url = await ctx.services.shortlink.shortenOrFallback(rawUrl);
+
     return {
       id: doc.id,
       title: doc.title,
-      url: bunko.docUrl(doc.id),
+      url,
+      ...(url === rawUrl ? {} : { originalUrl: rawUrl }),
       breadcrumb: breadcrumb.map((c) => c.name),
       isPublic: doc.isPublic,
       isPrivate: doc.isPrivate,
@@ -300,6 +299,8 @@ export const bunkoCreateDocumentTool = defineTool({
       folderId: args.folderId,
       markdown: args.markdown,
     });
+    const rawUrl = ctx.services.bunko.docUrl(doc.id);
+    const url = await ctx.services.shortlink.shortenOrFallback(rawUrl);
 
     return {
       mutated: true,
@@ -308,7 +309,8 @@ export const bunkoCreateDocumentTool = defineTool({
         title: doc.title,
         folderId: doc.folderId,
         version: doc.version,
-        url: ctx.services.bunko.docUrl(doc.id),
+        url,
+        ...(url === rawUrl ? {} : { originalUrl: rawUrl }),
       },
     };
   },
@@ -344,12 +346,15 @@ export const bunkoAppendDocumentTool = defineTool({
       args.markdown,
       derivedKey,
     );
+    const rawUrl = ctx.services.bunko.docUrl(docId);
+    const url = await ctx.services.shortlink.shortenOrFallback(rawUrl);
 
     return {
       mutated: true,
       documentId: docId,
       version: res.version,
-      url: ctx.services.bunko.docUrl(docId),
+      url,
+      ...(url === rawUrl ? {} : { originalUrl: rawUrl }),
     };
   },
 });

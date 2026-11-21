@@ -1,5 +1,5 @@
+import { isPrivilegedActor } from "../../tools/access.ts";
 import { mcpToolProvider } from "../../tools/mcp.ts";
-import { isPrivilegedActor } from "../../tools/types.ts";
 import type { SubagentDefinition } from "./types.ts";
 
 export const mcpOperatorSubagent: SubagentDefinition = {

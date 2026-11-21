@@ -1,11 +1,6 @@
 import type { AgentTool } from "../agent/loop.ts";
-import {
-  defineToolProvider,
-  isPrivilegedActor,
-  requirePrivileged,
-} from "./types.ts";
-
-const checkMcpAccess = requirePrivileged("调用外部 MCP 工具");
+import { isPrivilegedActor } from "./access.ts";
+import { defineToolProvider } from "./define.ts";
 
 export const mcpToolProvider = defineToolProvider({
   id: "mcp",
@@ -19,15 +14,7 @@ export const mcpToolProvider = defineToolProvider({
       description: remote.description,
       parameters: remote.inputSchema,
       mutating: true,
-      execute: async (args) => {
-        const denied = checkMcpAccess(ctx);
-
-        if (denied) {
-          throw new Error(denied);
-        }
-
-        return ctx.services.mcp.call(remote.exposedName, args);
-      },
+      execute: (args) => ctx.services.mcp.call(remote.exposedName, args),
     }));
   },
 });

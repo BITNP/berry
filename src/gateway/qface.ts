@@ -1,6 +1,6 @@
 import { QFACE_CATALOG } from "./qface-data.ts";
 
-export interface QFaceEntry {
+interface QFaceEntry {
   id: string;
   name: string;
   associateWords: readonly string[];
@@ -77,10 +77,9 @@ function extractSupportedUnicodeEmojiCodepoint(text: string): string | null {
     return null;
   }
 
-  const cp = base.codePointAt(0);
-  const id = cp !== undefined && cp >= 0x20_00 ? String(cp) : null;
+  const id = String(base.codePointAt(0)!);
 
-  return id && SUPPORTED_UNICODE_REACTION_IDS.has(id) ? id : null;
+  return SUPPORTED_UNICODE_REACTION_IDS.has(id) ? id : null;
 }
 
 // Common colloquial aliases that differ from QQNT's official `describe` text.
@@ -127,21 +126,17 @@ function decodeUnicodeEmojiId(id: string): string | null {
 
   const cp = Number(id);
 
-  if (!Number.isInteger(cp) || cp < 0x20_00 || cp > 0x10_ff_ff) {
+  if (cp < 0x20_00 || cp > 0x10_ff_ff) {
     return null;
   }
 
-  try {
-    const ch = String.fromCodePoint(cp);
+  const ch = String.fromCodePoint(cp);
 
-    if (!SINGLE_UNICODE_EMOJI_RE.test(ch)) {
-      return null;
-    }
-
-    return EMOJI_PRESENTATION_RE.test(ch) ? ch : `${ch}\uFE0F`;
-  } catch {
+  if (!SINGLE_UNICODE_EMOJI_RE.test(ch)) {
     return null;
   }
+
+  return EMOJI_PRESENTATION_RE.test(ch) ? ch : `${ch}\uFE0F`;
 }
 
 export function qfaceName(rawId: unknown): string {

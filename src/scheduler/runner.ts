@@ -2,7 +2,7 @@ import { ModelIds } from "../agent/model-ids.ts";
 import type { SubagentRegistry } from "../agent/subagents/index.ts";
 import type { AgentServices } from "../tools/types.ts";
 import type { ChatKey, JobRecord, ScheduleRecord } from "../types.ts";
-import { makeChatKey } from "../types.ts";
+import { makeChatKey } from "../utils/chat-key.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage, formatDateTime, formatDay } from "../utils/time.ts";
 
@@ -151,12 +151,13 @@ export class ScheduleRunner {
       markdown: section,
       idempotencyKey: `group-digest:${groupId}:${startTimeMs}-${endTimeMs}`,
     });
+    const url = await this.#services.shortlink.shortenOrFallback(published.url);
 
     this.#logger.info("Published group digest to Bunko", {
       groupId,
       documentId: published.documentId,
       created: published.created,
-      url: published.url,
+      url,
     });
   }
 
@@ -192,7 +193,7 @@ export class ScheduleRunner {
       {
         chatKey,
         groupId,
-        startTimeMs: now - Math.max(1, lookbackHours) * 3600 * 1000,
+        startTimeMs: now - lookbackHours * 3600 * 1000,
         endTimeMs: now,
         prompt: settings.groupDigest.prompt,
         folderId: settings.groupDigest.folderId,

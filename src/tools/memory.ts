@@ -1,8 +1,9 @@
 import { Type } from "typebox";
 
-import { parseChatKey } from "../types.ts";
+import { parseChatKey } from "../utils/chat-key.ts";
+import { isPrivilegedActor } from "./access.ts";
 import { assertCanReadChat } from "./chat.ts";
-import { defineTool, isPrivilegedActor } from "./types.ts";
+import { defineTool } from "./define.ts";
 
 export const memoryManageTool = defineTool({
   name: "memory_manage",
@@ -83,7 +84,7 @@ export const memoryManageTool = defineTool({
     } else if (
       args.scope === "user" &&
       !actor.actorIsAdmin &&
-      (!actor.senderQQ || ownerId !== actor.senderQQ)
+      ownerId !== actor.senderQQ
     ) {
       throw new Error("仅可修改或删除本人的个人记忆");
     }

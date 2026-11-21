@@ -58,6 +58,5 @@ export function useChatOptions() {
     users,
     chatOptions,
     userOptions,
-    loadChatOptions,
   };
 }

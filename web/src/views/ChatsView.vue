@@ -96,7 +96,7 @@ const filterKind = ref<"all" | ChatKind>("all");
 const busyBackfill = ref<string | null>(null);
 const busyDigest = ref<string | null>(null);
 
-const isMobile = ref(typeof window !== "undefined" && window.innerWidth < 860);
+const isMobile = ref(window.innerWidth < 860);
 const mobileShowDetail = ref(false);
 
 const createModalOpen = ref(false);
@@ -308,7 +308,7 @@ async function handleBackfill(row: ChatRow) {
     const res = await apiFetch<{
       total: number;
       imported: number;
-      reachedStart?: boolean;
+      reachedStart: boolean;
     }>(`/api/admin/chats/${encodeURIComponent(row.chatKey)}/backfill`, {
       method: "POST",
       body: JSON.stringify({ count: 200 }),
@@ -395,10 +395,6 @@ async function loadOlderMessages() {
   const oldest = messages.value[0];
   const targetKey = activeChat.value.chatKey;
 
-  if (!oldest) {
-    return;
-  }
-
   loadingOlderMessages.value = true;
 
   try {
@@ -477,15 +473,9 @@ useLiveRefresh({
   debounceMs: 250,
   enabled: () => activeChat.value !== null && !messageSearch.value.trim(),
   match: (_type, data) => {
-    const active = activeChat.value;
-
-    if (!active || !data || typeof data !== "object") {
-      return true;
-    }
-
     const ev = data as { chatKey?: string | null };
 
-    return !ev.chatKey || ev.chatKey === active.chatKey;
+    return !ev.chatKey || ev.chatKey === activeChat.value!.chatKey;
   },
   refresh: () => pollLatestMessages(),
 });

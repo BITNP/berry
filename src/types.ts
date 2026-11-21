@@ -1,35 +1,10 @@
 import type { ChatCompletionMessageFunctionToolCall } from "openai/resources/chat/completions";
 
-export const GLOBAL_CONVERSATION_KEY = "global";
-
 export type ChatKind = "group" | "private";
 
 export type GroupTriggerMode = "off" | "mention_only" | "smart_observe";
 
 export type ChatKey = `${ChatKind}:${string}`;
-
-export const makeChatKey = (kind: ChatKind, chatId: string): ChatKey =>
-  `${kind}:${chatId}`;
-
-export function parseChatKey(chatKey: string): {
-  kind: ChatKind;
-  chatId: string;
-} {
-  const index = chatKey.indexOf(":");
-
-  if (index <= 0) {
-    throw new Error(`Invalid chatKey: ${chatKey}`);
-  }
-
-  const kind = chatKey.slice(0, index);
-  const chatId = chatKey.slice(index + 1);
-
-  if ((kind !== "group" && kind !== "private") || !chatId) {
-    throw new Error(`Invalid chatKey: ${chatKey}`);
-  }
-
-  return { kind, chatId };
-}
 
 export interface OneBotSegment {
   type: string;
@@ -277,19 +252,6 @@ export interface GuildAuditRecord {
   requestJson: string;
   responseJson: string;
   error: string | null;
-  createdAt: number;
-}
-
-export interface UsageRecord {
-  id: number;
-  day: string;
-  purpose: string;
-  model: string;
-  chatKey: string | null;
-  inputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  durationMs: number;
   createdAt: number;
 }
 

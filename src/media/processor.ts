@@ -63,7 +63,7 @@ export class MediaProcessor {
       created.push({ record, attachment: att });
     }
 
-    const task = this.#processList(message, created)
+    const task = this.#processList(created)
       .catch((error) => {
         this.#logger.warn("Media processing failed", {
           messageId: message.id,
@@ -173,7 +173,6 @@ export class MediaProcessor {
   }
 
   async #processList(
-    _message: MessageRecord,
     items: { record: MessageAssetRecord; attachment: ExtractedAttachment }[],
   ): Promise<void> {
     const settings = this.#getSettings();

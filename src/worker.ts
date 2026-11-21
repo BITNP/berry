@@ -110,17 +110,18 @@ export class JobWorker {
 
   async #runOne(job: JobRecord): Promise<void> {
     const def = this.#registry.get(job.kind);
-    const isDialog = def?.lane === "dialog";
+
+    if (!def) {
+      throw new Error(`Unknown job kind: ${job.kind}`);
+    }
+
+    const isDialog = def.lane === "dialog";
 
     if (isDialog) {
       this.#dialogActive = true;
     }
 
     try {
-      if (!def) {
-        throw new Error(`Unknown job kind: ${job.kind}`);
-      }
-
       await def.execute(job);
       await this.#store.jobs.done(job.id);
     } catch (error) {

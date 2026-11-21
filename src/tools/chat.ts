@@ -1,9 +1,10 @@
 import { Type } from "typebox";
 
 import type { ChatKey } from "../types.ts";
-import { makeChatKey, parseChatKey } from "../types.ts";
+import { makeChatKey, parseChatKey } from "../utils/chat-key.ts";
+import { isPrivilegedActor } from "./access.ts";
+import { defineTool } from "./define.ts";
 import type { Tool, ToolContext } from "./types.ts";
-import { defineTool, isPrivilegedActor } from "./types.ts";
 
 export async function assertCanReadChat(
   ctx: ToolContext,

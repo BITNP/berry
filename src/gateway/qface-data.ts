@@ -1,6 +1,6 @@
 // Official QQNT system face catalog synced from koishijs/QFace (2026-11-12T01:59:11.360Z).
 // Format: [id, name] or [id, name, associateWords].
-export type QFaceTuple =
+type QFaceTuple =
   | readonly [id: string, name: string]
   | readonly [id: string, name: string, associateWords: readonly string[]];
 

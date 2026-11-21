@@ -14,7 +14,7 @@ import type {
   OneBotSegment,
   OutputUnit,
 } from "../types.ts";
-import { makeChatKey, parseChatKey } from "../types.ts";
+import { makeChatKey, parseChatKey } from "../utils/chat-key.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
 import { resolveReactionEmojiId } from "./qface.ts";
@@ -44,11 +44,6 @@ export interface GroupInfo {
   group_id: number;
   group_name: string;
   member_count?: number;
-}
-
-export interface HistoryFetchOptions {
-  messageSeq?: string | number;
-  reverseOrder?: boolean;
 }
 
 export interface SyncHistoryOptions {
@@ -243,9 +238,8 @@ export class MessageGatewayClient {
     }
 
     const { body } = await this.callAction<GroupInfo[]>("get_group_list");
-    const groups = Array.isArray(body.data) ? body.data : [];
 
-    return groups.filter((group) =>
+    return (body.data ?? []).filter((group) =>
       this.#isGroupAllowed(String(group.group_id)),
     );
   }
@@ -267,7 +261,7 @@ export class MessageGatewayClient {
       { user_id: number; nickname: string; card?: string; role?: string }[]
     >("get_group_member_list", { group_id: Number(groupId) });
 
-    return Array.isArray(body.data) ? body.data : [];
+    return body.data ?? [];
   }
 
   public async getFriendList(): Promise<
@@ -282,7 +276,7 @@ export class MessageGatewayClient {
         { user_id: number; nickname: string; remark?: string }[]
       >("get_friend_list");
 
-    return Array.isArray(body.data) ? body.data : [];
+    return body.data ?? [];
   }
 
   public async getForwardMsg(forwardId: string): Promise<unknown[]> {
@@ -295,83 +289,7 @@ export class MessageGatewayClient {
     >("get_forward_msg", { id: forwardId, message_id: forwardId });
     const data = body.data;
 
-    if (Array.isArray(data)) {
-      return data;
-    }
-
-    if (data && typeof data === "object" && Array.isArray(data.messages)) {
-      return data.messages;
-    }
-
-    return [];
-  }
-
-  public async getGroupMsgHistory(
-    groupId: string,
-    count = 100,
-    options: HistoryFetchOptions = {},
-  ): Promise<Record<string, unknown>[]> {
-    if (!this.configured || !this.#isGroupAllowed(groupId)) {
-      return [];
-    }
-
-    const params: Record<string, unknown> = {
-      group_id: Number(groupId),
-      count: Math.min(500, Math.max(1, count)),
-    };
-
-    if (options.messageSeq !== undefined && options.messageSeq !== "") {
-      const numericSeq = Number(options.messageSeq);
-
-      params.message_seq = Number.isFinite(numericSeq)
-        ? numericSeq
-        : options.messageSeq;
-      params.reverseOrder = options.reverseOrder ?? true;
-    }
-
-    const { body } = await this.callAction<
-      { messages?: Record<string, unknown>[] } | Record<string, unknown>[]
-    >("get_group_msg_history", params);
-
-    if (Array.isArray(body.data)) {
-      return body.data;
-    }
-
-    return Array.isArray(body.data?.messages) ? body.data.messages : [];
-  }
-
-  public async getFriendMsgHistory(
-    userId: string,
-    count = 100,
-    options: HistoryFetchOptions = {},
-  ): Promise<Record<string, unknown>[]> {
-    if (!this.configured) {
-      return [];
-    }
-
-    const params: Record<string, unknown> = {
-      user_id: Number(userId),
-      count: Math.min(500, Math.max(1, count)),
-    };
-
-    if (options.messageSeq !== undefined && options.messageSeq !== "") {
-      const numericSeq = Number(options.messageSeq);
-
-      params.message_seq = Number.isFinite(numericSeq)
-        ? numericSeq
-        : options.messageSeq;
-      params.reverseOrder = options.reverseOrder ?? true;
-    }
-
-    const { body } = await this.callAction<
-      { messages?: Record<string, unknown>[] } | Record<string, unknown>[]
-    >("get_friend_msg_history", params);
-
-    if (Array.isArray(body.data)) {
-      return body.data;
-    }
-
-    return Array.isArray(body.data?.messages) ? body.data.messages : [];
+    return Array.isArray(data) ? data : (data?.messages ?? []);
   }
 
   public async syncChatHistory(
@@ -578,20 +496,32 @@ export class MessageGatewayClient {
     await task;
   }
 
-  #fetchHistoryPage(
+  async #fetchHistoryPage(
     kind: ChatKind,
     chatId: string,
     count: number,
     cursorSeq?: string,
   ): Promise<Record<string, unknown>[]> {
-    const options: HistoryFetchOptions =
-      cursorSeq === undefined
-        ? {}
-        : { messageSeq: cursorSeq, reverseOrder: true };
+    const params: Record<string, unknown> = {
+      [kind === "group" ? "group_id" : "user_id"]: Number(chatId),
+      count: Math.min(500, Math.max(1, count)),
+    };
 
-    return kind === "group"
-      ? this.getGroupMsgHistory(chatId, count, options)
-      : this.getFriendMsgHistory(chatId, count, options);
+    if (cursorSeq !== undefined && cursorSeq !== "") {
+      const numericSeq = Number(cursorSeq);
+
+      params.message_seq = Number.isFinite(numericSeq) ? numericSeq : cursorSeq;
+      params.reverseOrder = true;
+    }
+
+    const { body } = await this.callAction<
+      { messages?: Record<string, unknown>[] } | Record<string, unknown>[]
+    >(
+      kind === "group" ? "get_group_msg_history" : "get_friend_msg_history",
+      params,
+    );
+
+    return Array.isArray(body.data) ? body.data : (body.data?.messages ?? []);
   }
 
   async #ingestHistoricalMessages(
@@ -626,14 +556,8 @@ export class MessageGatewayClient {
     let oldestCursor: string | null = null;
 
     for (const raw of sorted) {
-      const userId =
-        raw.user_id !== undefined && raw.user_id !== null
-          ? String(raw.user_id)
-          : "";
-      const onebotMessageId =
-        raw.message_id !== undefined && raw.message_id !== null
-          ? String(raw.message_id)
-          : "";
+      const userId = String(raw.user_id ?? "");
+      const onebotMessageId = String(raw.message_id ?? "");
 
       if (!userId || !onebotMessageId) {
         continue;
@@ -675,10 +599,7 @@ export class MessageGatewayClient {
 
       if (oldestSentAt === null || sentAt < oldestSentAt) {
         oldestSentAt = sentAt;
-        const seq = raw.message_seq ?? raw.message_id;
-
-        oldestCursor =
-          seq !== undefined && seq !== null ? String(seq) : onebotMessageId;
+        oldestCursor = String(raw.message_seq ?? raw.message_id);
       }
 
       if (newestSentAt === null || sentAt > newestSentAt) {
@@ -916,8 +837,7 @@ export class MessageGatewayClient {
       }
 
       const nextDelayMs =
-        this.#pollDelaysMs[Math.min(attempt, this.#pollDelaysMs.length - 1)] ??
-        5000;
+        this.#pollDelaysMs[Math.min(attempt, this.#pollDelaysMs.length - 1)]!;
       const waitMs = Math.min(nextDelayMs, remainingMs);
 
       try {

@@ -23,9 +23,9 @@ const normalizeOwner = (scope: MemoryScope, ownerId: string): string =>
 
 export class MemoriesStore {
   #database: BerryDatabase;
-  #events?: EventBus;
+  #events: EventBus;
 
-  constructor(database: BerryDatabase, events?: EventBus) {
+  constructor(database: BerryDatabase, events: EventBus) {
     this.#database = database;
     this.#events = events;
   }
@@ -141,7 +141,7 @@ export class MemoriesStore {
       return decodeMemory(row);
     });
 
-    this.#events?.emit({
+    this.#events.emit({
       type: "memory_update",
       data: { scope: record.scope, ownerId: record.ownerId, key: record.key },
     });
@@ -168,7 +168,7 @@ export class MemoriesStore {
     });
 
     if (deleted) {
-      this.#events?.emit({
+      this.#events.emit({
         type: "memory_update",
         data: { scope, ownerId: normalizedOwner, key },
       });

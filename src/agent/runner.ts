@@ -4,15 +4,12 @@ import type { RuntimeSettings } from "../config/settings.ts";
 import { resolveThinkingEffort } from "../config/settings.ts";
 import { resolveReactionEmojiId } from "../gateway/qface.ts";
 import { hasManagementAccess } from "../identity/permissions.ts";
-import type {
-  AgentServices,
-  ToolContext,
-  ToolRegistry,
-} from "../tools/index.ts";
+import type { ToolRegistry } from "../tools/index.ts";
 import {
   createDefaultMainToolRegistry,
   memoryManageTool,
 } from "../tools/index.ts";
+import type { AgentServices, ToolContext } from "../tools/types.ts";
 import type {
   ChatKey,
   MessageRecord,
@@ -101,14 +98,6 @@ export class BerryAgent {
       options.mainTools ?? createDefaultMainToolRegistry(this.#subagents);
   }
 
-  public get subagents(): SubagentRegistry {
-    return this.#subagents;
-  }
-
-  public get mainTools(): ToolRegistry {
-    return this.#mainTools;
-  }
-
   public async invoke(input: UnifiedInput): Promise<{
     units: OutputUnit[];
     mutated: boolean;
@@ -165,9 +154,7 @@ export class BerryAgent {
 
     const firstId = requestMessages[0]?.id;
 
-    if (input.kind === "group" || input.kind === "private") {
-      await gateway.warmChatHistory(input.kind, input.chatId, 100);
-    }
+    await gateway.warmChatHistory(input.kind, input.chatId, 100);
 
     const recentContext =
       firstId === undefined
@@ -499,7 +486,7 @@ export class BerryAgent {
       settings.mainModel.contextTokens -
       settings.mainModel.maxOutputTokens -
       4096;
-    const overTokenBudget = budget > 0 && lastPromptTokens >= budget * 0.75;
+    const overTokenBudget = lastPromptTokens >= budget * 0.75;
     const overMessageLimit =
       conversation.messages.length >= COMPACTION_MAX_MESSAGES;
 
@@ -531,10 +518,6 @@ export class BerryAgent {
       : Math.min(COMPACTION_KEEP_RECENT_TURNS, userIndices.length - 1);
     const turnCursor = Math.max(1, userIndices.length - keepTurns);
     const splitIndex = userIndices[turnCursor]!;
-
-    if (splitIndex <= 0) {
-      return;
-    }
 
     this.#compacting = true;
 
