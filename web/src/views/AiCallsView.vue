@@ -543,13 +543,17 @@ const callColumns: DataTableColumns<LlmCallRow> = [
   {
     title: "用途",
     key: "purpose",
-    width: 128,
+    width: 176,
     render: (row) => {
       const meta = purposeMeta(row.purpose);
 
       return h(
         NTag,
-        { size: "small", type: meta.type },
+        {
+          size: "small",
+          type: meta.type,
+          style: "max-width: 100%;",
+        },
         { default: () => meta.label },
       );
     },
@@ -557,7 +561,7 @@ const callColumns: DataTableColumns<LlmCallRow> = [
   {
     title: "状态",
     key: "status",
-    width: 62,
+    width: 68,
     render: (row) =>
       h(
         NTag,
@@ -704,13 +708,17 @@ const usageColumns: DataTableColumns<UsageBucket> = [
   {
     title: "用途",
     key: "purpose",
-    width: 138,
+    width: 176,
     render: (row) => {
       const meta = purposeMeta(row.purpose);
 
       return h(
         NTag,
-        { size: "small", type: meta.type },
+        {
+          size: "small",
+          type: meta.type,
+          style: "max-width: 100%;",
+        },
         { default: () => meta.label },
       );
     },
@@ -878,7 +886,7 @@ onMounted(() => {
                 onClick: () => openDetail(row),
               })
             "
-            :scroll-x="1120"
+            :scroll-x="1168"
             size="small"
           />
         </NTabPane>
@@ -1108,7 +1116,7 @@ onMounted(() => {
             :data="usageBuckets"
             :loading="loadingMeta"
             :pagination="{ pageSize: 15 }"
-            :scroll-x="820"
+            :scroll-x="860"
             size="small"
           />
         </NTabPane>
