@@ -39,8 +39,6 @@ export const scheduleManageTool = defineTool({
   name: "schedule_manage",
   description:
     "列出、创建、更新或删除持久化定时任务（once/interval/daily/weekly/monthly/yearly）。仅网协在籍成员或管理员可创建/改删；非管理员仅限操作当前会话的任务且轮询间隔不得短于 5 分钟。",
-  capability:
-    "- schedule_manage: 管理持久化定时提醒或周期任务（外部人员不可改删，非管理员仅限当前会话）。",
   parameters: Type.Object(
     {
       action: Type.Union([

@@ -8,8 +8,6 @@ export const memoryManageTool = defineTool({
   name: "memory_manage",
   description:
     "读取、保存或删除长期记忆。scope 可选 global（全局共识/设定，仅管理员或部长级负责人可写删）、chat（当前会话记忆，仅网协在籍成员或管理员可写删且禁止跨群写删）、user（个人偏好，仅本人或管理员可写删）。",
-  capability:
-    "- memory_manage: 读写 global（全局共识）、chat（会话级）或 user（个人偏好）长期记忆（受身份权限约束）。",
   parameters: Type.Object(
     {
       action: Type.Union([

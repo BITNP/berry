@@ -8,9 +8,7 @@ import { defineTool } from "./types.ts";
 export const inspectMediaTool = defineTool({
   name: "inspect_media",
   description:
-    "查看消息附带的图片识图结论、语音转写文本或合并转发内容；inspectNow=true 时立即触发未完成的识别。",
-  capability:
-    "- inspect_media: 查看或按需触发消息的图片识图、语音转写或合并转发展开（支持 quoteRef 或 messageId）。",
+    "查看消息附带的图片识图结论、语音转写文本或合并转发内容（支持 quoteRef 或 messageId）；inspectNow=true 时立即触发未完成的识别。",
   parameters: Type.Object(
     {
       targetRef: Type.Optional(Type.String()),

@@ -8,11 +8,8 @@ import { defineTool } from "./types.ts";
 export const qqDirectoryTool = defineTool({
   name: "qq_directory",
   description:
-    "按关键词或分页查询已连接的 QQ 群列表、指定群的成员名单或好友列表。返回的编号统一转换为 g_*/u_* 引用句柄。",
-  capability: (services) =>
-    services.gateway.configured
-      ? "- qq_directory: 按关键词或分页查询 QQ 群列表、群成员名单或好友列表，返回 g_*/u_* 引用句柄。"
-      : null,
+    "按关键词或分页查询已连接的 QQ 群列表、指定群的成员名单或好友列表，返回 g_*/u_* 引用句柄。",
+  available: (services) => services.gateway.configured,
   parameters: Type.Object(
     {
       scope: Type.Union([
@@ -114,8 +111,6 @@ export const searchQqEmojisTool = defineTool({
   name: "search_qq_emojis",
   description:
     "检索全部 380+ QQNT 官方原生表情（支持按中文名称、关键词联想词或数字 ID 搜索，也可传入白名单内的常用 Unicode Emoji 查其回应码点）。",
-  capability:
-    "- search_qq_emojis: 检索 380+ QQNT 官方原生表情名称、别名及数字 ID，或查询白名单 Unicode Emoji 的回应码点。",
   parameters: Type.Object(
     {
       query: Type.Optional(Type.String()),

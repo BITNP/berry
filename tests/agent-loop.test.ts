@@ -273,7 +273,7 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
     defineTool({
       name: "custom_echo",
       description: "测试扩展主工具",
-      capability: "- custom_echo: 自定义扩展主工具。",
+      capability: "自定义扩展主工具。",
       parameters: Type.Object(
         { text: Type.String({ minLength: 1 }) },
         { additionalProperties: false },
@@ -354,6 +354,8 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
   assert.ok(seenMainToolNames.includes("qq_directory"));
   assert.ok(seenMainToolNames.includes("inspect_media"));
   assert.match(seenMainSystem, /- custom_echo: 自定义扩展主工具。/);
+  assert.match(seenMainSystem, /- search_qq_emojis: /);
+  assert.doesNotMatch(seenMainSystem, /- qq_directory: /);
   assert.match(seenMainSystem, /\* ops_inspector: 执行自定义运维连通性检查。/);
 
   const chatAnalyst = app.subagents.get("chat_analyst");
