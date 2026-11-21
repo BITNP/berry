@@ -81,11 +81,35 @@ test("Pino LogHub redaction, level/scope filtering, and clear endpoint", async (
     false,
   );
 
-  assert.match(prettyLine, /ERROR\s+│\s+\[gateway\]\s+›\s+Delivery failed/);
+  assert.match(prettyLine, /ERROR │ \[gateway\]\s+› Delivery failed/);
   assert.match(prettyLine, /deliveryId=7/);
   assert.match(prettyLine, /retry=false/);
   assert.match(prettyLine, /└─ timeout/);
   assert.match(prettyLine, /at line 2/);
+
+  const infoLine = formatPrettyLogLine(
+    {
+      time: Date.UTC(2026, 10, 21, 1, 2, 3, 45),
+      level: "info",
+      scope: "main",
+      message: "berry ready",
+      context: {},
+    },
+    false,
+  );
+  const warnLine = formatPrettyLogLine(
+    {
+      time: Date.UTC(2026, 10, 21, 1, 2, 3, 45),
+      level: "warn",
+      scope: "main",
+      message: "slow request",
+      context: {},
+    },
+    false,
+  );
+
+  assert.match(infoLine, /│ {2}INFO │ \[main\]/);
+  assert.match(warnLine, /│ {2}WARN │ \[main\]/);
 });
 
 test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, and backfill", async (t) => {

@@ -386,10 +386,10 @@ export function formatPrettyLogLine(
     input.level === "error"
       ? paint("ERROR", ANSI.errBadge, color)
       : input.level === "warn"
-        ? paint("WARN ", ANSI.warnBadge, color)
+        ? paint(" WARN", ANSI.warnBadge, color)
         : input.level === "debug"
           ? paint("DEBUG", ANSI.debugBadge, color)
-          : paint("INFO ", ANSI.infoBadge, color);
+          : paint(" INFO", ANSI.infoBadge, color);
 
   const rawScope =
     input.scope.length > 16 ? `${input.scope.slice(0, 15)}…` : input.scope;
