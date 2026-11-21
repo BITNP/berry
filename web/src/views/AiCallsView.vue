@@ -25,6 +25,7 @@ import {
   NRadioGroup,
   NSelect,
   NSpace,
+  NSpin,
   NTabPane,
   NTabs,
   NTag,
@@ -255,13 +256,24 @@ function formatTapeEntry(entry: TapeEntryView): ContextTurnItem {
 }
 
 const contextItems = computed<ContextTurnItem[]>(() => {
-  const source =
-    contextMode.value === "full"
-      ? fullTapeEntries.value
-      : (conversation.value?.entries ?? []);
+  const useFull =
+    contextMode.value === "full" &&
+    (fullTapeEntries.value.length > 0 || !loadingTape.value);
+  const source = useFull
+    ? fullTapeEntries.value
+    : (conversation.value?.entries ?? []);
 
   return source.map(formatTapeEntry);
 });
+
+function handleContextModeChange(mode: "active" | "full") {
+  if (mode === "full") {
+    loadingTape.value = true;
+    void loadFullTape();
+  }
+
+  contextMode.value = mode;
+}
 
 const sidecarItems = computed<ContextTurnItem[]>(() =>
   sidecarEntries.value.map(formatTapeEntry),
@@ -944,16 +956,12 @@ onMounted(() => {
                   <NText class="tabular sub-note" depth="3">
                     {{ contextItems.length }} 条
                   </NText>
+                  <NSpin v-if="loadingTape" :size="12" />
                 </div>
                 <NRadioGroup
                   size="small"
                   :value="contextMode"
-                  @update:value="
-                    (v: 'active' | 'full') => {
-                      contextMode = v;
-                      if (v === 'full') void loadFullTape();
-                    }
-                  "
+                  @update:value="handleContextModeChange"
                 >
                   <NRadioButton value="active">当前活跃视图</NRadioButton>
                   <NRadioButton value="full">完整 Tape</NRadioButton>

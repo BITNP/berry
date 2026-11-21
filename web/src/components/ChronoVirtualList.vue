@@ -49,6 +49,13 @@ let lastScrollTop = 0;
 let lastFirstKey: unknown = null;
 let lastTailKey: unknown = null;
 let lastLength = 0;
+let awaitingOlderLoad = false;
+
+function requestOlder() {
+  awaitingOlderLoad = true;
+  pinnedToBottom.value = false;
+  emit("loadOlder");
+}
 
 function itemKeyOf(item: T | undefined): unknown {
   if (!item) {
@@ -183,7 +190,7 @@ function handleScroll(event: Event) {
     props.items.length > 0 &&
     currentTop <= TOP_LOAD_THRESHOLD_PX
   ) {
-    emit("loadOlder");
+    requestOlder();
   }
 }
 
@@ -201,6 +208,7 @@ watch(
       lastFirstKey = null;
       lastTailKey = null;
       lastLength = 0;
+      awaitingOlderLoad = false;
       disconnectObserver();
 
       return;
@@ -222,7 +230,9 @@ watch(
 
     const delta = nextLen - lastLength;
     const appendedCount = delta > 0 ? delta : 1;
+    const preservePrepend = awaitingOlderLoad && prepended && delta > 0;
 
+    awaitingOlderLoad = false;
     lastFirstKey = nextFirst;
     lastTailKey = nextTail;
     lastLength = nextLen;
@@ -234,7 +244,7 @@ watch(
       return;
     }
 
-    if (prepended && delta > 0) {
+    if (preservePrepend) {
       pinnedToBottom.value = false;
       void nextTick(() => {
         programmaticUntil = performance.now() + 140;
@@ -258,6 +268,15 @@ watch(
     snapToBottom();
   },
   { flush: "post" },
+);
+
+watch(
+  () => props.loadingOlder,
+  (loading) => {
+    if (loading) {
+      awaitingOlderLoad = true;
+    }
+  },
 );
 
 watch(
@@ -291,7 +310,7 @@ onBeforeUnmount(() => {
       <span>正在加载更早记录…</span>
     </div>
     <div v-else-if="hasOlder && items.length > 0" class="chrono-top-bar">
-      <NButton quaternary size="tiny" @click="emit('loadOlder')">
+      <NButton quaternary size="tiny" @click="requestOlder">
         加载更早记录
       </NButton>
     </div>
