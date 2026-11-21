@@ -67,6 +67,7 @@ export interface BerryTables {
     summary: string;
     content: string;
     source_message_id: number | null;
+    expires_at: number | null;
     updated_at: number;
   };
   jobs: {
@@ -543,6 +544,28 @@ const migrations: Record<string, Migration> = {
           .addColumn("internal", "integer", (c) => c.notNull().defaultTo(0))
           .execute();
       }
+    },
+  },
+  "004_memories_expires_at": {
+    async up(db) {
+      const existing = await sql<{ name: string }>`
+        pragma table_info(memories)
+      `.execute(db);
+      const colSet = new Set(existing.rows.map((r) => r.name));
+
+      if (!colSet.has("expires_at")) {
+        await db.schema
+          .alterTable("memories")
+          .addColumn("expires_at", "integer")
+          .execute();
+      }
+
+      await db.schema
+        .createIndex("idx_memories_expires_at")
+        .ifNotExists()
+        .on("memories")
+        .columns(["expires_at"])
+        .execute();
     },
   },
 };

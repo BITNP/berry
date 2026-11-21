@@ -196,6 +196,9 @@ const upsertMemoryBodySchema = Type.Object({
   key: Type.String({ minLength: 1 }),
   summary: Type.String({ default: "" }),
   content: Type.String({ default: "" }),
+  expiresAt: Type.Optional(
+    Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
+  ),
 });
 
 const scheduleKindSchema = Type.Union([chatKindSchema, Type.Literal("")]);

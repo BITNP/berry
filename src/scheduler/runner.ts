@@ -14,6 +14,7 @@ export class ScheduleRunner {
   #timer: ReturnType<typeof setInterval> | null = null;
   #ticking = false;
   #lastDigestCheck = 0;
+  #lastMemoryPurge = 0;
 
   constructor(
     services: AgentServices,
@@ -70,6 +71,15 @@ export class ScheduleRunner {
       ) {
         this.#lastDigestCheck = now;
         await this.#checkDigests(now);
+      }
+
+      if (now - this.#lastMemoryPurge >= 600_000) {
+        this.#lastMemoryPurge = now;
+        const purged = await this.#services.store.memories.purgeExpired(now);
+
+        if (purged > 0) {
+          this.#logger.info("Purged expired memories", { count: purged });
+        }
       }
     } catch (error) {
       this.#logger.warn("Scheduler tick failed", {

@@ -93,11 +93,14 @@ export const listChatsTool = defineTool({
 export const searchChatMessagesTool = defineTool({
   name: "search_chat_messages",
   description:
-    "按关键词或时间范围搜索指定会话的历史消息（留空 targetRef 则检索当前会话，传 g_* 可跨群检索；本地历史未覆盖 startTimeIso 时会自动向 QQ 网关向前拉取）。",
+    "类似 rg 按关键词/正则、发言人或时间范围搜索指定会话的历史消息（留空 targetRef 则检索当前会话，传 g_* 可跨群检索；regex=true 时支持正则及多关键词 OR 如 '断电|UPS|502'；contextLines 可附带每条命中前后 N 条上下文；本地历史未覆盖 startTimeIso 时会自动向 QQ 网关向前拉取）。",
   parameters: Type.Object(
     {
       targetRef: Type.Optional(Type.String()),
       query: Type.Optional(Type.String()),
+      regex: Type.Optional(Type.Boolean()),
+      userRef: Type.Optional(Type.String()),
+      contextLines: Type.Optional(Type.Integer({ minimum: 0, maximum: 10 })),
       startTimeIso: Type.Optional(Type.String()),
       endTimeIso: Type.Optional(Type.String()),
       limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 120 })),
@@ -112,12 +115,16 @@ export const searchChatMessagesTool = defineTool({
       kind: targetKind,
       chatId: targetChatId,
     } = resolveAuthorizedChat(ctx, args.targetRef);
+    const filterUserId = args.userRef?.trim()
+      ? ids.resolveUser(args.userRef)
+      : undefined;
     const startTimeMs = args.startTimeIso
       ? Date.parse(args.startTimeIso)
       : undefined;
     const endTimeMs = args.endTimeIso ? Date.parse(args.endTimeIso) : undefined;
     const validStartMs = Number.isFinite(startTimeMs) ? startTimeMs : undefined;
     const validEndMs = Number.isFinite(endTimeMs) ? endTimeMs : undefined;
+    const contextLines = args.contextLines ?? 0;
 
     if (gateway.configured) {
       await gateway.warmChatHistory(targetKind, targetChatId, 200);
@@ -138,12 +145,23 @@ export const searchChatMessagesTool = defineTool({
       }
     }
 
-    const rows = await store.messages.search(targetChatKey, {
+    const matches = await store.messages.search(targetChatKey, {
       query: args.query,
+      regex: args.regex,
+      userId: filterUserId,
       startTimeMs: validStartMs,
       endTimeMs: validEndMs,
       limit: args.limit ?? 60,
     });
+    const matchIds = new Set(matches.map((row) => row.id));
+    const rows =
+      contextLines > 0
+        ? await store.messages.expandContext(
+            targetChatKey,
+            matches,
+            contextLines,
+          )
+        : matches;
     const [enriched, oldestAfter] = await Promise.all([
       media.enrichMessagesText(targetChatKey, rows, ids),
       store.messages.oldest(targetChatKey),
@@ -151,12 +169,14 @@ export const searchChatMessagesTool = defineTool({
 
     return {
       chatType: targetKind,
+      matchCount: matches.length,
       count: rows.length,
       localOldestSentAt: oldestAfter
         ? new Date(oldestAfter.sentAt).toISOString()
         : null,
       messages: rows.map((row) => ({
         id: row.id,
+        ...(contextLines > 0 ? { matched: matchIds.has(row.id) } : {}),
         quoteRef: ids.messageRef(row.onebotMessageId, targetChatKey),
         userRef: ids.userRef(row.userId),
         senderName: row.isBot ? "树莓娘(bot)" : row.senderName,

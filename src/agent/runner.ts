@@ -418,7 +418,7 @@ export class BerryAgent {
       settings,
       store,
       systemPrompt:
-        '你是树莓娘的静默记忆助手。结合上下文和已有记忆索引，如需要则调用 memory_manage 写入或更新长期事实（群排期、项目决策或成员稳定偏好），不向群聊发言。结束后输出 {"done":true}。',
+        '你是树莓娘的静默记忆助手。结合上下文和已有记忆索引，如需要则调用 memory_manage 写入或更新长期事实（群排期、项目决策或成员稳定偏好），不向群聊发言。已有同类主题时复用原 key 覆盖更新以去重；临时活动、排期或有时效的通知请设置 ttlDays 或 expiresAt 以便自动过期。结束后输出 {"done":true}。',
       history: [],
       userContent: JSON.stringify({
         now: formatDateTime(Date.now(), settings.bot.timezone),

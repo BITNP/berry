@@ -48,13 +48,21 @@ export class BerryDatabase {
       "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;",
     );
     sqlite.function("contains_text", { deterministic: true }, (value, query) =>
-      Number(
-        new RegExp(
-          String(query).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-          "i",
-        ).test(String(value)),
-      ),
+      Number(String(value).toLowerCase().includes(String(query).toLowerCase())),
     );
+    let cachedPattern = "";
+    let cachedRegex: RegExp | null = null;
+
+    sqlite.function("matches_regex", { deterministic: true }, (value, pat) => {
+      const source = String(pat);
+
+      if (source !== cachedPattern || !cachedRegex) {
+        cachedPattern = source;
+        cachedRegex = new RegExp(source, "i");
+      }
+
+      return Number(cachedRegex.test(String(value)));
+    });
 
     const db = new Kysely<BerryTables>({
       dialect: new SqliteDialect({

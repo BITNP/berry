@@ -15,6 +15,7 @@ const decodeMemory = (
   summary: row.summary,
   content: row.content,
   sourceMessageId: row.source_message_id,
+  expiresAt: row.expires_at ?? null,
   updatedAt: row.updated_at,
 });
 
@@ -39,12 +40,16 @@ export class MemoriesStore {
     user: { key: string; summary: string }[];
   }> {
     const db = this.#database.db;
+    const now = Date.now();
     const [global, chat, user] = await Promise.all([
       db
         .selectFrom("memories")
         .select(["key", "summary"])
         .where("scope", "=", "global")
         .where("owner_id", "=", "global")
+        .where((eb) =>
+          eb.or([eb("expires_at", "is", null), eb("expires_at", ">", now)]),
+        )
         .orderBy("updated_at", "desc")
         .execute(),
       db
@@ -52,6 +57,9 @@ export class MemoriesStore {
         .select(["key", "summary"])
         .where("scope", "=", "chat")
         .where("owner_id", "=", chatKey)
+        .where((eb) =>
+          eb.or([eb("expires_at", "is", null), eb("expires_at", ">", now)]),
+        )
         .orderBy("updated_at", "desc")
         .execute(),
       userId
@@ -60,6 +68,9 @@ export class MemoriesStore {
             .select(["key", "summary"])
             .where("scope", "=", "user")
             .where("owner_id", "=", userId)
+            .where((eb) =>
+              eb.or([eb("expires_at", "is", null), eb("expires_at", ">", now)]),
+            )
             .orderBy("updated_at", "desc")
             .execute()
         : Promise.resolve([]),
@@ -74,12 +85,16 @@ export class MemoriesStore {
     key: string,
   ): Promise<MemoryRecord | null> {
     const normalizedOwner = normalizeOwner(scope, ownerId);
+    const now = Date.now();
     const row = await this.#database.db
       .selectFrom("memories")
       .selectAll()
       .where("scope", "=", scope)
       .where("owner_id", "=", normalizedOwner)
       .where("key", "=", key)
+      .where((eb) =>
+        eb.or([eb("expires_at", "is", null), eb("expires_at", ">", now)]),
+      )
       .executeTakeFirst();
 
     return row ? decodeMemory(row) : null;
@@ -88,6 +103,7 @@ export class MemoriesStore {
   public async list(filters?: {
     scope?: MemoryScope;
     ownerId?: string;
+    includeExpired?: boolean;
   }): Promise<MemoryRecord[]> {
     let query = this.#database.db.selectFrom("memories").selectAll();
 
@@ -97,6 +113,14 @@ export class MemoriesStore {
 
     if (filters?.ownerId) {
       query = query.where("owner_id", "=", filters.ownerId);
+    }
+
+    if (!filters?.includeExpired) {
+      const now = Date.now();
+
+      query = query.where((eb) =>
+        eb.or([eb("expires_at", "is", null), eb("expires_at", ">", now)]),
+      );
     }
 
     const rows = await query.orderBy("updated_at", "desc").execute();
@@ -111,9 +135,11 @@ export class MemoriesStore {
     summary: string;
     content: string;
     sourceMessageId?: number | null;
+    expiresAt?: number | null;
   }): Promise<MemoryRecord> {
     const now = Date.now();
     const ownerId = normalizeOwner(input.scope, input.ownerId);
+    const expiresAt = input.expiresAt ?? null;
 
     const record = await this.#database.writeTx(async (trx) => {
       const row = await trx
@@ -125,6 +151,7 @@ export class MemoriesStore {
           summary: input.summary,
           content: input.content,
           source_message_id: input.sourceMessageId ?? null,
+          expires_at: expiresAt,
           updated_at: now,
         })
         .onConflict((oc) =>
@@ -132,6 +159,7 @@ export class MemoriesStore {
             summary: input.summary,
             content: input.content,
             source_message_id: input.sourceMessageId ?? null,
+            expires_at: expiresAt,
             updated_at: now,
           }),
         )
@@ -147,6 +175,27 @@ export class MemoriesStore {
     });
 
     return record;
+  }
+
+  public async purgeExpired(now = Date.now()): Promise<number> {
+    const deleted = await this.#database.writeTx(async (trx) => {
+      const res = await trx
+        .deleteFrom("memories")
+        .where("expires_at", "is not", null)
+        .where("expires_at", "<=", now)
+        .executeTakeFirst();
+
+      return Number(res.numDeletedRows);
+    });
+
+    if (deleted > 0) {
+      this.#events.emit({
+        type: "memory_update",
+        data: { scope: "global", ownerId: "global", key: "*" },
+      });
+    }
+
+    return deleted;
   }
 
   public async remove(

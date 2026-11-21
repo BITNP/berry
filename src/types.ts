@@ -229,6 +229,7 @@ export interface MemoryRecord {
   summary: string;
   content: string;
   sourceMessageId: number | null;
+  expiresAt: number | null;
   updatedAt: number;
 }
 

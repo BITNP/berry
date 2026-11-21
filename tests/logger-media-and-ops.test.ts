@@ -13,6 +13,9 @@ import {
 } from "../src/gateway/segments.ts";
 import { previousNaturalWeek } from "../src/guild/automation.ts";
 import { computeNextRunAt } from "../src/store/schedules.ts";
+import { searchChatMessagesTool } from "../src/tools/chat.ts";
+import { memoryManageTool } from "../src/tools/memory.ts";
+import type { ToolContext } from "../src/tools/types.ts";
 import { Logger, formatPrettyLogLine } from "../src/utils/logger.ts";
 import { captureText, createTestBerryApp, startStubServer } from "./helpers.ts";
 
@@ -793,5 +796,159 @@ test("automatic history warm-up, backward pagination, and chronological ordering
   assert.deepEqual(
     ordered.map((m) => m.text),
     ["字体吐槽思源黑体", "云文档压测安排", "网关限流讨论", "这几天聊了啥"],
+  );
+});
+
+test("search_chat_messages supports regex OR, userRef filter, and contextLines; memories support expiresAt and automatic cleanup", async (t) => {
+  const { app } = await createTestBerryApp({}, {}, t);
+  const baseTs = Date.now() - 60_000;
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "600",
+    title: "运维值班群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const timeline = [
+    { id: "m1", userId: "101", senderName: "甲", text: "大家早安" },
+    { id: "m2", userId: "102", senderName: "乙", text: "机房刚刚监控告警" },
+    { id: "m3", userId: "101", senderName: "甲", text: "好像是 UPS 切电池了" },
+    { id: "m4", userId: "102", senderName: "乙", text: "我去楼下看一眼" },
+    { id: "m5", userId: "103", senderName: "丙", text: "中午吃什么" },
+    { id: "m6", userId: "102", senderName: "乙", text: "反代开始报 502 了" },
+    { id: "m7", userId: "101", senderName: "甲", text: "已重启恢复" },
+  ];
+
+  for (const [idx, item] of timeline.entries()) {
+    await captureText(app, {
+      kind: "group",
+      chatId: "600",
+      id: item.id,
+      userId: item.userId,
+      senderName: item.senderName,
+      text: item.text,
+      sentAt: baseTs + idx * 1000,
+    });
+  }
+
+  const ids = new ModelIds();
+  const ctx: ToolContext = {
+    services: {
+      store: app.store,
+      gateway: app.gateway,
+      media: app.media,
+      bunko: app.bunko,
+      shortlink: app.shortlink,
+      directory: app.directory,
+      guild: app.guild,
+      mcp: app.mcp,
+      getSettings: () => app.settings,
+    },
+    actor: {
+      chatKey: "group:600",
+      senderQQ: "101",
+      actorSubject: "sub-admin",
+      actorName: "甲",
+      role: "admin",
+    },
+    ids,
+  };
+
+  // 1) Regex multi-keyword OR + contextLines=1 returns merged chronological context with matched flags.
+  const rgRes = (await searchChatMessagesTool.bind(ctx).execute({
+    query: "断电|UPS|502",
+    regex: true,
+    contextLines: 1,
+  })) as {
+    matchCount: number;
+    count: number;
+    messages: { text: string; matched?: boolean }[];
+  };
+
+  assert.equal(rgRes.matchCount, 2);
+  assert.deepEqual(
+    rgRes.messages.map((m) => [m.text, m.matched]),
+    [
+      ["机房刚刚监控告警", false],
+      ["好像是 UPS 切电池了", true],
+      ["我去楼下看一眼", false],
+      ["中午吃什么", false],
+      ["反代开始报 502 了", true],
+      ["已重启恢复", false],
+    ],
+  );
+
+  // 2) userRef filter narrows search to a single speaker.
+  const user102Ref = ids.userRef("102");
+  const byUserRes = (await searchChatMessagesTool.bind(ctx).execute({
+    query: "UPS|502",
+    regex: true,
+    userRef: user102Ref,
+  })) as { messages: { text: string }[] };
+
+  assert.deepEqual(
+    byUserRes.messages.map((m) => m.text),
+    ["反代开始报 502 了"],
+  );
+
+  // 3) Invalid regex reports clear error.
+  await assert.rejects(
+    () =>
+      searchChatMessagesTool
+        .bind(ctx)
+        .execute({ query: "[unclosed", regex: true }),
+    /无效的正则表达式/,
+  );
+
+  // 4) Memories expiration: expired entries are hidden from index/get/list and purged on cleanup.
+  const pastIso = new Date(Date.now() - 60_000).toISOString();
+
+  await memoryManageTool.bind(ctx).execute({
+    action: "upsert",
+    scope: "chat",
+    key: "temp_event",
+    summary: "已结束的临时排期",
+    content: "昨晚值班",
+    expiresAt: pastIso,
+  });
+  await memoryManageTool.bind(ctx).execute({
+    action: "upsert",
+    scope: "chat",
+    key: "active_event",
+    summary: "进行中的短期活动",
+    content: "本周六招新",
+    ttlDays: 7,
+  });
+
+  const idx = await app.store.memories.index("group:600");
+
+  assert.deepEqual(
+    idx.chat.map((m) => m.key),
+    ["active_event"],
+  );
+  assert.equal(
+    await app.store.memories.get("chat", "group:600", "temp_event"),
+    null,
+  );
+  assert.equal(
+    (await app.store.memories.list({ scope: "chat", ownerId: "group:600" }))
+      .length,
+    1,
+  );
+
+  const purgedCount = await app.store.memories.purgeExpired();
+
+  assert.equal(purgedCount, 1);
+  assert.equal(
+    (
+      await app.store.memories.list({
+        scope: "chat",
+        ownerId: "group:600",
+        includeExpired: true,
+      })
+    ).length,
+    1,
   );
 });

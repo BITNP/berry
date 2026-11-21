@@ -32,6 +32,7 @@ export interface PurgeResult {
   deletedJobs: number;
   deletedDeliveries: number;
   deletedAssetRows: number;
+  deletedExpiredMemories: number;
   freedBytes: number;
 }
 
@@ -164,6 +165,13 @@ export class MaintenanceStore {
     const orphanPaths: string[] = [];
 
     const counts = await this.#database.writeTx(async (trx) => {
+      const expiredMemRes = await trx
+        .deleteFrom("memories")
+        .where("expires_at", "is not", null)
+        .where("expires_at", "<=", Date.now())
+        .executeTakeFirst();
+      const deletedExpiredMemories = Number(expiredMemRes.numDeletedRows);
+
       const protectedRows = await trx
         .selectFrom("memories")
         .select("source_message_id")
@@ -281,6 +289,7 @@ export class MaintenanceStore {
         deletedJobs: Number(jobRes.numDeletedRows),
         deletedDeliveries: Number(delRes.numDeletedRows),
         deletedAssetRows,
+        deletedExpiredMemories,
       };
     });
 

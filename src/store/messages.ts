@@ -285,6 +285,8 @@ export class MessagesStore {
     chatKey: string,
     options: {
       query?: string;
+      regex?: boolean;
+      userId?: string;
       startTimeMs?: number;
       endTimeMs?: number;
       limit?: number;
@@ -313,6 +315,10 @@ export class MessagesStore {
         : q.where("id", "<", options.beforeId);
     }
 
+    if (options.userId) {
+      q = q.where("user_id", "=", options.userId);
+    }
+
     if (options.startTimeMs !== undefined) {
       q = q.where("sent_at", ">=", options.startTimeMs);
     }
@@ -324,12 +330,30 @@ export class MessagesStore {
     if (options.query) {
       const needle = options.query;
 
-      q = q.where((eb) =>
-        eb.or([
-          eb(sql<number>`contains_text(text, ${needle})`, "=", 1),
-          eb(sql<number>`contains_text(sender_name, ${needle})`, "=", 1),
-        ]),
-      );
+      if (options.regex) {
+        try {
+          new RegExp(needle, "i");
+        } catch (error) {
+          throw new Error(
+            `无效的正则表达式：${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
+          );
+        }
+
+        q = q.where((eb) =>
+          eb.or([
+            eb(sql<number>`matches_regex(text, ${needle})`, "=", 1),
+            eb(sql<number>`matches_regex(sender_name, ${needle})`, "=", 1),
+          ]),
+        );
+      } else {
+        q = q.where((eb) =>
+          eb.or([
+            eb(sql<number>`contains_text(text, ${needle})`, "=", 1),
+            eb(sql<number>`contains_text(sender_name, ${needle})`, "=", 1),
+          ]),
+        );
+      }
     }
 
     const rows = await q
@@ -339,6 +363,76 @@ export class MessagesStore {
       .execute();
 
     return rows.reverse().map(decodeMessage);
+  }
+
+  public async expandContext(
+    chatKey: string,
+    matches: MessageRecord[],
+    contextLines: number,
+  ): Promise<MessageRecord[]> {
+    const radius = Math.min(10, Math.max(0, Math.floor(contextLines)));
+
+    if (radius === 0 || matches.length === 0) {
+      return matches;
+    }
+
+    const merged = new Map<number, MessageRecord>(
+      matches.map((m) => [m.id, m]),
+    );
+    const db = this.#database.db;
+
+    await Promise.all(
+      matches.map(async (anchor) => {
+        const [before, after] = await Promise.all([
+          db
+            .selectFrom("messages")
+            .selectAll()
+            .where("chat_key", "=", chatKey)
+            .where("recalled_at", "is", null)
+            .where((eb) =>
+              eb.or([
+                eb("sent_at", "<", anchor.sentAt),
+                eb.and([
+                  eb("sent_at", "=", anchor.sentAt),
+                  eb("id", "<", anchor.id),
+                ]),
+              ]),
+            )
+            .orderBy("sent_at", "desc")
+            .orderBy("id", "desc")
+            .limit(radius)
+            .execute(),
+          db
+            .selectFrom("messages")
+            .selectAll()
+            .where("chat_key", "=", chatKey)
+            .where("recalled_at", "is", null)
+            .where((eb) =>
+              eb.or([
+                eb("sent_at", ">", anchor.sentAt),
+                eb.and([
+                  eb("sent_at", "=", anchor.sentAt),
+                  eb("id", ">", anchor.id),
+                ]),
+              ]),
+            )
+            .orderBy("sent_at", "asc")
+            .orderBy("id", "asc")
+            .limit(radius)
+            .execute(),
+        ]);
+
+        for (const row of [...before, ...after]) {
+          if (!merged.has(row.id)) {
+            merged.set(row.id, decodeMessage(row));
+          }
+        }
+      }),
+    );
+
+    return [...merged.values()].sort(
+      (a, b) => a.sentAt - b.sentAt || a.id - b.id,
+    );
   }
 
   public async listKnownUsers(

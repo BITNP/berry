@@ -5,6 +5,7 @@ import {
   NButton,
   NCard,
   NDataTable,
+  NDatePicker,
   NForm,
   NFormItem,
   NInput,
@@ -33,6 +34,7 @@ interface MemoryRow {
   summary: string;
   content: string;
   sourceMessageId: number | null;
+  expiresAt: number | null;
   updatedAt: number;
 }
 
@@ -106,12 +108,14 @@ const form = ref<{
   key: string;
   summary: string;
   content: string;
+  expiresAt: number | null;
 }>({
   scope: "chat",
   ownerId: null,
   key: "",
   summary: "",
   content: "",
+  expiresAt: null,
 });
 
 const visibleItems = computed(() => {
@@ -171,6 +175,7 @@ function openCreate() {
     key: "",
     summary: "",
     content: "",
+    expiresAt: null,
   };
   modalOpen.value = true;
 }
@@ -183,6 +188,7 @@ function openEdit(row: MemoryRow) {
     key: row.key,
     summary: row.summary,
     content: row.content,
+    expiresAt: row.expiresAt ?? null,
   };
   modalOpen.value = true;
 }
@@ -241,6 +247,7 @@ async function handleSave() {
         key: form.value.key.trim(),
         summary: form.value.summary.trim(),
         content: form.value.content.trim(),
+        expiresAt: form.value.expiresAt,
       }),
     });
     modalOpen.value = false;
@@ -307,6 +314,15 @@ const columns: DataTableColumns<MemoryRow> = [
     key: "content",
     minWidth: 220,
     ellipsis: { tooltip: true },
+  },
+  {
+    title: "有效期",
+    key: "expiresAt",
+    width: 148,
+    render: (row) =>
+      row.expiresAt
+        ? h("span", { class: "tabular" }, formatTime(row.expiresAt))
+        : h(NText, { depth: 3 }, { default: () => "永久" }),
   },
   {
     title: "更新时间",
@@ -488,6 +504,15 @@ onMounted(() => {
         </NFormItem>
         <NFormItem label="完整内容">
           <NInput v-model:value="form.content" :rows="4" type="textarea" />
+        </NFormItem>
+        <NFormItem label="过期时间（留空则永久有效）">
+          <NDatePicker
+            v-model:value="form.expiresAt"
+            class="w-full"
+            clearable
+            placeholder="可选，到期后自动失效并清理"
+            type="datetime"
+          />
         </NFormItem>
         <NSpace justify="end">
           <NButton @click="modalOpen = false">取消</NButton>
