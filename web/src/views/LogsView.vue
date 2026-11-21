@@ -214,10 +214,10 @@ const levelPriority: Record<LogLevel, number> = {
 };
 
 const levelShort: Record<LogLevel, string> = {
-  debug: "DBG",
-  info: "INF",
-  warn: "WRN",
-  error: "ERR",
+  debug: "DEBUG",
+  info: "INFO",
+  warn: "WARN",
+  error: "ERROR",
 };
 
 const logLevelCounts = computed(() => {
@@ -1503,7 +1503,7 @@ onUnmounted(() => {
               type="error"
               @click="filterLevel = filterLevel === 'error' ? null : 'error'"
             >
-              ERR {{ logLevelCounts.error }}
+              ERROR {{ logLevelCounts.error }}
             </NButton>
             <NButton
               v-if="logLevelCounts.warn > 0"
@@ -1512,7 +1512,7 @@ onUnmounted(() => {
               type="warning"
               @click="filterLevel = filterLevel === 'warn' ? null : 'warn'"
             >
-              WRN {{ logLevelCounts.warn }}
+              WARN {{ logLevelCounts.warn }}
             </NButton>
             <NSpace align="center" class="ml-auto" :size="6">
               <NSwitch v-model:value="autoScroll" size="small" />
@@ -1951,8 +1951,8 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  padding: 0 4px;
+  width: 48px;
+  padding: 0 5px;
   border-radius: 3px;
   font-size: 10px;
   font-weight: 700;

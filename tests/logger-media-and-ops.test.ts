@@ -74,7 +74,7 @@ test("Pino LogHub redaction, level/scope filtering, and clear endpoint", async (
     false,
   );
 
-  assert.match(prettyLine, /ERR\s+gateway\s+Delivery failed/);
+  assert.match(prettyLine, /ERROR\s+│\s+\[gateway\]\s+›\s+Delivery failed/);
   assert.match(prettyLine, /deliveryId=7/);
   assert.match(prettyLine, /retry=false/);
   assert.match(prettyLine, /└─ timeout/);

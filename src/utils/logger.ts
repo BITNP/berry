@@ -368,20 +368,22 @@ export function formatPrettyLogLine(
   color = shouldColorize(),
 ): string {
   const clock = paint(formatClockMs(input.time), ANSI.gray, color);
+  const rail = paint("│", ANSI.gray, color);
   const badge =
     input.level === "error"
-      ? paint(" ERR ", ANSI.errBadge, color)
+      ? paint("ERROR", ANSI.errBadge, color)
       : input.level === "warn"
-        ? paint(" WRN ", ANSI.warnBadge, color)
+        ? paint("WARN ", ANSI.warnBadge, color)
         : input.level === "debug"
-          ? paint(" DBG ", ANSI.debugBadge, color)
-          : paint(" INF ", ANSI.infoBadge, color);
+          ? paint("DEBUG", ANSI.debugBadge, color)
+          : paint("INFO ", ANSI.infoBadge, color);
 
-  const scopeLabel =
-    input.scope.length > 16
-      ? `${input.scope.slice(0, 15)}…`
-      : input.scope.padEnd(16);
-  const scopePart = paint(scopeLabel, scopeColor(input.scope), color);
+  const rawScope =
+    input.scope.length > 16 ? `${input.scope.slice(0, 15)}…` : input.scope;
+  const bracketedScope = `${paint("[", ANSI.gray, color)}${paint(rawScope, scopeColor(input.scope), color)}${paint("]", ANSI.gray, color)}`;
+  const scopePad = " ".repeat(Math.max(0, 16 - rawScope.length));
+  const scopePart = `${bracketedScope}${scopePad}`;
+  const pointer = paint("›", ANSI.gray, color);
 
   const msgColor =
     input.level === "error"
@@ -412,19 +414,19 @@ export function formatPrettyLogLine(
     );
   }
 
-  const head = `${clock} ${badge} ${scopePart} ${msgPart}${inlinePairs.length > 0 ? `  ${inlinePairs.join("  ")}` : ""}`;
+  const head = `${clock} ${rail} ${badge} ${rail} ${scopePart} ${pointer} ${msgPart}${inlinePairs.length > 0 ? `  ${inlinePairs.join("  ")}` : ""}`;
 
   if (!errorDetail) {
     return `${head}\n`;
   }
 
-  const indent = " ".repeat(19);
+  const prefix = `${" ".repeat(12)} ${rail} ${" ".repeat(5)} ${rail} `;
   const lines = errorDetail.split("\n");
   const formattedErr = lines
     .map((line, idx) =>
       idx === 0
-        ? `${indent}${paint("└─", ANSI.gray, color)} ${paint(line, ANSI.brightRed, color)}`
-        : `${indent}   ${paint(line, ANSI.red, color)}`,
+        ? `${prefix}${paint("└─", ANSI.gray, color)} ${paint(line, ANSI.brightRed, color)}`
+        : `${prefix}   ${paint(line, ANSI.red, color)}`,
     )
     .join("\n");
 
@@ -442,13 +444,29 @@ export function printStartupBanner(info: {
   }
 
   const color = shouldColorize();
+  const rule = "─".repeat(54);
+  const top = paint(`╭${rule}`, ANSI.gray, color);
+  const mid = paint(`├${rule}`, ANSI.gray, color);
+  const bot = paint(`╰${rule}`, ANSI.gray, color);
+  const edge = paint("│", ANSI.gray, color);
+  const logoColor = `${ANSI.bold}${ANSI.brightMagenta}`;
   const dot = (ok: boolean, label: string) =>
     `${paint(ok ? "●" : "○", ok ? ANSI.green : ANSI.gray, color)} ${paint(label, ok ? ANSI.white : ANSI.gray, color)}`;
-  const title = `${paint("🍓 Berry", `${ANSI.bold}${ANSI.brightMagenta}`, color)} ${paint("树莓娘控制台", ANSI.gray, color)}`;
-  const urlLine = `  ${paint("➜", ANSI.brightCyan, color)}  ${paint("控制台", ANSI.gray, color)}  ${paint(info.url, `${ANSI.bold}${ANSI.cyan}`, color)}`;
-  const modLine = `  ${paint("➜", ANSI.brightCyan, color)}  ${paint("状态  ", ANSI.gray, color)}  ${dot(info.gatewayConfigured, "QQ 网关")}   ${dot(info.guildApiConfigured, "公会看板")}   ${dot(info.devAuthBypass, info.devAuthBypass ? "开发免登" : "OIDC 鉴权")}`;
 
-  process.stdout.write(`\n  ${title}\n\n${urlLine}\n${modLine}\n\n`);
+  const lines = [
+    "",
+    top,
+    `${edge}  ${paint("█▀▄ █▀▀ █▀▄ █▀▄ █ ▌", logoColor, color)}   ${paint("Berry", `${ANSI.bold}${ANSI.white}`, color)}  ${paint("树莓娘控制台", ANSI.gray, color)}`,
+    `${edge}  ${paint("█▀▄ █▀▀ █▀▄ █▀▄ ▀█▀", logoColor, color)}   ${paint("BITNP QQ Agent Console", ANSI.dim, color)}`,
+    `${edge}  ${paint("█▄▀ ▀▀▀ ▀ ▀ ▀ ▀  ▀ ", logoColor, color)}`,
+    mid,
+    `${edge}  ${paint("➜", ANSI.brightCyan, color)}  ${paint("[控制台]", ANSI.gray, color)}  ${paint(info.url, `${ANSI.bold}${ANSI.cyan}`, color)}`,
+    `${edge}  ${paint("➜", ANSI.brightCyan, color)}  ${paint("[模块]  ", ANSI.gray, color)}  ${dot(info.gatewayConfigured, "QQ 网关")}   ${dot(info.guildApiConfigured, "公会看板")}   ${dot(info.devAuthBypass, info.devAuthBypass ? "开发免登" : "OIDC 鉴权")}`,
+    bot,
+    "",
+  ];
+
+  process.stdout.write(`${lines.join("\n")}\n`);
 }
 
 const prettyStream =
