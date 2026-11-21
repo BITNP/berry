@@ -603,12 +603,12 @@ const callColumns: DataTableColumns<LlmCallRow> = [
   {
     title: "Tokens",
     key: "tokens",
-    width: 148,
+    width: 204,
     align: "right",
     render: (row) => {
       const label = h(
         "span",
-        { class: "tabular sub-note" },
+        { class: "tabular sub-note", style: "white-space: nowrap;" },
         `${row.inputTokens.toLocaleString()} / ${row.outputTokens.toLocaleString()}`,
       );
 
@@ -616,16 +616,25 @@ const callColumns: DataTableColumns<LlmCallRow> = [
         return label;
       }
 
+      const tagLabel = row.cacheWarning.startsWith("前缀未变")
+        ? "缓存偏低"
+        : "前缀失效";
+
       return h(
         NSpace,
-        { align: "center", justify: "end", size: 4, wrap: false },
+        { align: "center", justify: "end", size: 6, wrap: false },
         {
           default: () => [
             label,
             h(
               NTag,
-              { size: "tiny", type: "warning" },
-              { default: () => "前缀失效" },
+              {
+                size: "tiny",
+                type: "warning",
+                title: row.cacheWarning,
+                style: "flex-shrink: 0;",
+              },
+              { default: () => tagLabel },
             ),
           ],
         },
@@ -820,7 +829,7 @@ onMounted(() => {
                 onClick: () => openDetail(row),
               })
             "
-            :scroll-x="1080"
+            :scroll-x="1160"
             size="small"
           />
         </NTabPane>
