@@ -29,6 +29,7 @@ import {
   NTabs,
   NTag,
   NText,
+  NTooltip,
   useMessage,
 } from "naive-ui";
 import { computed, h, onMounted, ref, watch } from "vue";
@@ -603,41 +604,49 @@ const callColumns: DataTableColumns<LlmCallRow> = [
   {
     title: "Tokens",
     key: "tokens",
-    width: 204,
+    width: 176,
     align: "right",
     render: (row) => {
-      const label = h(
+      const value = h(
         "span",
         { class: "tabular sub-note", style: "white-space: nowrap;" },
         `${row.inputTokens.toLocaleString()} / ${row.outputTokens.toLocaleString()}`,
       );
 
       if (!row.cacheWarning) {
-        return label;
+        return value;
       }
 
       const tagLabel = row.cacheWarning.startsWith("前缀未变")
         ? "缓存偏低"
         : "前缀失效";
 
-      return h(
-        NSpace,
-        { align: "center", justify: "end", size: 6, wrap: false },
+      const tag = h(
+        NTooltip,
+        { placement: "top" },
         {
-          default: () => [
-            label,
+          trigger: () =>
             h(
               NTag,
               {
                 size: "tiny",
                 type: "warning",
-                title: row.cacheWarning,
+                bordered: false,
                 style: "flex-shrink: 0;",
               },
               { default: () => tagLabel },
             ),
-          ],
+          default: () => row.cacheWarning,
         },
+      );
+
+      return h(
+        "span",
+        {
+          style:
+            "display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; white-space: nowrap;",
+        },
+        [tag, value],
       );
     },
   },
@@ -829,7 +838,7 @@ onMounted(() => {
                 onClick: () => openDetail(row),
               })
             "
-            :scroll-x="1160"
+            :scroll-x="1120"
             size="small"
           />
         </NTabPane>
