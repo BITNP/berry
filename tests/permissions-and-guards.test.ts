@@ -15,6 +15,7 @@ import { listChatsTool, readChatWindowTool } from "../src/tools/chat.ts";
 import {
   guildCreateNodeTool,
   guildListTreeTool,
+  guildResolveMemberTool,
   guildTools,
 } from "../src/tools/guild.ts";
 import { mcpToolProvider } from "../src/tools/mcp.ts";
@@ -1354,4 +1355,230 @@ test("ShortLinkClient shortens long URLs via p.bitnp.net form protocol, caches, 
     await app.shortlink.shortenOrFallback(anotherLongUrl),
     anotherLongUrl,
   );
+});
+
+test("proactive DM lookup resolves userRef across Keycloak/groups and BerryAgent pre-registers recent senders across turns", async (t) => {
+  const sentPrivateTargets: number[] = [];
+  const targetUserId = "888777666";
+  const expectedRef = new ModelIds().userRef(targetUserId);
+
+  const kcStub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url?.includes("/protocol/openid-connect/token")) {
+      res.end(JSON.stringify({ access_token: "kc-tok", expires_in: 300 }));
+
+      return;
+    }
+
+    if (
+      req.url?.includes("search=") &&
+      req.url.includes("%E7%8E%8B%E5%87%AF")
+    ) {
+      res.end(
+        JSON.stringify([
+          {
+            id: "sub-kat",
+            username: "kat",
+            firstName: "王凯诺",
+            enabled: true,
+            attributes: { qq_number: [targetUserId] },
+          },
+        ]),
+      );
+
+      return;
+    }
+
+    if (req.url?.includes("/users/sub-kat/role-mappings/realm/composite")) {
+      res.end(JSON.stringify([{ name: "permission-techsvc-access" }]));
+
+      return;
+    }
+
+    res.end(JSON.stringify([]));
+  }, t);
+
+  const gwStub = await startStubServer((req, res, bodyText) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url?.endsWith("/get_friend_list")) {
+      res.end(JSON.stringify({ status: "ok", retcode: 0, data: [] }));
+
+      return;
+    }
+
+    if (req.url?.endsWith("/get_group_list")) {
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: [{ group_id: 90_001, group_name: "网协大群" }],
+        }),
+      );
+
+      return;
+    }
+
+    if (req.url?.endsWith("/get_group_member_list")) {
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: [{ user_id: 555_444_333, nickname: "只加群不加好友的同学" }],
+        }),
+      );
+
+      return;
+    }
+
+    if (req.url?.endsWith("/send_private_msg_async")) {
+      const body = JSON.parse(bodyText) as { user_id: number };
+
+      sentPrivateTargets.push(body.user_id);
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: { message_id: "dm-ok-1" },
+        }),
+      );
+
+      return;
+    }
+
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
+  }, t);
+
+  const llmStub = await startStubServer((_req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        chatReply({
+          units: [
+            {
+              kind: "qq_reply",
+              text: "主动私聊测试",
+              targetRef: expectedRef,
+            },
+          ],
+        }),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gwStub.url,
+      gatewayToken: "gw-tok",
+      mainBaseUrl: `${llmStub.url}/v1`,
+      keycloakAdminUrl: `${kcStub.url}/admin/realms/bitnp`,
+      oidcIssuer: `${kcStub.url}/realms/bitnp`,
+      keycloakClientId: "berry",
+      keycloakClientSecret: "secret",
+    },
+    {
+      policy: {
+        adminQQs: ["10001"],
+      },
+    },
+    t,
+  );
+  const services = makeServices(app);
+  const ids = new ModelIds();
+  const adminActor: ToolActor = {
+    chatKey: "private:10001",
+    senderQQ: "10001",
+    actorSubject: "sub-admin",
+    actorName: "管理员",
+    role: "admin",
+  };
+  const memberActor: ToolActor = {
+    chatKey: "group:90001",
+    senderQQ: "20002",
+    actorSubject: "sub-member",
+    actorName: "部员",
+    role: "member",
+  };
+
+  // Non-admin blocked from qq_directory(scope="users").
+  await assert.rejects(
+    () =>
+      qqDirectoryTool
+        .bind(makeCtx(services, ids, memberActor))
+        .execute({ scope: "users", query: "王凯诺" }),
+    /仅管理员或网协管理层可跨来源检索联系人/,
+  );
+
+  // Admin resolves real name via Keycloak -> userRef, and non-friend group member via group scan -> userRef.
+  const kcRes = (await qqDirectoryTool
+    .bind(makeCtx(services, ids, adminActor))
+    .execute({ scope: "users", query: "王凯诺" })) as {
+    items: { userRef: string; sources: string[] }[];
+  };
+
+  assert.equal(kcRes.items[0]?.userRef, expectedRef);
+  assert.deepEqual(kcRes.items[0]?.sources, ["keycloak"]);
+  assert.equal(
+    ids.resolveTargetChatKey(kcRes.items[0].userRef),
+    `private:${targetUserId}`,
+  );
+
+  const groupMemberRes = (await qqDirectoryTool
+    .bind(makeCtx(services, ids, adminActor))
+    .execute({ scope: "users", query: "只加群不加好友" })) as {
+    items: { userRef: string; sources: string[]; sharedGroups?: string[] }[];
+  };
+
+  assert.equal(
+    ids.resolveTargetChatKey(groupMemberRes.items[0]!.userRef),
+    "private:555444333",
+  );
+  assert.deepEqual(groupMemberRes.items[0]?.sharedGroups, ["网协大群"]);
+
+  // guild_resolve_member also exposes userRef.
+  const guildMatch = (await guildResolveMemberTool
+    .bind(makeCtx(services, ids, adminActor))
+    .execute({ query: "王凯诺" })) as {
+    matches: { userRef: string | null }[];
+  };
+
+  assert.equal(guildMatch.matches[0]?.userRef, expectedRef);
+
+  // Target user spoke only in a group (never opened a private chat with the bot);
+  // admin in a separate DM can still target their u_* handle across turns.
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "90001",
+    title: "网协大群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+  await captureText(app, {
+    kind: "group",
+    chatId: "90001",
+    id: "m-group-only-sender",
+    userId: targetUserId,
+    senderName: "Kat",
+    text: "群里发过言",
+  });
+
+  const adminPrompt = await captureText(app, {
+    kind: "private",
+    chatId: "10001",
+    id: "m-admin-dm-req",
+    userId: "10001",
+    senderName: "管理员",
+    text: "给 Kat 主动发个私聊",
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "private:10001",
+    kind: "private",
+    chatId: "10001",
+    triggerMessageIds: [adminPrompt.message.id],
+    senderId: "10001",
+    senderName: "管理员",
+  });
+
+  assert.deepEqual(sentPrivateTargets, [Number(targetUserId)]);
 });

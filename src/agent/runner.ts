@@ -122,6 +122,10 @@ export class BerryAgent {
       }
     }
 
+    for (const senderId of await store.messages.recentSenderIds(500)) {
+      ids.userRef(senderId);
+    }
+
     const chatRef =
       input.kind === "group"
         ? ids.groupRef(input.chatId)
@@ -564,6 +568,9 @@ export class BerryAgent {
       return targetChatKey === input.chatKey || role === "admin";
     }
 
+    const dispatches: { targetChatKey: ChatKey; unit: OutputUnit }[] = [];
+    const errors: string[] = [];
+
     function resolveUnitTarget(targetRef?: string): ChatKey | null {
       if (!targetRef?.trim()) {
         return input.chatKey;
@@ -578,6 +585,7 @@ export class BerryAgent {
             targetChatKey,
             speakerQQ,
           });
+          errors.push("仅管理员或网协管理层可跨会话发送消息，已拦截该目标投递");
 
           return null;
         }
@@ -588,6 +596,9 @@ export class BerryAgent {
           fromChatKey: input.chatKey,
           targetRef,
         });
+        errors.push(
+          `无法解析投递目标句柄 ${targetRef}，请先通过 qq_directory 或 guild_resolve_member 获取有效句柄`,
+        );
 
         return null;
       }
@@ -609,9 +620,6 @@ export class BerryAgent {
           : null;
       }
     }
-
-    const dispatches: { targetChatKey: ChatKey; unit: OutputUnit }[] = [];
-    const errors: string[] = [];
 
     for (const unit of rawUnits) {
       if (unit.kind === "qq_forward") {

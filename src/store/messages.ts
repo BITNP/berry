@@ -268,6 +268,19 @@ export class MessagesStore {
     return Number(row.max_id);
   }
 
+  public async recentSenderIds(limit = 500): Promise<string[]> {
+    const rows = await this.#database.db
+      .selectFrom("messages")
+      .select("user_id")
+      .where("is_bot", "=", 0)
+      .groupBy("user_id")
+      .orderBy(sql`max(id)`, "desc")
+      .limit(Math.max(1, limit))
+      .execute();
+
+    return rows.map((row) => row.user_id).filter(Boolean);
+  }
+
   public async search(
     chatKey: string,
     options: {
