@@ -155,6 +155,7 @@ export interface BerryTables {
     response_text: string | null;
     tool_calls_json: string | null;
     error: string | null;
+    cache_warning: string | null;
     created_at: number;
   };
   admin_sessions: {
@@ -686,6 +687,21 @@ const migrations: Record<string, Migration> = {
             ${ts}
           )
         `.execute(db);
+      }
+    },
+  },
+  "006_llm_usage_cache_warning": {
+    async up(db) {
+      const existing = await sql<{ name: string }>`
+        pragma table_info(llm_usage)
+      `.execute(db);
+      const colSet = new Set(existing.rows.map((r) => r.name));
+
+      if (!colSet.has("cache_warning")) {
+        await db.schema
+          .alterTable("llm_usage")
+          .addColumn("cache_warning", "text")
+          .execute();
       }
     },
   },

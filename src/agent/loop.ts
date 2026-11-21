@@ -9,6 +9,7 @@ import type { Store } from "../store/index.ts";
 import type { TurnMessage } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
+import type { DialogCacheGuard } from "./cache-guard.ts";
 import { completeChat, parseModelJson, validateModelJson } from "./llm.ts";
 
 export type { ThinkingEffort };
@@ -43,6 +44,8 @@ export async function runChatToolLoop<S extends TSchema>(options: {
   maxTokens?: number;
   temperature?: number;
   thinkingEffort?: ThinkingEffort;
+  cacheGuard?: DialogCacheGuard;
+  cacheSessionKey?: string;
   onBeforeToolBatch?: (completedHistory: TurnMessage[]) => void;
 }): Promise<ToolLoopResult<Static<S>>> {
   const logger = new Logger(`llm:${options.purpose}`);
@@ -98,6 +101,20 @@ export async function runChatToolLoop<S extends TSchema>(options: {
     });
     prevLoggedLen = messages.length;
 
+    const toolsForRound =
+      !isFinalRound && openAITools.length > 0 ? openAITools : undefined;
+    const cacheCheck =
+      options.cacheGuard && options.cacheSessionKey
+        ? options.cacheGuard.inspect({
+            purpose: options.purpose,
+            sessionKey: options.cacheSessionKey,
+            chatKey: options.chatKey,
+            messages,
+            tools: toolsForRound,
+            transientUserIndex: options.history.length,
+          })
+        : null;
+
     const completion = await completeChat({
       apiKey: cfg.apiKey,
       baseURL: cfg.baseURL,
@@ -108,13 +125,12 @@ export async function runChatToolLoop<S extends TSchema>(options: {
       timeZone: options.settings.bot.timezone,
       purpose: options.purpose,
       chatKey: options.chatKey,
+      cacheCheck,
       params: {
         messages,
         temperature: options.temperature ?? cfg.temperature,
         max_tokens: options.maxTokens ?? cfg.maxOutputTokens,
-        ...(!isFinalRound && openAITools.length > 0
-          ? { tools: openAITools }
-          : {}),
+        ...(toolsForRound ? { tools: toolsForRound } : {}),
         ...(thinkingEffort === "none"
           ? {}
           : { reasoning_effort: thinkingEffort }),

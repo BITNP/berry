@@ -19,4 +19,5 @@ export const guildOperatorSubagent: SubagentDefinition = {
     "所有公会查询与写操作均以当前发言人自己的 Keycloak 身份代理执行，具体权限由公会服务端判定；若服务端返回无权限，直接如实说明，最后返回精炼简报及节点链接。",
   ].join("\n"),
   tools: guildTools,
+  maxRounds: 12,
 };

@@ -21,7 +21,7 @@ const subagentOutputSchema = Type.Object(
   { additionalProperties: false },
 );
 
-const DEFAULT_SUBAGENT_MAX_ROUNDS = 32;
+const DEFAULT_SUBAGENT_MAX_ROUNDS = 10;
 const MAX_FORK_HISTORY_MESSAGES = 30;
 const SUBAGENT_OUTPUT_SUFFIX =
   '完成检索或操作后，最终只输出一个 JSON 对象：{"brief":"准确清晰的结论（完整覆盖关键事实即可，避免照搬大段原始日志）","references":["可选引用来源、节点URL或m_*句柄"]}';

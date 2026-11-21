@@ -18,6 +18,7 @@ export interface LlmCallRow {
   responseText: string | null;
   toolCalls: LlmToolCallItem[];
   error: string | null;
+  cacheWarning: string | null;
   createdAt: number;
 }
 
@@ -31,6 +32,7 @@ const PURPOSE_META: Record<
   "dialog": { label: "主对话", type: "primary" },
   "subagent": { label: "子代理", type: "info" },
   "subagent:chat_analyst": { label: "子代理：聊天记录分析", type: "info" },
+  "subagent:code_analyst": { label: "子代理：批量脚本分析", type: "info" },
   "subagent:guild_operator": { label: "子代理：公会看板", type: "info" },
   "subagent:bunko_operator": { label: "子代理：Bunko 云文档", type: "info" },
   "subagent:mcp_operator": { label: "子代理：外部工具", type: "info" },
@@ -64,6 +66,7 @@ export const PURPOSE_FILTER_OPTIONS = [
   { label: "主对话", value: "dialog" },
   { label: "子代理（全部）", value: "subagent" },
   { label: "子代理：聊天记录分析", value: "subagent:chat_analyst" },
+  { label: "子代理：批量脚本分析", value: "subagent:code_analyst" },
   { label: "子代理：公会看板", value: "subagent:guild_operator" },
   { label: "子代理：Bunko 云文档", value: "subagent:bunko_operator" },
   { label: "子代理：外部工具", value: "subagent:mcp_operator" },

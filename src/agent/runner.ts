@@ -21,6 +21,7 @@ import type {
 } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage, formatDateTime } from "../utils/time.ts";
+import { DialogCacheGuard, makeCacheSessionKey } from "./cache-guard.ts";
 import { runChatToolLoop } from "./loop.ts";
 import { ModelIds } from "./model-ids.ts";
 import { buildStaticSystemPrompt, resultsAsText } from "./prompt.ts";
@@ -88,6 +89,7 @@ export class BerryAgent {
   #subagents: SubagentRegistry;
   #mainTools: ToolRegistry;
   #logger = new Logger("agent");
+  #cacheGuard = new DialogCacheGuard();
   #compacting = false;
 
   constructor(
@@ -322,9 +324,15 @@ export class BerryAgent {
       history: conversation.messages,
       userContent,
       tools,
-      maxRounds: 40,
+      maxRounds: 12,
       outputSchema: agentOutputSchema,
       thinkingEffort: resolveThinkingEffort(settings, "dialog"),
+      cacheGuard: this.#cacheGuard,
+      cacheSessionKey: makeCacheSessionKey(
+        conversation.sessionId,
+        conversation.summary,
+        conversation.scopedToChat ? input.chatKey : "global",
+      ),
       onBeforeToolBatch: (completedHistory) => {
         forkSnapshot = completedHistory;
       },
@@ -461,7 +469,7 @@ export class BerryAgent {
         memoryIndex,
       }),
       tools: [memoryTool],
-      maxRounds: 12,
+      maxRounds: 6,
       thinkingEffort: resolveThinkingEffort(settings, "memory_update"),
     });
   }

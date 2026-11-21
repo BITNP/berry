@@ -58,6 +58,7 @@ const decodeLlmCall = (
     ? (JSON.parse(row.tool_calls_json) as LlmToolCallSummary[])
     : [],
   error: row.error,
+  cacheWarning: row.cache_warning ?? null,
   createdAt: row.created_at,
 });
 
@@ -83,6 +84,7 @@ export class UsageStore {
     responseText?: string | null;
     toolCalls?: LlmToolCallSummary[];
     error?: string | null;
+    cacheWarning?: string | null;
     timeZone?: string;
   }): Promise<LlmCallRecord> {
     const now = Date.now();
@@ -108,6 +110,7 @@ export class UsageStore {
           tool_calls_json:
             toolCalls.length > 0 ? JSON.stringify(toolCalls) : null,
           error: clipText(input.error, 2000),
+          cache_warning: clipText(input.cacheWarning, 500),
           created_at: now,
         })
         .returningAll()

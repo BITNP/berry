@@ -36,4 +36,5 @@ export const bunkoOperatorSubagent: SubagentDefinition = {
     ].join("\n");
   },
   tools: bunkoTools,
+  maxRounds: 10,
 };

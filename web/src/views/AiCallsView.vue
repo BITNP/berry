@@ -603,14 +603,34 @@ const callColumns: DataTableColumns<LlmCallRow> = [
   {
     title: "Tokens",
     key: "tokens",
-    width: 116,
+    width: 148,
     align: "right",
-    render: (row) =>
-      h(
+    render: (row) => {
+      const label = h(
         "span",
         { class: "tabular sub-note" },
         `${row.inputTokens.toLocaleString()} / ${row.outputTokens.toLocaleString()}`,
-      ),
+      );
+
+      if (!row.cacheWarning) {
+        return label;
+      }
+
+      return h(
+        NSpace,
+        { align: "center", justify: "end", size: 4, wrap: false },
+        {
+          default: () => [
+            label,
+            h(
+              NTag,
+              { size: "tiny", type: "warning" },
+              { default: () => "前缀失效" },
+            ),
+          ],
+        },
+      );
+    },
   },
   {
     title: "耗时",
@@ -1021,6 +1041,13 @@ onMounted(() => {
         <NSpace :size="12" vertical>
           <NAlert v-if="selectedCall.error" title="调用失败" type="error">
             {{ selectedCall.error }}
+          </NAlert>
+          <NAlert
+            v-if="selectedCall.cacheWarning"
+            title="缓存前缀告警"
+            type="warning"
+          >
+            {{ selectedCall.cacheWarning }}
           </NAlert>
 
           <NDescriptions

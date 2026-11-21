@@ -11,6 +11,7 @@ import * as Value from "typebox/value";
 import type { Store } from "../store/index.ts";
 import type { LlmToolCallSummary } from "../types.ts";
 import { errorMessage } from "../utils/time.ts";
+import type { CacheCheckHandle } from "./cache-guard.ts";
 
 function summarizeMessageContent(
   content: ChatCompletionMessageParam["content"],
@@ -119,6 +120,7 @@ export async function completeChat(options: {
   timeZone: string;
   purpose: string;
   chatKey?: string | null;
+  cacheCheck?: CacheCheckHandle | null;
   params: Omit<ChatCompletionCreateParamsNonStreaming, "model" | "stream">;
 }): Promise<ChatCompletion> {
   const started = performance.now();
@@ -144,19 +146,27 @@ export async function completeChat(options: {
         name: call.function.name,
         arguments: call.function.arguments.slice(0, 4000),
       }));
+    const inputTokens = usage?.prompt_tokens ?? 0;
+    const cachedInputTokens = usage?.prompt_tokens_details?.cached_tokens ?? 0;
+    const cacheWarning =
+      options.cacheCheck?.commit({
+        inputTokens,
+        cachedInputTokens,
+      }) ?? null;
 
     await options.store.usage.record({
       purpose: options.purpose,
       model: options.model,
       chatKey: options.chatKey ?? null,
       status: "ok",
-      inputTokens: usage?.prompt_tokens ?? 0,
-      cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
+      inputTokens,
+      cachedInputTokens,
       outputTokens: usage?.completion_tokens ?? 0,
       durationMs: Math.round(performance.now() - started),
       requestPreview,
       responseText: message?.content ?? null,
       toolCalls,
+      cacheWarning,
       timeZone: options.timeZone,
     });
 

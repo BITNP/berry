@@ -14,4 +14,5 @@ export const mcpOperatorSubagent: SubagentDefinition = {
   systemPrompt:
     "你是隔离运行的外部 MCP 工具调用子代理。按要求调用合适的 MCP 工具并汇总结果，只返回精炼结论及必要出处。",
   tools: [mcpToolProvider],
+  maxRounds: 8,
 };

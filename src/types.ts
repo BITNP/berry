@@ -353,6 +353,7 @@ export interface LlmCallRecord {
   responseText: string | null;
   toolCalls: LlmToolCallSummary[];
   error: string | null;
+  cacheWarning: string | null;
   createdAt: number;
 }
 
