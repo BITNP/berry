@@ -2,7 +2,11 @@
 import { NAlert, NCollapse, NCollapseItem, NSpin, NTag, NText } from "naive-ui";
 
 import type { LlmCallRow } from "../utils/ai.ts";
-import { prettyMaybeJson, purposeMeta } from "../utils/ai.ts";
+import {
+  formatToolArguments,
+  prettyMaybeJson,
+  purposeMeta,
+} from "../utils/ai.ts";
 import { formatTime } from "../utils/format.ts";
 
 defineProps<{
@@ -181,10 +185,37 @@ function briefPreview(call: LlmCallRow): string {
             :key="`arg-${tc.name}-${idx}`"
             class="turn-box"
           >
-            <NTag :bordered="false" size="tiny" type="info">{{ tc.name }}</NTag>
-            <pre class="code-block mt-xs">{{
-              prettyMaybeJson(tc.arguments)
-            }}</pre>
+            <div class="turn-head">
+              <NTag :bordered="false" size="tiny" type="info">
+                {{ tc.name }}
+              </NTag>
+              <NTag
+                v-if="tc.ok !== undefined"
+                :bordered="false"
+                size="tiny"
+                :type="tc.ok ? 'success' : 'error'"
+              >
+                {{ tc.ok ? "成功" : "失败" }}
+              </NTag>
+              <span
+                v-if="tc.durationMs !== undefined"
+                class="mono turn-time tabular"
+              >
+                {{ tc.durationMs }} ms
+              </span>
+            </div>
+            <div class="tool-io-section">
+              <div class="tool-io-label"><span>入参</span></div>
+              <pre class="code-block tool-io-block">{{
+                formatToolArguments(tc)
+              }}</pre>
+            </div>
+            <div v-if="tc.result !== undefined" class="tool-io-section">
+              <div class="tool-io-label"><span>返回值</span></div>
+              <pre class="code-block tool-io-block">{{
+                prettyMaybeJson(tc.result)
+              }}</pre>
+            </div>
           </div>
 
           <pre v-if="call.responseText" class="code-block">{{

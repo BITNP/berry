@@ -47,6 +47,7 @@ import {
 import type { LlmCallRow } from "../utils/ai.ts";
 import {
   PURPOSE_FILTER_OPTIONS,
+  formatToolArguments,
   prettyMaybeJson,
   purposeMeta,
 } from "../utils/ai.ts";
@@ -338,6 +339,16 @@ async function loadCalls() {
 
     calls.value = res.items;
     totalCalls.value = res.total;
+
+    if (selectedCall.value) {
+      const fresh = res.items.find(
+        (item) => item.id === selectedCall.value?.id,
+      );
+
+      if (fresh) {
+        selectedCall.value = fresh;
+      }
+    }
   } catch (err) {
     message.error(err instanceof Error ? err.message : "加载 AI 调用记录失败");
   } finally {
@@ -578,18 +589,35 @@ const callColumns: DataTableColumns<LlmCallRow> = [
       }
 
       if (row.toolCalls.length > 0) {
+        const visible = row.toolCalls.slice(0, 4);
+        const hiddenCount = row.toolCalls.length - visible.length;
+
         return h(
           NSpace,
           { size: 4, wrap: true },
           {
-            default: () =>
-              row.toolCalls.map((call, index) =>
+            default: () => [
+              ...visible.map((call, index) =>
                 h(
                   NTag,
-                  { key: `${call.name}-${index}`, size: "tiny", type: "info" },
+                  {
+                    key: `${call.name}-${index}`,
+                    size: "tiny",
+                    type: call.ok === false ? "error" : "info",
+                  },
                   { default: () => call.name },
                 ),
               ),
+              ...(hiddenCount > 0
+                ? [
+                    h(
+                      NTag,
+                      { key: "more", size: "tiny", bordered: false },
+                      { default: () => `+${hiddenCount}` },
+                    ),
+                  ]
+                : []),
+            ],
           },
         );
       }
@@ -1151,10 +1179,60 @@ onMounted(() => {
               >
                 <div class="turn-head">
                   <NTag size="small" type="info">{{ call.name }}</NTag>
+                  <NTag
+                    v-if="call.ok !== undefined"
+                    :bordered="false"
+                    size="tiny"
+                    :type="call.ok ? 'success' : 'error'"
+                  >
+                    {{ call.ok ? "成功" : "失败" }}
+                  </NTag>
+                  <span
+                    v-if="call.durationMs !== undefined"
+                    class="mono turn-time tabular"
+                  >
+                    {{ call.durationMs }} ms
+                  </span>
                 </div>
-                <pre class="code-block mt-xs">{{
-                  prettyMaybeJson(call.arguments)
-                }}</pre>
+                <div class="tool-io-section">
+                  <div class="tool-io-label">
+                    <span>入参</span>
+                    <NButton
+                      quaternary
+                      size="tiny"
+                      @click="copyText(formatToolArguments(call))"
+                    >
+                      <template #icon>
+                        <Copy :size="12" />
+                      </template>
+                      复制
+                    </NButton>
+                  </div>
+                  <pre class="code-block tool-io-block">{{
+                    formatToolArguments(call)
+                  }}</pre>
+                </div>
+                <div v-if="call.result !== undefined" class="tool-io-section">
+                  <div class="tool-io-label">
+                    <span>返回值</span>
+                    <NButton
+                      quaternary
+                      size="tiny"
+                      @click="copyText(prettyMaybeJson(call.result))"
+                    >
+                      <template #icon>
+                        <Copy :size="12" />
+                      </template>
+                      复制
+                    </NButton>
+                  </div>
+                  <pre class="code-block tool-io-block">{{
+                    prettyMaybeJson(call.result)
+                  }}</pre>
+                </div>
+                <NText v-else class="sub-note" depth="3">
+                  该记录产生于工具返回值采集前，无返回值快照。
+                </NText>
               </div>
             </NSpace>
           </div>

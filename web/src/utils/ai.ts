@@ -1,6 +1,10 @@
 export interface LlmToolCallItem {
+  id?: string;
   name: string;
   arguments: string;
+  ok?: boolean;
+  result?: string;
+  durationMs?: number;
 }
 
 export interface LlmCallRow {
@@ -97,4 +101,26 @@ export function prettyMaybeJson(raw: string | null | undefined): string {
   }
 
   return raw;
+}
+
+export function formatToolArguments(call: LlmToolCallItem): string {
+  if (call.name === "run_readonly_script") {
+    try {
+      const parsed = JSON.parse(call.arguments) as Record<string, unknown>;
+
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        typeof parsed.code === "string" &&
+        Object.keys(parsed).length === 1
+      ) {
+        return parsed.code;
+      }
+    } catch {
+      // Fall through to generic JSON formatter.
+    }
+  }
+
+  return prettyMaybeJson(call.arguments);
 }

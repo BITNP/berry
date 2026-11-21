@@ -22,7 +22,11 @@ import { useRoute, useRouter } from "vue-router";
 import { apiFetch } from "../api/client.ts";
 import { useLiveRefresh } from "../composables/useEventStream.ts";
 import type { LlmCallRow } from "../utils/ai.ts";
-import { prettyMaybeJson, purposeMeta } from "../utils/ai.ts";
+import {
+  formatToolArguments,
+  prettyMaybeJson,
+  purposeMeta,
+} from "../utils/ai.ts";
 import { formatBytes, formatPercent, formatTime } from "../utils/format.ts";
 
 interface McpStatus {
@@ -625,10 +629,35 @@ onMounted(() => {
                 :key="`${tc.name}-${idx}`"
                 class="turn-box"
               >
-                <NTag size="small" type="info">{{ tc.name }}</NTag>
-                <pre class="code-block mt-xs">{{
-                  prettyMaybeJson(tc.arguments)
-                }}</pre>
+                <div class="turn-head">
+                  <NTag size="small" type="info">{{ tc.name }}</NTag>
+                  <NTag
+                    v-if="tc.ok !== undefined"
+                    :bordered="false"
+                    size="tiny"
+                    :type="tc.ok ? 'success' : 'error'"
+                  >
+                    {{ tc.ok ? "成功" : "失败" }}
+                  </NTag>
+                  <span
+                    v-if="tc.durationMs !== undefined"
+                    class="mono turn-time tabular"
+                  >
+                    {{ tc.durationMs }} ms
+                  </span>
+                </div>
+                <div class="tool-io-section">
+                  <div class="tool-io-label"><span>入参</span></div>
+                  <pre class="code-block tool-io-block">{{
+                    formatToolArguments(tc)
+                  }}</pre>
+                </div>
+                <div v-if="tc.result !== undefined" class="tool-io-section">
+                  <div class="tool-io-label"><span>返回值</span></div>
+                  <pre class="code-block tool-io-block">{{
+                    prettyMaybeJson(tc.result)
+                  }}</pre>
+                </div>
               </div>
             </NSpace>
           </div>

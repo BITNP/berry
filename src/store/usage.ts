@@ -124,6 +124,44 @@ export class UsageStore {
     return record;
   }
 
+  public async updateToolCalls(
+    id: number,
+    toolCalls: LlmToolCallSummary[],
+  ): Promise<LlmCallRecord | null> {
+    const normalized: LlmToolCallSummary[] = toolCalls.map((call) => ({
+      ...(call.id ? { id: call.id } : {}),
+      name: call.name,
+      arguments: clipText(call.arguments, 4000) ?? "",
+      ...(call.ok === undefined ? {} : { ok: call.ok }),
+      ...(call.result === undefined
+        ? {}
+        : { result: clipText(call.result, MAX_PREVIEW_CHARS) ?? "" }),
+      ...(call.durationMs === undefined ? {} : { durationMs: call.durationMs }),
+    }));
+
+    const row = await this.#database.writeTx(async (trx) =>
+      trx
+        .updateTable("llm_usage")
+        .set({
+          tool_calls_json:
+            normalized.length > 0 ? JSON.stringify(normalized) : null,
+        })
+        .where("id", "=", id)
+        .returningAll()
+        .executeTakeFirst(),
+    );
+
+    if (!row) {
+      return null;
+    }
+
+    const record = decodeLlmCall(row);
+
+    this.#events.emit({ type: "llm_call", data: record });
+
+    return record;
+  }
+
   public async listRecent(
     filter: {
       purpose?: string;

@@ -6,7 +6,7 @@ import type { Static, TSchema } from "typebox";
 
 import type { RuntimeSettings, ThinkingEffort } from "../config/settings.ts";
 import type { Store } from "../store/index.ts";
-import type { TurnMessage } from "../types.ts";
+import type { LlmToolCallSummary, TurnMessage } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
 import type { DialogCacheGuard } from "./cache-guard.ts";
@@ -115,6 +115,7 @@ export async function runChatToolLoop<S extends TSchema>(options: {
           })
         : null;
 
+    let recordedCallId: number | null = null;
     const completion = await completeChat({
       apiKey: cfg.apiKey,
       baseURL: cfg.baseURL,
@@ -126,6 +127,9 @@ export async function runChatToolLoop<S extends TSchema>(options: {
       purpose: options.purpose,
       chatKey: options.chatKey,
       cacheCheck,
+      onRecorded: (callId) => {
+        recordedCallId = callId;
+      },
       params: {
         messages,
         temperature: options.temperature ?? cfg.temperature,
@@ -166,8 +170,12 @@ export async function runChatToolLoop<S extends TSchema>(options: {
       messages.push(assistantTurn);
       turnMessages.push(assistantTurn);
 
+      const executedToolCalls: LlmToolCallSummary[] = [];
+
       for (const call of functionCalls) {
         const tool = toolMap.get(call.function.name);
+        const toolStarted = performance.now();
+        let toolOk = false;
         let resultPayload: unknown;
 
         if (tool) {
@@ -184,6 +192,7 @@ export async function runChatToolLoop<S extends TSchema>(options: {
               mutated = true;
             }
 
+            toolOk = true;
             resultPayload = { ok: true, result };
           } catch (error) {
             resultPayload = { ok: false, error: errorMessage(error) };
@@ -199,14 +208,29 @@ export async function runChatToolLoop<S extends TSchema>(options: {
           };
         }
 
+        const resultText = JSON.stringify(resultPayload);
         const toolTurn: TurnMessage = {
           role: "tool",
           tool_call_id: call.id,
-          content: JSON.stringify(resultPayload),
+          content: resultText,
         };
 
+        executedToolCalls.push({
+          id: call.id,
+          name: call.function.name,
+          arguments: call.function.arguments,
+          ok: toolOk,
+          result: resultText,
+          durationMs: Math.round(performance.now() - toolStarted),
+        });
         messages.push(toolTurn);
         turnMessages.push(toolTurn);
+      }
+
+      if (recordedCallId !== null) {
+        await options.store.usage
+          .updateToolCalls(recordedCallId, executedToolCalls)
+          .catch(() => undefined);
       }
 
       continue;

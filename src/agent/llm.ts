@@ -121,6 +121,7 @@ export async function completeChat(options: {
   purpose: string;
   chatKey?: string | null;
   cacheCheck?: CacheCheckHandle | null;
+  onRecorded?: (callId: number) => void;
   params: Omit<ChatCompletionCreateParamsNonStreaming, "model" | "stream">;
 }): Promise<ChatCompletion> {
   const started = performance.now();
@@ -143,6 +144,7 @@ export async function completeChat(options: {
     const toolCalls: LlmToolCallSummary[] = (message?.tool_calls ?? [])
       .filter((call) => call.type === "function")
       .map((call) => ({
+        id: call.id,
         name: call.function.name,
         arguments: call.function.arguments.slice(0, 4000),
       }));
@@ -154,7 +156,7 @@ export async function completeChat(options: {
         cachedInputTokens,
       }) ?? null;
 
-    await options.store.usage.record({
+    const recorded = await options.store.usage.record({
       purpose: options.purpose,
       model: options.model,
       chatKey: options.chatKey ?? null,
@@ -169,6 +171,8 @@ export async function completeChat(options: {
       cacheWarning,
       timeZone: options.timeZone,
     });
+
+    options.onRecorded?.(recorded.id);
 
     return completion;
   } catch (error) {

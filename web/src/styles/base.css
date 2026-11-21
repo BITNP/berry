@@ -493,6 +493,25 @@ body {
   overflow-y: auto;
 }
 
+.tool-io-section {
+  margin-top: 8px;
+}
+
+.tool-io-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--berry-muted);
+  margin-bottom: 4px;
+}
+
+.tool-io-block {
+  max-height: 260px;
+  overflow: auto;
+}
+
 @media (max-width: 600px) {
   .n-tabs .n-tabs-tab-pad {
     width: 16px;

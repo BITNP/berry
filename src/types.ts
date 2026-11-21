@@ -334,8 +334,12 @@ export interface MessageReactionRecord {
 }
 
 export interface LlmToolCallSummary {
+  id?: string;
   name: string;
   arguments: string;
+  ok?: boolean;
+  result?: string;
+  durationMs?: number;
 }
 
 export interface LlmCallRecord {

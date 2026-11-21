@@ -378,6 +378,21 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
   )?.kind;
 
   assert.ok(kindProp?.enum?.includes("ops_inspector"));
+
+  const recordedCalls = await app.store.usage.listRecent({ limit: 20 });
+  const mainEchoCall = recordedCalls.items
+    .flatMap((c) => c.toolCalls)
+    .find((tc) => tc.name === "custom_echo");
+  const subagentPingCall = recordedCalls.items
+    .flatMap((c) => c.toolCalls)
+    .find((tc) => tc.name === "ops_ping");
+
+  assert.equal(mainEchoCall?.ok, true);
+  assert.match(mainEchoCall?.result ?? "", /"echoed":/);
+  assert.equal(typeof mainEchoCall?.durationMs, "number");
+  assert.equal(subagentPingCall?.ok, true);
+  assert.match(subagentPingCall?.result ?? "", /gateway\.bitnp\.net/);
+  assert.equal(typeof subagentPingCall?.durationMs, "number");
   assert.ok(kindProp?.enum?.includes("chat_analyst"));
   assert.ok(!kindProp?.enum?.includes("bunko_operator"));
   assert.ok(!kindProp?.enum?.includes("mcp_operator"));
