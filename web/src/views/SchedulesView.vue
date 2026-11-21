@@ -20,6 +20,7 @@ import {
 import { computed, h, onMounted, ref } from "vue";
 
 import { apiFetch } from "../api/client.ts";
+import { useLiveRefresh } from "../composables/useEventStream.ts";
 import type { ScheduleSpecView } from "../utils/format.ts";
 import { formatScheduleLabel, formatTime } from "../utils/format.ts";
 
@@ -147,6 +148,12 @@ async function loadData() {
     loading.value = false;
   }
 }
+
+useLiveRefresh({
+  events: ["schedule_update"],
+  debounceMs: 300,
+  refresh: () => loadData(),
+});
 
 function openCreate() {
   editingId.value = null;

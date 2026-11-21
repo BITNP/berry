@@ -33,14 +33,18 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, h, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, h, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import ChronoVirtualList from "../components/ChronoVirtualList.vue";
 import InlineAiCallsList from "../components/InlineAiCallsList.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
-import { useEventStream } from "../composables/useEventStream.ts";
+import {
+  useEventStream,
+  useLiveClock,
+  useLiveRefresh,
+} from "../composables/useEventStream.ts";
 import type { LlmCallRow } from "../utils/ai.ts";
 import { formatTime } from "../utils/format.ts";
 import type { JobLane, JobTagType } from "../utils/jobs.ts";
@@ -194,7 +198,11 @@ const jobDrawerOpen = ref(false);
 const jobTraceLoading = ref(false);
 const jobRelatedCalls = ref<LlmCallRow[]>([]);
 const jobRelatedGate = ref<GateDecisionBrief[]>([]);
-const nowTick = ref(Date.now());
+const nowTick = useLiveClock(
+  () =>
+    jobs.value.some((j) => j.state === "running") ||
+    (jobDrawerOpen.value && selectedJob.value?.state === "running"),
+);
 
 // Deliveries state
 const loadingDeliveries = ref(false);
@@ -562,10 +570,14 @@ function matchesJobPurpose(job: JobRow, purpose: string): boolean {
   }
 }
 
-async function loadJobTrace(job: JobRow) {
-  jobTraceLoading.value = true;
-  jobRelatedCalls.value = [];
-  jobRelatedGate.value = [];
+async function loadJobTrace(job: JobRow, options: { silent?: boolean } = {}) {
+  const targetJobId = job.id;
+
+  if (!options.silent) {
+    jobTraceLoading.value = true;
+    jobRelatedCalls.value = [];
+    jobRelatedGate.value = [];
+  }
 
   const startMs = job.createdAt - (job.kind === "gate_batch" ? 1000 : 500);
   const endMs =
@@ -584,6 +596,10 @@ async function loadJobTrace(job: JobRow) {
         apiFetch<{ items: GateDecisionBrief[] }>(
           `/api/admin/gate-decisions?${gqs.toString()}`,
         ).then((res) => {
+          if (selectedJob.value?.id !== targetJobId) {
+            return;
+          }
+
           jobRelatedGate.value = res.items
             .filter((d) => d.createdAt >= startMs && d.createdAt <= endMs)
             .reverse();
@@ -606,6 +622,10 @@ async function loadJobTrace(job: JobRow) {
         apiFetch<{ items: LlmCallRow[] }>(
           `/api/admin/llm-calls?${cqs.toString()}`,
         ).then((res) => {
+          if (selectedJob.value?.id !== targetJobId) {
+            return;
+          }
+
           jobRelatedCalls.value = res.items
             .filter(
               (c) =>
@@ -622,7 +642,9 @@ async function loadJobTrace(job: JobRow) {
   } catch {
     // Non-critical inline trace; keep core job metadata visible.
   } finally {
-    jobTraceLoading.value = false;
+    if (!options.silent && selectedJob.value?.id === targetJobId) {
+      jobTraceLoading.value = false;
+    }
   }
 }
 
@@ -683,17 +705,27 @@ function selectTurnCallsForDelivery(
   return picked;
 }
 
-async function openDeliveryDetail(row: DeliveryRow) {
-  selectedDelivery.value = row;
-  deliveryDrawerOpen.value = true;
-  deliveryCallsLoading.value = true;
-  deliveryRelatedCalls.value = [];
+async function loadDeliveryCalls(
+  row: DeliveryRow,
+  options: { silent?: boolean } = {},
+) {
+  const targetId = row.id;
+
+  if (!options.silent) {
+    deliveryCallsLoading.value = true;
+    deliveryRelatedCalls.value = [];
+  }
 
   try {
     const qs = new URLSearchParams({ chatKey: row.chatKey, limit: "25" });
     const res = await apiFetch<{ items: LlmCallRow[] }>(
       `/api/admin/llm-calls?${qs.toString()}`,
     );
+
+    if (selectedDelivery.value?.id !== targetId) {
+      return;
+    }
+
     const anchorMs = row.createdAt ?? row.updatedAt;
     const chronological = [...res.items].reverse();
 
@@ -702,40 +734,115 @@ async function openDeliveryDetail(row: DeliveryRow) {
       anchorMs,
     );
   } catch {
-    deliveryRelatedCalls.value = [];
+    if (!options.silent && selectedDelivery.value?.id === targetId) {
+      deliveryRelatedCalls.value = [];
+    }
   } finally {
-    deliveryCallsLoading.value = false;
+    if (!options.silent && selectedDelivery.value?.id === targetId) {
+      deliveryCallsLoading.value = false;
+    }
   }
+}
+
+function openDeliveryDetail(row: DeliveryRow) {
+  selectedDelivery.value = row;
+  deliveryDrawerOpen.value = true;
+  void loadDeliveryCalls(row);
 }
 
 function toggleJobStateFilter(state: JobRow["state"]) {
   filterJobState.value = filterJobState.value === state ? null : state;
 }
 
-const { paused: streamPaused, togglePause } = useEventStream((type, data) => {
-  if (type === "log" && data && typeof data === "object") {
-    const entry = data as LogEntryView;
+const { paused: streamPaused, togglePause } = useEventStream(
+  (type, data) => {
+    if (type === "log" && data && typeof data === "object") {
+      const entry = data as LogEntryView;
 
-    entries.value.push(entry);
+      entries.value.push(entry);
 
-    if (entries.value.length > MAX_LOG_ITEMS) {
-      entries.value.splice(0, entries.value.length - MAX_LOG_ITEMS);
+      if (entries.value.length > MAX_LOG_ITEMS) {
+        entries.value.splice(0, entries.value.length - MAX_LOG_ITEMS);
+      }
+
+      if (entry.scope && !scopes.value.includes(entry.scope)) {
+        scopes.value = [...scopes.value, entry.scope].sort();
+      }
+    }
+  },
+  {
+    onReconnect: () => {
+      void loadLogs();
+    },
+  },
+);
+
+useLiveRefresh({
+  events: ["job_update"],
+  debounceMs: 200,
+  paused: streamPaused,
+  refresh: () => loadJobs(),
+});
+
+useLiveRefresh({
+  events: ["delivery_update"],
+  debounceMs: 200,
+  paused: streamPaused,
+  refresh: () => loadDeliveries(),
+});
+
+useLiveRefresh({
+  events: ["llm_call", "job_update", "gate_decision"],
+  debounceMs: 250,
+  paused: streamPaused,
+  enabled: () => jobDrawerOpen.value && selectedJob.value !== null,
+  match: (_type, data) => {
+    const job = selectedJob.value;
+
+    if (!job || !data || typeof data !== "object") {
+      return true;
     }
 
-    if (entry.scope && !scopes.value.includes(entry.scope)) {
-      scopes.value = [...scopes.value, entry.scope].sort();
+    const ev = data as { id?: number; chatKey?: string | null };
+
+    if (ev.id !== undefined && ev.id === job.id) {
+      return true;
     }
 
-    return;
-  }
+    if (job.kind === "guild_task") {
+      return true;
+    }
 
-  if (type === "job_update") {
-    void loadJobs();
-  }
+    return !ev.chatKey || ev.chatKey === job.chatKey;
+  },
+  refresh: async () => {
+    if (selectedJob.value) {
+      await loadJobTrace(selectedJob.value, { silent: true });
+    }
+  },
+});
 
-  if (type === "delivery_update") {
-    void loadDeliveries();
-  }
+useLiveRefresh({
+  events: ["llm_call", "delivery_update"],
+  debounceMs: 250,
+  paused: streamPaused,
+  enabled: () => deliveryDrawerOpen.value && selectedDelivery.value !== null,
+  match: (_type, data) => {
+    const del = selectedDelivery.value;
+
+    if (!del || !data || typeof data !== "object") {
+      return true;
+    }
+
+    const ev = data as { chatKey?: string | null };
+
+    return !ev.chatKey || ev.chatKey === del.chatKey;
+  },
+  refresh: async () => {
+    if (selectedDelivery.value) {
+      await loadDeliveryCalls(selectedDelivery.value, { silent: true });
+    }
+  },
 });
 
 async function loadLogs() {
@@ -834,6 +941,16 @@ async function loadDeliveries() {
     );
 
     deliveries.value = res.items;
+
+    if (selectedDelivery.value) {
+      const updated = res.items.find(
+        (item) => item.id === selectedDelivery.value?.id,
+      );
+
+      if (updated) {
+        selectedDelivery.value = updated;
+      }
+    }
   } catch (err) {
     message.error(err instanceof Error ? err.message : "加载出站记录失败");
   } finally {
@@ -1224,21 +1341,8 @@ watch(
   },
 );
 
-let tickTimer: ReturnType<typeof setInterval> | null = null;
-
 onMounted(() => {
   void Promise.all([loadLogs(), loadJobs(), loadDeliveries()]);
-  tickTimer = setInterval(() => {
-    if (jobs.value.some((j) => j.state === "running")) {
-      nowTick.value = Date.now();
-    }
-  }, 1000);
-});
-
-onUnmounted(() => {
-  if (tickTimer) {
-    clearInterval(tickTimer);
-  }
 });
 </script>
 

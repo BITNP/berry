@@ -21,6 +21,7 @@ import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import MarkdownPreview from "../components/MarkdownPreview.vue";
+import { useLiveRefresh } from "../composables/useEventStream.ts";
 import { formatBytes, formatTime } from "../utils/format.ts";
 
 interface DocFileRow {
@@ -91,6 +92,30 @@ async function loadFiles() {
     loadingList.value = false;
   }
 }
+
+useLiveRefresh({
+  events: ["job_update", "llm_call"],
+  debounceMs: 500,
+  match: (type, data) => {
+    if (!data || typeof data !== "object") {
+      return false;
+    }
+
+    if (type === "job_update") {
+      const ev = data as { kind?: string; state?: string };
+
+      return (
+        ev.state === "done" &&
+        (ev.kind === "group_digest" || ev.kind === "guild_task")
+      );
+    }
+
+    const ev = data as { purpose?: string };
+
+    return ev.purpose === "subagent:workspace_operator";
+  },
+  refresh: () => loadFiles(),
+});
 
 async function selectFile(file: DocFileRow) {
   loadingDoc.value = true;

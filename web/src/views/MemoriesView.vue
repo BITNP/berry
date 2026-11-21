@@ -20,6 +20,7 @@ import { computed, h, onMounted, ref, watch } from "vue";
 
 import { apiFetch } from "../api/client.ts";
 import { useChatOptions } from "../composables/useChatOptions.ts";
+import { useLiveRefresh } from "../composables/useEventStream.ts";
 import { formatTime } from "../utils/format.ts";
 
 type MemoryScope = "global" | "chat" | "user";
@@ -155,6 +156,12 @@ async function loadMemories() {
     loading.value = false;
   }
 }
+
+useLiveRefresh({
+  events: ["memory_update"],
+  debounceMs: 300,
+  refresh: () => loadMemories(),
+});
 
 function openCreate() {
   isEdit.value = false;

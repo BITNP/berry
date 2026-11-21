@@ -21,7 +21,10 @@ import { computed, h, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
-import { useEventStream } from "../composables/useEventStream.ts";
+import {
+  useEventStream,
+  useLiveRefresh,
+} from "../composables/useEventStream.ts";
 import { formatTime } from "../utils/format.ts";
 
 interface CursorRow {
@@ -365,29 +368,42 @@ const cursorColumns: DataTableColumns<CursorRow> = [
   },
 ];
 
-useEventStream((type, data) => {
-  if (type === "guild_audit") {
-    void loadGuild();
-  }
+useLiveRefresh({
+  events: ["guild_audit"],
+  debounceMs: 300,
+  refresh: () => loadGuild(),
+});
 
+useLiveRefresh({
+  events: ["job_update"],
+  debounceMs: 250,
+  match: (_type, data) =>
+    Boolean(
+      data &&
+      typeof data === "object" &&
+      (data as { kind?: string }).kind === "guild_task",
+    ),
+  refresh: async () => {
+    await Promise.all([loadGuildJobs(), loadGuild()]);
+  },
+});
+
+useEventStream((type, data) => {
   if (type === "job_update" && data && typeof data === "object") {
     const ev = data as { kind?: string; state?: string; chatKey?: string };
 
-    if (ev.kind === "guild_task") {
-      void loadGuildJobs();
+    if (
+      ev.kind === "guild_task" &&
+      (ev.state === "done" || ev.state === "failed")
+    ) {
+      const taskKey = (ev.chatKey ?? "").replace(/^guild:/, "") as
+        "due" | "assignments" | "weekly";
+      const label = GUILD_TASK_LABELS[taskKey] ?? "公会任务";
 
-      if (ev.state === "done" || ev.state === "failed") {
-        const taskKey = (ev.chatKey ?? "").replace(/^guild:/, "") as
-          "due" | "assignments" | "weekly";
-        const label = GUILD_TASK_LABELS[taskKey] ?? "公会任务";
-
-        if (ev.state === "done") {
-          message.success(`后台任务「${label}」已完成`);
-        } else {
-          message.error(`后台任务「${label}」执行失败，可在日志队列查看原因`);
-        }
-
-        void loadGuild();
+      if (ev.state === "done") {
+        message.success(`后台任务「${label}」已完成`);
+      } else {
+        message.error(`后台任务「${label}」执行失败，可在日志队列查看原因`);
       }
     }
   }

@@ -38,7 +38,10 @@ import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import { logout, useAuth } from "../composables/useAuth.ts";
-import { useEventStream } from "../composables/useEventStream.ts";
+import {
+  useEventStream,
+  useLiveRefresh,
+} from "../composables/useEventStream.ts";
 import { useTheme } from "../composables/useTheme.ts";
 
 interface ShellStatus {
@@ -63,10 +66,12 @@ const mobileDrawerOpen = ref(false);
 const togglingPause = ref(false);
 const status = ref<ShellStatus | null>(null);
 
-const { connected: sseConnected } = useEventStream((type) => {
-  if (type === "job_update" || type === "delivery_update") {
-    void loadStatus();
-  }
+const { connected: sseConnected } = useEventStream(() => undefined);
+
+useLiveRefresh({
+  events: ["job_update", "delivery_update", "message_update"],
+  debounceMs: 400,
+  refresh: () => loadStatus(),
 });
 
 const renderIcon = (icon: Component) => () =>

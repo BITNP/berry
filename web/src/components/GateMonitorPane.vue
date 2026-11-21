@@ -22,6 +22,7 @@ import { h, onMounted, ref, watch } from "vue";
 
 import { apiFetch } from "../api/client.ts";
 import { useChatOptions } from "../composables/useChatOptions.ts";
+import { useLiveRefresh } from "../composables/useEventStream.ts";
 import type { LlmCallRow } from "../utils/ai.ts";
 import { formatTime } from "../utils/format.ts";
 import InlineAiCallsList from "./InlineAiCallsList.vue";
@@ -60,6 +61,7 @@ const emit = defineEmits<{
 
 const props = defineProps<{
   chatKey?: string | null;
+  paused?: boolean;
 }>();
 
 const message = useMessage();
@@ -194,9 +196,16 @@ async function handleDryRun() {
   }
 }
 
-async function loadRelatedCalls(row: GateDecisionRow) {
-  loadingRelatedCalls.value = true;
-  relatedCalls.value = [];
+async function loadRelatedCalls(
+  row: GateDecisionRow,
+  options: { silent?: boolean } = {},
+) {
+  const targetId = row.id;
+
+  if (!options.silent) {
+    loadingRelatedCalls.value = true;
+    relatedCalls.value = [];
+  }
 
   try {
     const qs = new URLSearchParams({
@@ -206,6 +215,11 @@ async function loadRelatedCalls(row: GateDecisionRow) {
     const res = await apiFetch<{ items: LlmCallRow[] }>(
       `/api/admin/llm-calls?${qs.toString()}`,
     );
+
+    if (selectedRow.value?.id !== targetId) {
+      return;
+    }
+
     const startMs = row.createdAt - 1000;
     const endMs = row.createdAt + 60_000;
     const chronological = res.items
@@ -223,11 +237,45 @@ async function loadRelatedCalls(row: GateDecisionRow) {
 
     relatedCalls.value = picked;
   } catch {
-    relatedCalls.value = [];
+    if (!options.silent && selectedRow.value?.id === targetId) {
+      relatedCalls.value = [];
+    }
   } finally {
-    loadingRelatedCalls.value = false;
+    if (!options.silent && selectedRow.value?.id === targetId) {
+      loadingRelatedCalls.value = false;
+    }
   }
 }
+
+useLiveRefresh({
+  events: ["gate_decision"],
+  debounceMs: 250,
+  enabled: () => !props.paused,
+  refresh: () => loadDecisions(),
+});
+
+useLiveRefresh({
+  events: ["llm_call"],
+  debounceMs: 250,
+  enabled: () =>
+    !props.paused && detailOpen.value && selectedRow.value !== null,
+  match: (_type, data) => {
+    const row = selectedRow.value;
+
+    if (!row || !data || typeof data !== "object") {
+      return true;
+    }
+
+    const ev = data as { chatKey?: string | null };
+
+    return !ev.chatKey || ev.chatKey === row.chatKey;
+  },
+  refresh: async () => {
+    if (selectedRow.value) {
+      await loadRelatedCalls(selectedRow.value, { silent: true });
+    }
+  },
+});
 
 function openDetail(row: GateDecisionRow) {
   selectedRow.value = row;

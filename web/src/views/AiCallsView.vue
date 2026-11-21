@@ -38,7 +38,10 @@ import { apiFetch } from "../api/client.ts";
 import ChronoVirtualList from "../components/ChronoVirtualList.vue";
 import GateMonitorPane from "../components/GateMonitorPane.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
-import { useEventStream } from "../composables/useEventStream.ts";
+import {
+  useEventStream,
+  useLiveRefresh,
+} from "../composables/useEventStream.ts";
 import type { LlmCallRow } from "../utils/ai.ts";
 import {
   PURPOSE_FILTER_OPTIONS,
@@ -305,16 +308,21 @@ async function handleResetConversation() {
   }
 }
 
-const { paused: streamPaused, togglePause } = useEventStream((type) => {
-  if (type === "llm_call") {
-    void loadCalls();
+const { paused: streamPaused, togglePause } = useEventStream(() => undefined);
 
-    if (activeTab.value === "context" || activeTab.value === "usage") {
-      void loadMeta();
-    }
-  } else if (type === "gate_decision") {
-    void gatePaneRef.value?.loadDecisions();
-  }
+useLiveRefresh({
+  events: ["llm_call"],
+  debounceMs: 250,
+  paused: streamPaused,
+  refresh: () => loadCalls(),
+});
+
+useLiveRefresh({
+  events: ["conversation_update", "llm_call"],
+  debounceMs: 350,
+  paused: streamPaused,
+  enabled: () => activeTab.value === "context" || activeTab.value === "usage",
+  refresh: () => loadMeta(),
 });
 
 let filterTimer: ReturnType<typeof setTimeout> | null = null;
@@ -671,6 +679,7 @@ onMounted(() => {
           <GateMonitorPane
             ref="gatePaneRef"
             :chat-key="filterChatKey"
+            :paused="streamPaused"
             @inspect-chat-calls="inspectChatCalls"
             @update:total="(n: number) => (gateTotal = n)"
           />

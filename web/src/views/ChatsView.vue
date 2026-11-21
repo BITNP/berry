@@ -31,7 +31,7 @@ import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import ChronoVirtualList from "../components/ChronoVirtualList.vue";
-import { useEventStream } from "../composables/useEventStream.ts";
+import { useLiveRefresh } from "../composables/useEventStream.ts";
 import { formatTime } from "../utils/format.ts";
 
 type ChatKind = "group" | "private";
@@ -176,17 +176,23 @@ function avatarUrlForChat(row: ChatRow): string {
   return `/api/admin/avatars/${kind}/${row.chatId}`;
 }
 
-async function loadChats() {
-  loading.value = true;
+async function loadChats(options: { silent?: boolean } = {}) {
+  if (!options.silent) {
+    loading.value = true;
+  }
 
   try {
     const res = await apiFetch<{ items: ChatRow[] }>("/api/admin/chats");
 
     chats.value = res.items;
   } catch (err) {
-    message.error(err instanceof Error ? err.message : "加载会话列表失败");
+    if (!options.silent) {
+      message.error(err instanceof Error ? err.message : "加载会话列表失败");
+    }
   } finally {
-    loading.value = false;
+    if (!options.silent) {
+      loading.value = false;
+    }
   }
 }
 
@@ -466,10 +472,28 @@ async function pollLatestMessages() {
   }
 }
 
-useEventStream((type) => {
-  if (type === "delivery_update" || type === "job_update") {
-    void pollLatestMessages();
-  }
+useLiveRefresh({
+  events: ["message_update", "delivery_update", "job_update"],
+  debounceMs: 250,
+  enabled: () => activeChat.value !== null && !messageSearch.value.trim(),
+  match: (_type, data) => {
+    const active = activeChat.value;
+
+    if (!active || !data || typeof data !== "object") {
+      return true;
+    }
+
+    const ev = data as { chatKey?: string | null };
+
+    return !ev.chatKey || ev.chatKey === active.chatKey;
+  },
+  refresh: () => pollLatestMessages(),
+});
+
+useLiveRefresh({
+  events: ["message_update", "delivery_update"],
+  debounceMs: 600,
+  refresh: () => loadChats({ silent: true }),
 });
 
 async function handleInject() {

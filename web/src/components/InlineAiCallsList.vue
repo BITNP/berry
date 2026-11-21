@@ -21,6 +21,20 @@ function formatClock(ms: number): string {
 const formatDuration = (ms: number): string =>
   ms >= 1000 ? `${(ms / 1000).toFixed(2)}s` : `${ms}ms`;
 
+function summarizeToolBadges(
+  toolCalls: LlmCallRow["toolCalls"],
+): { label: string }[] {
+  const counts = new Map<string, number>();
+
+  for (const tc of toolCalls) {
+    counts.set(tc.name, (counts.get(tc.name) ?? 0) + 1);
+  }
+
+  return [...counts.entries()].map(([name, count]) => ({
+    label: count > 1 ? `${name} ×${count}` : name,
+  }));
+}
+
 function briefPreview(call: LlmCallRow): string {
   if (call.error) {
     return call.error.replaceAll(/\s+/g, " ").trim().slice(0, 60);
@@ -112,16 +126,20 @@ function briefPreview(call: LlmCallRow): string {
               失败
             </NTag>
             <NTag
-              v-for="(tc, idx) in call.toolCalls.slice(0, 2)"
-              :key="`${tc.name}-${idx}`"
+              v-for="badge in summarizeToolBadges(call.toolCalls).slice(0, 1)"
+              :key="badge.label"
               :bordered="false"
+              class="inline-trace-tool"
               size="tiny"
               type="info"
             >
-              {{ tc.name }}
+              {{ badge.label }}
             </NTag>
-            <span v-if="call.toolCalls.length > 2" class="inline-trace-more">
-              +{{ call.toolCalls.length - 2 }}
+            <span
+              v-if="summarizeToolBadges(call.toolCalls).length > 1"
+              class="inline-trace-more"
+            >
+              +{{ summarizeToolBadges(call.toolCalls).length - 1 }}
             </span>
             <span
               v-else-if="call.toolCalls.length === 0 && briefPreview(call)"
@@ -215,6 +233,7 @@ function briefPreview(call: LlmCallRow): string {
 .inline-trace-collapse :deep(.n-collapse-item__header-main) {
   min-width: 0;
   flex: 1;
+  overflow: hidden;
   gap: 6px;
 }
 
@@ -238,6 +257,23 @@ function briefPreview(call: LlmCallRow): string {
   gap: 6px;
   min-width: 0;
   flex: 1;
+  overflow: hidden;
+}
+
+.inline-trace-head :deep(.n-tag) {
+  flex-shrink: 0;
+}
+
+.inline-trace-tool {
+  max-width: 150px;
+  min-width: 0;
+  flex-shrink: 1 !important;
+}
+
+.inline-trace-tool :deep(.n-tag__content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .inline-trace-preview {

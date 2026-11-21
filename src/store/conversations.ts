@@ -9,6 +9,7 @@ import type {
   TurnMessage,
 } from "../types.ts";
 import { GLOBAL_CONVERSATION_KEY } from "../types.ts";
+import type { EventBus } from "../utils/logger.ts";
 import type { BerryDatabase } from "./database.ts";
 import type { BerryDb, BerryTables } from "./schema.ts";
 
@@ -73,9 +74,11 @@ const decodeConversation = (
 
 export class ConversationsStore {
   #database: BerryDatabase;
+  #events?: EventBus;
 
-  constructor(database: BerryDatabase) {
+  constructor(database: BerryDatabase, events?: EventBus) {
     this.#database = database;
+    this.#events = events;
   }
 
   public async open(): Promise<ConversationRecord> {
@@ -172,7 +175,7 @@ export class ConversationsStore {
 
     const now = Date.now();
 
-    return this.#database.writeTx(async (trx) => {
+    const updated = await this.#database.writeTx(async (trx) => {
       const row = await trx
         .selectFrom("conversations")
         .selectAll()
@@ -189,7 +192,7 @@ export class ConversationsStore {
         ...turnMessages,
       ];
 
-      const updated = await trx
+      const saved = await trx
         .updateTable("conversations")
         .set({
           messages_json: JSON.stringify(nextMessages),
@@ -200,8 +203,17 @@ export class ConversationsStore {
         .returningAll()
         .executeTakeFirstOrThrow();
 
-      return decodeConversation(updated);
+      return decodeConversation(saved);
     });
+
+    if (updated) {
+      this.#events?.emit({
+        type: "conversation_update",
+        data: { sessionId: updated.sessionId },
+      });
+    }
+
+    return updated;
   }
 
   public async compact(
@@ -212,7 +224,7 @@ export class ConversationsStore {
   ): Promise<boolean> {
     const now = Date.now();
 
-    return this.#database.writeTx(async (trx) => {
+    const compacted = await this.#database.writeTx(async (trx) => {
       const row = await trx
         .selectFrom("conversations")
         .selectAll()
@@ -245,12 +257,21 @@ export class ConversationsStore {
 
       return true;
     });
+
+    if (compacted) {
+      this.#events?.emit({
+        type: "conversation_update",
+        data: { sessionId },
+      });
+    }
+
+    return compacted;
   }
 
   public async reset(afterMessageId = 0): Promise<ConversationRecord> {
     const now = Date.now();
 
-    return this.#database.writeTx(async (trx) => {
+    const record = await this.#database.writeTx(async (trx) => {
       const values = {
         chat_key: GLOBAL_CONVERSATION_KEY,
         session_id: randomUUID(),
@@ -270,6 +291,13 @@ export class ConversationsStore {
 
       return decodeConversation(row);
     });
+
+    this.#events?.emit({
+      type: "conversation_update",
+      data: { sessionId: record.sessionId },
+    });
+
+    return record;
   }
 
   async #ensureRow(trx: BerryDb, now: number): Promise<void> {

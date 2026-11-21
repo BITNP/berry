@@ -360,4 +360,14 @@ export type AdminEvent =
   | {
       type: "job_update";
       data: { id: number; kind: JobKind; chatKey: string; state: string };
-    };
+    }
+  | {
+      type: "message_update";
+      data: { chatKey: ChatKey; messageId: number | null };
+    }
+  | {
+      type: "memory_update";
+      data: { scope: MemoryScope; ownerId: string; key: string };
+    }
+  | { type: "schedule_update"; data: { id: string } }
+  | { type: "conversation_update"; data: { sessionId: string } };

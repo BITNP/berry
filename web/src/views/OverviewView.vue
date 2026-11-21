@@ -20,7 +20,7 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
-import { useEventStream } from "../composables/useEventStream.ts";
+import { useLiveRefresh } from "../composables/useEventStream.ts";
 import type { LlmCallRow } from "../utils/ai.ts";
 import { prettyMaybeJson, purposeMeta } from "../utils/ai.ts";
 import { formatBytes, formatPercent, formatTime } from "../utils/format.ts";
@@ -198,15 +198,10 @@ const deliveryStatusLabel: Record<
   failed: { text: "失败", type: "error" },
 };
 
-useEventStream((type) => {
-  if (
-    type === "job_update" ||
-    type === "delivery_update" ||
-    type === "gate_decision" ||
-    type === "llm_call"
-  ) {
-    void loadAll();
-  }
+useLiveRefresh({
+  events: ["job_update", "delivery_update", "gate_decision", "llm_call"],
+  debounceMs: 400,
+  refresh: () => loadAll(),
 });
 
 onMounted(() => {

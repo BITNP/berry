@@ -8,6 +8,7 @@ import type {
   OneBotSegment,
 } from "../types.ts";
 import { makeChatKey } from "../types.ts";
+import type { EventBus } from "../utils/logger.ts";
 import type { BerryDatabase } from "./database.ts";
 import type { BerryTables } from "./schema.ts";
 
@@ -49,18 +50,20 @@ export interface CaptureMessageInput {
 
 export class MessagesStore {
   #database: BerryDatabase;
+  #events?: EventBus;
 
-  constructor(database: BerryDatabase) {
+  constructor(database: BerryDatabase, events?: EventBus) {
     this.#database = database;
+    this.#events = events;
   }
 
-  public capture(
+  public async capture(
     input: CaptureMessageInput,
   ): Promise<{ message: MessageRecord; created: boolean }> {
     const chatKey = makeChatKey(input.kind, input.chatId);
     const receivedAt = input.receivedAt ?? Date.now();
 
-    return this.#database.writeTx(async (trx) => {
+    const result = await this.#database.writeTx(async (trx) => {
       const existing = await trx
         .selectFrom("messages")
         .selectAll()
@@ -109,6 +112,15 @@ export class MessagesStore {
 
       return { message: decodeMessage(row), created: true };
     });
+
+    if (result.created) {
+      this.#events?.emit({
+        type: "message_update",
+        data: { chatKey, messageId: result.message.id },
+      });
+    }
+
+    return result;
   }
 
   public async get(id: number): Promise<MessageRecord | null> {
@@ -165,18 +177,27 @@ export class MessagesStore {
   }
 
   public async markRecalled(
-    chatKey: string,
+    chatKey: ChatKey,
     onebotMessageId: string,
     recalledAt: number,
   ): Promise<void> {
-    await this.#database.writeTx(async (trx) => {
-      await trx
+    const changed = await this.#database.writeTx(async (trx) => {
+      const res = await trx
         .updateTable("messages")
         .set({ recalled_at: recalledAt })
         .where("chat_key", "=", chatKey)
         .where("onebot_message_id", "=", onebotMessageId)
-        .execute();
+        .executeTakeFirst();
+
+      return Number(res.numUpdatedRows) > 0;
     });
+
+    if (changed) {
+      this.#events?.emit({
+        type: "message_update",
+        data: { chatKey, messageId: null },
+      });
+    }
   }
 
   public async recent(

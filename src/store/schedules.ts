@@ -5,6 +5,7 @@ import type { Selectable } from "kysely";
 
 import type { ChatKind, ScheduleRecord, ScheduleSpec } from "../types.ts";
 import { makeChatKey } from "../types.ts";
+import type { EventBus } from "../utils/logger.ts";
 import type { BerryDatabase } from "./database.ts";
 import type { BerryTables } from "./schema.ts";
 
@@ -183,9 +184,11 @@ const decodeSchedule = (
 
 export class SchedulesStore {
   #database: BerryDatabase;
+  #events?: EventBus;
 
-  constructor(database: BerryDatabase) {
+  constructor(database: BerryDatabase, events?: EventBus) {
     this.#database = database;
+    this.#events = events;
   }
 
   public async list(): Promise<ScheduleRecord[]> {
@@ -249,7 +252,14 @@ export class SchedulesStore {
         .executeTakeFirstOrThrow(),
     );
 
-    return decodeSchedule(row);
+    const record = decodeSchedule(row);
+
+    this.#events?.emit({
+      type: "schedule_update",
+      data: { id: record.id },
+    });
+
+    return record;
   }
 
   public async update(
@@ -300,11 +310,20 @@ export class SchedulesStore {
         .executeTakeFirst(),
     );
 
-    return row ? decodeSchedule(row) : null;
+    const record = row ? decodeSchedule(row) : null;
+
+    if (record) {
+      this.#events?.emit({
+        type: "schedule_update",
+        data: { id: record.id },
+      });
+    }
+
+    return record;
   }
 
   public async remove(id: string): Promise<boolean> {
-    return this.#database.writeTx(async (trx) => {
+    const deleted = await this.#database.writeTx(async (trx) => {
       const res = await trx
         .deleteFrom("schedules")
         .where("id", "=", id)
@@ -312,6 +331,15 @@ export class SchedulesStore {
 
       return Number(res.numDeletedRows) > 0;
     });
+
+    if (deleted) {
+      this.#events?.emit({
+        type: "schedule_update",
+        data: { id },
+      });
+    }
+
+    return deleted;
   }
 
   public async due(now = Date.now()): Promise<ScheduleRecord[]> {
@@ -346,6 +374,11 @@ export class SchedulesStore {
         })
         .where("id", "=", record.id)
         .execute();
+    });
+
+    this.#events?.emit({
+      type: "schedule_update",
+      data: { id: record.id },
     });
   }
 }

@@ -1,6 +1,7 @@
 import type { Selectable } from "kysely";
 
 import type { MemoryRecord, MemoryScope } from "../types.ts";
+import type { EventBus } from "../utils/logger.ts";
 import type { BerryDatabase } from "./database.ts";
 import type { BerryTables } from "./schema.ts";
 
@@ -22,9 +23,11 @@ const normalizeOwner = (scope: MemoryScope, ownerId: string): string =>
 
 export class MemoriesStore {
   #database: BerryDatabase;
+  #events?: EventBus;
 
-  constructor(database: BerryDatabase) {
+  constructor(database: BerryDatabase, events?: EventBus) {
     this.#database = database;
+    this.#events = events;
   }
 
   public async index(
@@ -112,7 +115,7 @@ export class MemoriesStore {
     const now = Date.now();
     const ownerId = normalizeOwner(input.scope, input.ownerId);
 
-    return this.#database.writeTx(async (trx) => {
+    const record = await this.#database.writeTx(async (trx) => {
       const row = await trx
         .insertInto("memories")
         .values({
@@ -137,6 +140,13 @@ export class MemoriesStore {
 
       return decodeMemory(row);
     });
+
+    this.#events?.emit({
+      type: "memory_update",
+      data: { scope: record.scope, ownerId: record.ownerId, key: record.key },
+    });
+
+    return record;
   }
 
   public async remove(
@@ -146,7 +156,7 @@ export class MemoriesStore {
   ): Promise<boolean> {
     const normalizedOwner = normalizeOwner(scope, ownerId);
 
-    return this.#database.writeTx(async (trx) => {
+    const deleted = await this.#database.writeTx(async (trx) => {
       const res = await trx
         .deleteFrom("memories")
         .where("scope", "=", scope)
@@ -156,5 +166,14 @@ export class MemoriesStore {
 
       return Number(res.numDeletedRows) > 0;
     });
+
+    if (deleted) {
+      this.#events?.emit({
+        type: "memory_update",
+        data: { scope, ownerId: normalizedOwner, key },
+      });
+    }
+
+    return deleted;
   }
 }
