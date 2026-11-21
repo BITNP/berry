@@ -62,10 +62,6 @@ export class Store {
     return new Store(database, events);
   }
 
-  public get knowledgeDir(): string {
-    return this.database.knowledgeDir;
-  }
-
   public get assetsDir(): string {
     return this.database.assetsDir;
   }

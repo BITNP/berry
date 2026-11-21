@@ -23,7 +23,7 @@ docker compose up -d --build
 | `BERRY_KEYCLOAK_ADMIN_URL` / `BERRY_KEYCLOAK_CLIENT_*`                    | Keycloak Admin API，用于 QQ 号及成员身份双向查询                                                           |
 | `BERRY_GUILD_API_URL` / `BERRY_GUILD_INTERNAL_TOKEN`                      | `guild-go` 内部服务接口（用于节点协作、SSE 事件流、到期提醒及周报）                                        |
 
-端口默认绑定 `127.0.0.1:3220`，生产环境通过反向代理对外提供 HTTPS。运行数据（SQLite、媒体缓存、知识库 `knowledge/`、记事本 `notebooks/`）保存在 `data/` 目录。
+端口默认绑定 `127.0.0.1:3220`，生产环境通过反向代理对外提供 HTTPS。运行数据（SQLite 与媒体/头像缓存）保存在 `data/` 目录。
 
 ## 本地开发
 

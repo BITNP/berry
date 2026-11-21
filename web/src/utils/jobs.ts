@@ -88,7 +88,7 @@ export function jobActionLinks(job: {
 
     case "guild_task": {
       const items: JobActionLink[] = [
-        { label: "前往公会联动", to: routes.guild() },
+        { label: "公会联动设置", to: routes.settings("guild") },
       ];
 
       if (job.payload.task === "weekly") {

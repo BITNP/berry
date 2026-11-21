@@ -375,7 +375,7 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
   )?.kind;
 
   assert.ok(kindProp?.enum?.includes("ops_inspector"));
-  assert.ok(kindProp?.enum?.includes("knowledge_operator"));
+  assert.ok(kindProp?.enum?.includes("chat_analyst"));
   assert.ok(!kindProp?.enum?.includes("bunko_operator"));
   assert.ok(!kindProp?.enum?.includes("mcp_operator"));
 
@@ -402,7 +402,6 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
       store: app.store,
       gateway: app.gateway,
       media: app.media,
-      knowledge: app.knowledge,
       bunko: app.bunko,
       shortlink: app.shortlink,
       directory: app.directory,

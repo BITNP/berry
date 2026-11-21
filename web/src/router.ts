@@ -49,17 +49,6 @@ export const router = createRouter({
       meta: { title: "长期记忆" },
     },
     {
-      path: "/guild",
-      component: () => import("./views/GuildView.vue"),
-      meta: { title: "公会联动" },
-    },
-    {
-      path: "/docs",
-      component: () => import("./views/DocsView.vue"),
-      meta: { title: "资料库" },
-    },
-    { path: "/workspace", redirect: "/docs" },
-    {
       path: "/schedules",
       component: () => import("./views/SchedulesView.vue"),
       meta: { title: "定时任务" },

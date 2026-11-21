@@ -133,14 +133,6 @@ const deleteMemoryQuerySchema = Type.Object({
   key: Type.String({ default: "" }),
 });
 
-const lookupQuerySchema = Type.Object({
-  q: Type.String({ default: "" }),
-});
-
-const docReadQuerySchema = Type.Object({
-  path: Type.String({ default: "" }),
-});
-
 const triggerModeSchema = Type.Union([
   Type.Literal("off"),
   Type.Literal("mention_only"),
@@ -364,7 +356,9 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         todayUsage,
         guildApiConfigured: berry.guild.enabled,
         guildStreamConnected: berry.guildAutomation.streamConnected,
+        guildPublicUrl: berry.env.guildPublicUrl,
         bunkoConfigured: berry.bunko.enabled,
+        bunkoWorkspaceUrl: berry.bunko.workspaceUrl(),
         keycloakConfigured: berry.directory.enabled,
         mcpServers: berry.mcp.statuses,
         storage: storageSummary,
@@ -801,20 +795,6 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     }),
   );
 
-  router.get(
-    "/api/admin/guild/status",
-    defineEventHandler(async (event) => {
-      await berry.auth.requireAdmin(event);
-
-      return {
-        apiConfigured: berry.guild.enabled,
-        streamConnected: berry.guildAutomation.streamConnected,
-        publicUrl: berry.env.guildPublicUrl,
-        cursors: await berry.store.cursors.list(),
-      };
-    }),
-  );
-
   router.post(
     "/api/admin/guild/trigger/:task",
     defineEventHandler(async (event) => {
@@ -838,32 +818,6 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         jobId: job.id,
         state: job.state,
         task,
-      };
-    }),
-  );
-
-  router.get(
-    "/api/admin/guild/audit-logs",
-    defineEventHandler(async (event) => {
-      await berry.auth.requireAdmin(event);
-
-      return { items: await berry.store.guildAudit.list(100) };
-    }),
-  );
-
-  router.get(
-    "/api/admin/identity/lookup",
-    defineEventHandler(async (event) => {
-      await berry.auth.requireAdmin(event);
-      const { q } = await parseQuery(event, lookupQuerySchema);
-
-      if (!berry.directory.enabled) {
-        return { enabled: false, items: [] };
-      }
-
-      return {
-        enabled: true,
-        items: q ? await berry.directory.searchMembers(q) : [],
       };
     }),
   );
@@ -929,32 +883,6 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       }
 
       return { queued: true };
-    }),
-  );
-
-  router.get(
-    "/api/admin/docs",
-    defineEventHandler(async (event) => {
-      await berry.auth.requireAdmin(event);
-
-      return {
-        items: await berry.knowledge.listFiles(),
-        bunkoConfigured: berry.bunko.enabled,
-        bunkoWorkspaceUrl: berry.bunko.workspaceUrl(),
-      };
-    }),
-  );
-
-  router.get(
-    "/api/admin/docs/content",
-    defineEventHandler(async (event) => {
-      await berry.auth.requireAdmin(event);
-      const { path } = await parseQuery(event, docReadQuerySchema);
-
-      return {
-        path,
-        content: await berry.knowledge.readRaw(path),
-      };
     }),
   );
 
@@ -1025,6 +953,8 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
           oidcIssuer: berry.env.oidcIssuer,
           guildApiUrl: berry.env.guildApiUrl,
           guildPublicUrl: berry.env.guildPublicUrl,
+          guildConfigured: berry.guild.enabled,
+          guildStreamConnected: berry.guildAutomation.streamConnected,
           bunkoApiUrl: berry.env.bunkoApiUrl,
           bunkoPublicUrl: berry.bunko.workspaceUrl(),
           bunkoConfigured: berry.bunko.enabled,

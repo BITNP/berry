@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Plus, RefreshCw, Save, Trash2 } from "@lucide/vue";
+import { ExternalLink, Plus, RefreshCw, Save, Trash2 } from "@lucide/vue";
 import type { DataTableColumns } from "naive-ui";
 import {
   NAlert,
@@ -132,6 +132,8 @@ interface EnvSummaryView {
   oidcIssuer: string;
   guildApiUrl: string;
   guildPublicUrl: string;
+  guildConfigured: boolean;
+  guildStreamConnected: boolean;
   bunkoApiUrl: string;
   bunkoPublicUrl: string;
   bunkoConfigured: boolean;
@@ -221,6 +223,7 @@ const storage = ref<StorageSummary | null>(null);
 const purging = ref(false);
 const purgeDays = ref(30);
 const lastPurge = ref<PurgeResult | null>(null);
+const triggeringGuild = ref<"due" | "assignments" | "weekly" | null>(null);
 
 const customWeeklyEnabled = ref(false);
 const weeklyDays = ref<string[]>(["sun"]);
@@ -379,6 +382,33 @@ async function loadSettings() {
     message.error(err instanceof Error ? err.message : "加载设置失败");
   } finally {
     loading.value = false;
+  }
+}
+
+async function triggerGuildTask(task: "due" | "assignments" | "weekly") {
+  const labels = {
+    due: "到期提醒",
+    assignments: "新指派通知",
+    weekly: "生成周报",
+  };
+
+  triggeringGuild.value = task;
+
+  try {
+    const res = await apiFetch<{ alreadyActive: boolean; jobId: number }>(
+      `/api/admin/guild/trigger/${task}`,
+      { method: "POST" },
+    );
+
+    if (res.alreadyActive) {
+      message.info(`「${labels[task]}」已在后台运行中（任务 #${res.jobId}）`);
+    } else {
+      message.success(`已入队「${labels[task]}」（任务 #${res.jobId}）`);
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : "触发公会任务失败");
+  } finally {
+    triggeringGuild.value = null;
   }
 }
 
@@ -1069,6 +1099,29 @@ onMounted(() => {
         </NTabPane>
 
         <NTabPane name="digest" tab="群聊摘要">
+          <div v-if="envSummary" class="filter-bar mb-md">
+            <NTag
+              size="small"
+              :type="envSummary.bunkoConfigured ? 'success' : 'default'"
+            >
+              Bunko 云文档：{{
+                envSummary.bunkoConfigured ? "已接入" : "未配置"
+              }}
+            </NTag>
+            <NButton
+              v-if="envSummary.bunkoPublicUrl"
+              :href="envSummary.bunkoPublicUrl"
+              rel="noopener noreferrer"
+              size="small"
+              tag="a"
+              target="_blank"
+            >
+              <template #icon>
+                <ExternalLink :size="14" />
+              </template>
+              打开 Bunko 云文档
+            </NButton>
+          </div>
           <NForm class="form-narrow" label-placement="top" size="small">
             <div class="form-grid-2">
               <NFormItem label="定期生成群聊讨论摘要">
@@ -1121,6 +1174,61 @@ onMounted(() => {
         </NTabPane>
 
         <NTabPane name="guild" tab="公会联动">
+          <div v-if="envSummary" class="filter-bar mb-md">
+            <NTag
+              size="small"
+              :type="envSummary.guildConfigured ? 'success' : 'default'"
+            >
+              公会接口：{{ envSummary.guildConfigured ? "已就绪" : "未配置" }}
+            </NTag>
+            <NTag
+              size="small"
+              :type="envSummary.guildStreamConnected ? 'success' : 'default'"
+            >
+              实时事件流：{{
+                envSummary.guildStreamConnected ? "已连接" : "未连接"
+              }}
+            </NTag>
+            <NButton
+              v-if="envSummary.guildPublicUrl"
+              :href="envSummary.guildPublicUrl"
+              rel="noopener noreferrer"
+              size="small"
+              tag="a"
+              target="_blank"
+            >
+              <template #icon>
+                <ExternalLink :size="14" />
+              </template>
+              打开公会看板
+            </NButton>
+            <NButton
+              :disabled="!envSummary.guildConfigured"
+              :loading="triggeringGuild === 'due'"
+              size="small"
+              @click="triggerGuildTask('due')"
+            >
+              触发到期提醒
+            </NButton>
+            <NButton
+              :disabled="!envSummary.guildConfigured"
+              :loading="triggeringGuild === 'assignments'"
+              size="small"
+              @click="triggerGuildTask('assignments')"
+            >
+              触发新指派通知
+            </NButton>
+            <NButton
+              :disabled="
+                !envSummary.guildConfigured || !envSummary.bunkoConfigured
+              "
+              :loading="triggeringGuild === 'weekly'"
+              size="small"
+              @click="triggerGuildTask('weekly')"
+            >
+              生成本周周报
+            </NButton>
+          </div>
           <NForm class="form-narrow" label-placement="top" size="small">
             <div class="form-grid-2">
               <NFormItem label="开启公会自动巡检">

@@ -44,7 +44,6 @@ export const routes = {
     path: "/ai",
     query: cleanQuery(query),
   }),
-  guild: (): RouteLocationRaw => ({ path: "/guild" }),
   memories: (): RouteLocationRaw => ({ path: "/memories" }),
   settings: (tab?: SettingsTab): RouteLocationRaw => ({
     path: "/settings",

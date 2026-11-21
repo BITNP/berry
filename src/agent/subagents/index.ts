@@ -1,7 +1,6 @@
 import { bunkoOperatorSubagent } from "./bunko-operator.ts";
 import { chatAnalystSubagent } from "./chat-analyst.ts";
 import { guildOperatorSubagent } from "./guild-operator.ts";
-import { knowledgeOperatorSubagent } from "./knowledge-operator.ts";
 import { mcpOperatorSubagent } from "./mcp-operator.ts";
 import { SubagentRegistry } from "./registry.ts";
 
@@ -13,6 +12,5 @@ export const createDefaultSubagentRegistry = (): SubagentRegistry =>
     chatAnalystSubagent,
     guildOperatorSubagent,
     bunkoOperatorSubagent,
-    knowledgeOperatorSubagent,
     mcpOperatorSubagent,
   );

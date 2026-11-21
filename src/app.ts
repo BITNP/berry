@@ -19,7 +19,6 @@ import { GuildInternalClient } from "./guild/client.ts";
 import { IdentityDirectory } from "./identity/keycloak.ts";
 import type { JobRegistry } from "./jobs/index.ts";
 import { createDefaultJobRegistry } from "./jobs/index.ts";
-import { KnowledgeBase } from "./knowledge/files.ts";
 import { McpHub } from "./mcp/hub.ts";
 import { MediaProcessor } from "./media/processor.ts";
 import { ScheduleRunner } from "./scheduler/runner.ts";
@@ -45,7 +44,6 @@ export class BerryApp {
   public readonly guild: GuildInternalClient;
   public readonly bunko: BunkoClient;
   public readonly shortlink: ShortLinkClient;
-  public readonly knowledge: KnowledgeBase;
   public readonly mcp: McpHub;
   public readonly classifier: SmallModelClassifier;
   public readonly gate: MessageGate;
@@ -76,7 +74,6 @@ export class BerryApp {
     guild: GuildInternalClient;
     bunko: BunkoClient;
     shortlink: ShortLinkClient;
-    knowledge: KnowledgeBase;
     mcp: McpHub;
     classifier: SmallModelClassifier;
     gate: MessageGate;
@@ -102,7 +99,6 @@ export class BerryApp {
     this.guild = options.guild;
     this.bunko = options.bunko;
     this.shortlink = options.shortlink;
-    this.knowledge = options.knowledge;
     this.mcp = options.mcp;
     this.classifier = options.classifier;
     this.gate = options.gate;
@@ -137,7 +133,6 @@ export class BerryApp {
     const guild = new GuildInternalClient(env);
     const bunko = new BunkoClient(env);
     const shortlink = new ShortLinkClient(env.shortlinkOrigin);
-    const knowledge = new KnowledgeBase(store.knowledgeDir);
     const mcp = new McpHub();
     const classifier = new SmallModelClassifier(store);
 
@@ -162,7 +157,6 @@ export class BerryApp {
       store,
       gateway,
       media,
-      knowledge,
       bunko,
       shortlink,
       directory,
@@ -231,7 +225,6 @@ export class BerryApp {
       guild,
       bunko,
       shortlink,
-      knowledge,
       mcp,
       classifier,
       gate,

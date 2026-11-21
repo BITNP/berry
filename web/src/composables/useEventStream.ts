@@ -4,7 +4,6 @@ import { onMounted, onUnmounted, ref, watch } from "vue";
 export type AdminEventType =
   | "gate_decision"
   | "delivery_update"
-  | "guild_audit"
   | "llm_call"
   | "job_update"
   | "log"
@@ -16,7 +15,6 @@ export type AdminEventType =
 const EVENT_TYPES: readonly AdminEventType[] = [
   "gate_decision",
   "delivery_update",
-  "guild_audit",
   "llm_call",
   "job_update",
   "log",

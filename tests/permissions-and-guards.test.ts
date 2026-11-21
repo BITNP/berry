@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -19,10 +17,6 @@ import {
   guildListTreeTool,
   guildTools,
 } from "../src/tools/guild.ts";
-import {
-  listKnowledgeFilesTool,
-  readKnowledgeLinesTool,
-} from "../src/tools/knowledge.ts";
 import { mcpToolProvider } from "../src/tools/mcp.ts";
 import { memoryManageTool } from "../src/tools/memory.ts";
 import { qqDirectoryTool } from "../src/tools/qq.ts";
@@ -48,7 +42,6 @@ const makeServices = (
   store: app.store,
   gateway: app.gateway,
   media: app.media,
-  knowledge: app.knowledge,
   bunko: app.bunko,
   shortlink: app.shortlink,
   directory: app.directory,
@@ -63,7 +56,7 @@ const makeCtx = (
   actor: ToolActor,
 ): ToolContext => ({ services, ids, actor });
 
-test("two-tier tool guards enforce privileged vs standard boundaries across chats, knowledge/notebook, memory, schedule, guild, and qq_directory", async (t) => {
+test("two-tier tool guards enforce privileged vs standard boundaries across chats, MCP, memory, schedule, guild, and qq_directory", async (t) => {
   const guildStub = await startStubServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     if (req.url === "/api/internal/nodes" && req.method === "GET") {
@@ -125,12 +118,6 @@ test("two-tier tool guards enforce privileged vs standard boundaries across chat
     t,
   );
   const services = makeServices(app);
-
-  await writeFile(
-    join(app.store.knowledgeDir, "guide.md"),
-    "# 网协公开指南\n你好",
-    "utf8",
-  );
 
   await app.store.chats.upsert({
     kind: "group",
@@ -435,20 +422,7 @@ test("two-tier tool guards enforce privileged vs standard boundaries across chat
     /禁止删除其他会话/,
   );
 
-  // 4) Workspace: knowledge/ is read-only for everyone; MCP tools require privileged role.
-  const stdFiles = (await listKnowledgeFilesTool
-    .bind(makeCtx(services, ids, memberActor))
-    .execute({})) as { path: string }[];
-
-  assert.equal(
-    stdFiles.some((f) => f.path === "guide.md"),
-    true,
-  );
-  const stdRead = (await readKnowledgeLinesTool
-    .bind(makeCtx(services, ids, memberActor))
-    .execute({ path: "guide.md" })) as { content: string };
-
-  assert.match(stdRead.content, /网协公开指南/);
+  // 4) MCP tools require privileged role.
   assert.deepEqual(
     mcpToolProvider.resolve(makeCtx(services, ids, memberActor)),
     [],

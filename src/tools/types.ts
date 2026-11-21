@@ -5,7 +5,6 @@ import type { RuntimeSettings } from "../config/settings.ts";
 import type { MessageGatewayClient } from "../gateway/client.ts";
 import type { GuildInternalClient } from "../guild/client.ts";
 import type { IdentityDirectory } from "../identity/keycloak.ts";
-import type { KnowledgeBase } from "../knowledge/files.ts";
 import type { McpHub } from "../mcp/hub.ts";
 import type { MediaProcessor } from "../media/processor.ts";
 import type { Store } from "../store/index.ts";
@@ -16,7 +15,6 @@ export interface AgentServices {
   store: Store;
   gateway: MessageGatewayClient;
   media: MediaProcessor;
-  knowledge: KnowledgeBase;
   bunko: BunkoClient;
   shortlink: ShortLinkClient;
   directory: IdentityDirectory;

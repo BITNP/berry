@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import {
-  BookOpen,
   Brain,
   Clock,
   Cpu,
-  GitBranch,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -95,8 +93,6 @@ const menuOptions: MenuOption[] = [
     children: [
       { key: "/chats", label: "会话", icon: renderIcon(MessagesSquare) },
       { key: "/memories", label: "记忆", icon: renderIcon(Brain) },
-      { key: "/guild", label: "公会", icon: renderIcon(GitBranch) },
-      { key: "/docs", label: "资料库", icon: renderIcon(BookOpen) },
       { key: "/schedules", label: "定时", icon: renderIcon(Clock) },
       { key: "/settings", label: "设置", icon: renderIcon(SlidersHorizontal) },
     ],

@@ -11,7 +11,6 @@ import { migrateBerryDatabase } from "./schema.ts";
 export class BerryDatabase {
   public readonly db: BerryDb;
   public readonly dataDir: string;
-  public readonly knowledgeDir: string;
   public readonly assetsDir: string;
   public readonly avatarsDir: string;
   #sqlite: DatabaseSync;
@@ -22,7 +21,6 @@ export class BerryDatabase {
     sqlite: DatabaseSync,
     dirs: {
       dataDir: string;
-      knowledgeDir: string;
       assetsDir: string;
       avatarsDir: string;
     },
@@ -30,19 +28,16 @@ export class BerryDatabase {
     this.db = db;
     this.#sqlite = sqlite;
     this.dataDir = dirs.dataDir;
-    this.knowledgeDir = dirs.knowledgeDir;
     this.assetsDir = dirs.assetsDir;
     this.avatarsDir = dirs.avatarsDir;
   }
 
   public static async open(dataDir: string): Promise<BerryDatabase> {
-    const knowledgeDir = join(dataDir, "knowledge");
     const assetsDir = join(dataDir, "assets");
     const avatarsDir = join(dataDir, "avatars");
 
     await Promise.all([
       mkdir(dataDir, { recursive: true }),
-      mkdir(knowledgeDir, { recursive: true }),
       mkdir(join(assetsDir, "images"), { recursive: true }),
       mkdir(avatarsDir, { recursive: true }),
     ]);
@@ -86,7 +81,6 @@ export class BerryDatabase {
 
     return new BerryDatabase(db, sqlite, {
       dataDir,
-      knowledgeDir,
       assetsDir,
       avatarsDir,
     });

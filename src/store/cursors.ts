@@ -30,20 +30,4 @@ export class CursorsStore {
         .execute();
     });
   }
-
-  public async list(): Promise<
-    { name: string; value: string; updatedAt: number }[]
-  > {
-    const rows = await this.#database.db
-      .selectFrom("cursors")
-      .selectAll()
-      .orderBy("name", "asc")
-      .execute();
-
-    return rows.map((row) => ({
-      name: row.name,
-      value: row.value,
-      updatedAt: row.updated_at,
-    }));
-  }
 }

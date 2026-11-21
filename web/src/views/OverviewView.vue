@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, RefreshCw, RotateCcw } from "@lucide/vue";
+import { ArrowRight, ExternalLink, RefreshCw, RotateCcw } from "@lucide/vue";
 import {
   NAlert,
   NButton,
@@ -52,6 +52,9 @@ interface OverviewResponse {
   };
   guildApiConfigured: boolean;
   guildStreamConnected: boolean;
+  guildPublicUrl: string;
+  bunkoConfigured: boolean;
+  bunkoWorkspaceUrl: string;
   keycloakConfigured: boolean;
   mcpServers: McpStatus[];
   storage: {
@@ -389,6 +392,14 @@ onMounted(() => {
         <NTag
           class="status-link"
           size="small"
+          :type="overview.bunkoConfigured ? 'success' : 'default'"
+          @click="router.push('/settings?tab=digest')"
+        >
+          Bunko 云文档：{{ overview.bunkoConfigured ? "已接入" : "未配置" }}
+        </NTag>
+        <NTag
+          class="status-link"
+          size="small"
           :type="overview.keycloakConfigured ? 'success' : 'default'"
           @click="router.push('/settings?tab=bot')"
         >
@@ -403,6 +414,34 @@ onMounted(() => {
           MCP 服务：{{ connectedMcpCount }} /
           {{ overview.mcpServers.length }} 在线
         </NTag>
+        <NButton
+          v-if="overview.guildPublicUrl"
+          :href="overview.guildPublicUrl"
+          quaternary
+          rel="noopener noreferrer"
+          size="tiny"
+          tag="a"
+          target="_blank"
+        >
+          <template #icon>
+            <ExternalLink :size="12" />
+          </template>
+          打开公会看板
+        </NButton>
+        <NButton
+          v-if="overview.bunkoWorkspaceUrl"
+          :href="overview.bunkoWorkspaceUrl"
+          quaternary
+          rel="noopener noreferrer"
+          size="tiny"
+          tag="a"
+          target="_blank"
+        >
+          <template #icon>
+            <ExternalLink :size="12" />
+          </template>
+          打开 Bunko 云文档
+        </NButton>
       </NSpace>
     </NCard>
 
