@@ -1,10 +1,11 @@
 services:
   berry:
-    build: .
+    image: ghcr.io/bitnp/berry:latest
     restart: unless-stopped
     env_file:
       - .env
     environment:
+      TZ: Asia/Shanghai
       BERRY_HOST: 0.0.0.0
       BERRY_PORT: 3220
       BERRY_DATA_DIR: /app/data

@@ -16,6 +16,12 @@ RUN pnpm build && pnpm prune --prod
 
 FROM node:24-bookworm-slim
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends tzdata ca-certificates \
+  && ln -snf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
+  && echo Asia/Shanghai > /etc/timezone \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/third_party ./third_party
