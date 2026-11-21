@@ -395,9 +395,24 @@ test("BERRY_ALLOWED_GROUPS restricts group events, group listing, and outbound g
     message: "私聊测试",
     sender: { nickname: "私聊用户" },
   });
+  // Group temporary sessions carry group_id (possibly a non-whitelisted jump group or 0)
+  // and must NOT be dropped by allowedGroups.
+  const tempSessionMsg = await app.gatewayEvents.handleEvent({
+    post_type: "message",
+    message_type: "private",
+    sub_type: "group",
+    group_id: 200,
+    user_id: 556,
+    message_id: "m-temp-1",
+    time: Math.floor(Date.now() / 1000),
+    message: "群临时会话测试",
+    sender: { nickname: "临时会话用户" },
+  });
 
   assert.ok(allowedMsg.accepted && allowedMsg.messageId);
   assert.ok(privateMsg.accepted && privateMsg.messageId);
+  assert.ok(tempSessionMsg.accepted && tempSessionMsg.messageId);
+  assert.ok(await app.store.chats.get("private:556"));
 
   // getGroupList filters to allowedGroups.
   const groups = await app.gateway.getGroupList();

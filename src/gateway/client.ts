@@ -950,6 +950,18 @@ export class MessageGatewayClient {
       onebotMessageId,
     });
     const { kind, chatId } = parseChatKey(ctx.chatKey);
+    const settings = this.#getSettings?.();
+
+    await this.#store.chats.ensure(kind, chatId, {
+      enabled:
+        kind === "group"
+          ? (settings?.policy.groupDefaultMode ?? "mention_only") !== "off"
+          : (settings?.policy.privateDefaultEnabled ?? true),
+      triggerMode:
+        kind === "group"
+          ? (settings?.policy.groupDefaultMode ?? "mention_only")
+          : "smart_observe",
+    });
 
     await this.#store.messages.capture({
       kind,

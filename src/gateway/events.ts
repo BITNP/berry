@@ -190,8 +190,15 @@ export class GatewayEventSubscriber {
       return { accepted: true, reason: "meta_event" };
     }
 
+    const isGroupEvent =
+      payload.message_type === "group" ||
+      (payload.post_type === "notice" &&
+        payload.notice_type !== "friend_recall" &&
+        payload.group_id !== undefined);
     const eventGroupId =
-      payload.group_id === undefined ? "" : String(payload.group_id);
+      isGroupEvent && payload.group_id !== undefined
+        ? String(payload.group_id)
+        : "";
 
     if (eventGroupId && !isGroupAllowed(this.#getSettings(), eventGroupId)) {
       return { accepted: true, reason: "group_restricted" };
