@@ -870,6 +870,7 @@ test("MessageGatewayClient caches login info until cleared on WS reconnect and c
 test("chat titles and temporary-session sender names resolve via OneBot info APIs and backfill empty titles", async (t) => {
   let groupInfoCalls = 0;
   let strangerInfoCalls = 0;
+  let memberListCalls = 0;
 
   const stub = await startStubServer((req, res, bodyText) => {
     const body = bodyText
@@ -972,6 +973,26 @@ test("chat titles and temporary-session sender names resolve via OneBot info API
       return;
     }
 
+    if (req.url === "/api/v1/accounts/qq/get_group_member_list") {
+      memberListCalls++;
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: [
+            { user_id: 1_215_926_530, nickname: "Kat", card: "Kat" },
+            {
+              user_id: 2_832_265_139,
+              nickname: "郭逸戈",
+              card: "郭逸戈-群呆唯",
+            },
+          ],
+        }),
+      );
+
+      return;
+    }
+
     res.statusCode = 404;
     res.end();
   }, t);
@@ -988,17 +1009,20 @@ test("chat titles and temporary-session sender names resolve via OneBot info API
     t,
   );
 
-  // 1. Live group event resolves group title once and caches it.
+  // 1. Live group event resolves group title and @mention member names once and caches both.
   await app.gatewayEvents.handleEvent({
     post_type: "message",
     message_type: "group",
     group_id: 1_054_204_419,
-    user_id: 1_215_926_530,
+    user_id: 2_022_265_139,
     self_id: 3_173_748_223,
     message_id: "live-g-1",
     time: 1_700_000_010,
-    message: "群消息 1",
-    sender: { card: "技术部-Kat" },
+    message: [
+      { type: "at", data: { qq: "1215926530" } },
+      { type: "text", data: { text: " 现在间隔多少？" } },
+    ],
+    sender: { card: "胡皓宇" },
   });
   await app.gatewayEvents.handleEvent({
     post_type: "message",
@@ -1008,15 +1032,31 @@ test("chat titles and temporary-session sender names resolve via OneBot info API
     self_id: 3_173_748_223,
     message_id: "live-g-2",
     time: 1_700_000_011,
-    message: "群消息 2",
-    sender: { card: "技术部-Kat" },
+    message: [
+      { type: "at", data: { qq: "2832265139" } },
+      { type: "text", data: { text: " 看看这个" } },
+    ],
+    sender: { card: "Kat" },
   });
+
+  const liveG1 = await app.store.messages.findByOnebotId(
+    "group:1054204419",
+    "live-g-1",
+  );
+  const liveG2 = await app.store.messages.findByOnebotId(
+    "group:1054204419",
+    "live-g-2",
+  );
 
   assert.equal(
     (await app.store.chats.get("group:1054204419"))?.title,
     "技术保障中心⚠️",
   );
+  assert.equal(liveG1?.text, "@Kat 现在间隔多少？");
+  assert.equal(liveG1?.segments[0]?.data.name, "Kat");
+  assert.equal(liveG2?.text, "@郭逸戈-群呆唯 看看这个");
   assert.equal(groupInfoCalls, 1);
+  assert.equal(memberListCalls, 1);
 
   // 2. Live and historical temp-session messages replace placeholder "临时会话" for both bot and user.
   await app.gatewayEvents.handleEvent({

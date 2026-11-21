@@ -130,6 +130,11 @@ export class MessageGatewayClient {
     { value: string | null; expiresAt: number }
   >();
 
+  #groupMemberNamesCache = new Map<
+    string,
+    { members: Map<string, string>; ok: boolean; expiresAt: number }
+  >();
+
   constructor(
     env: Pick<EnvConfig, "gatewayUrl" | "gatewayAccount" | "gatewayToken">,
     store: Store,
@@ -234,6 +239,12 @@ export class MessageGatewayClient {
     for (const [key, entry] of this.#userNameCache) {
       if (entry.value === null) {
         this.#userNameCache.delete(key);
+      }
+    }
+
+    for (const [key, entry] of this.#groupMemberNamesCache) {
+      if (!entry.ok) {
+        this.#groupMemberNamesCache.delete(key);
       }
     }
   }
@@ -361,8 +372,100 @@ export class MessageGatewayClient {
     const { body } = await this.callAction<
       { user_id: number; nickname: string; card?: string; role?: string }[]
     >("get_group_member_list", { group_id: Number(groupId) });
+    const members = body.data ?? [];
+    const nameMap = new Map<string, string>();
 
-    return body.data ?? [];
+    for (const member of members) {
+      const name =
+        cleanOneBotName(member.card) ?? cleanOneBotName(member.nickname);
+
+      if (name) {
+        nameMap.set(String(member.user_id), name);
+      }
+    }
+
+    this.#groupMemberNamesCache.set(groupId, {
+      members: nameMap,
+      ok: true,
+      expiresAt: Date.now() + NAME_CACHE_TTL_MS,
+    });
+
+    return members;
+  }
+
+  public async getGroupMemberName(
+    groupId: string,
+    userId: string,
+  ): Promise<string | null> {
+    if (!this.configured) {
+      return null;
+    }
+
+    const now = Date.now();
+    let cached = this.#groupMemberNamesCache.get(groupId);
+
+    if (!cached || cached.expiresAt <= now) {
+      try {
+        await this.getGroupMemberList(groupId);
+        cached = this.#groupMemberNamesCache.get(groupId);
+      } catch {
+        cached = {
+          members: new Map(),
+          ok: false,
+          expiresAt: now + NAME_FAILURE_COOLDOWN_MS,
+        };
+        this.#groupMemberNamesCache.set(groupId, cached);
+      }
+    }
+
+    return (
+      cached?.members.get(userId) ?? (await this.getUserDisplayName(userId))
+    );
+  }
+
+  public async enrichMentionNames(
+    kind: ChatKind,
+    chatId: string,
+    segments: OneBotSegment[],
+    botQQ: string,
+  ): Promise<boolean> {
+    if (!this.configured) {
+      return false;
+    }
+
+    let changed = false;
+
+    for (const seg of segments) {
+      if (seg.type !== "at") {
+        continue;
+      }
+
+      const qq = String(seg.data.qq ?? "").trim();
+
+      if (!qq || qq === "all" || qq === botQQ || !/^\d+$/.test(qq)) {
+        continue;
+      }
+
+      if (
+        cleanOneBotName(
+          typeof seg.data.name === "string" ? seg.data.name : undefined,
+        )
+      ) {
+        continue;
+      }
+
+      const name =
+        kind === "group"
+          ? await this.getGroupMemberName(chatId, qq)
+          : await this.getUserDisplayName(qq);
+
+      if (name) {
+        seg.data.name = name;
+        changed = true;
+      }
+    }
+
+    return changed;
   }
 
   public async getFriendList(): Promise<
@@ -834,6 +937,16 @@ export class MessageGatewayClient {
         botQQ,
         settings?.bot.names[0],
       );
+      const mentionEnriched = await this.enrichMentionNames(
+        kind,
+        chatId,
+        parsed.segments,
+        botQQ,
+      );
+      const messageText = mentionEnriched
+        ? parseOneBotSegments(parsed.segments, botQQ, settings?.bot.names[0])
+            .text
+        : parsed.text;
       const sender = raw.sender as
         { nickname?: string; card?: string } | undefined;
       const isBot = Boolean(botQQ && userId === botQQ);
@@ -854,7 +967,7 @@ export class MessageGatewayClient {
         onebotMessageId,
         userId,
         senderName,
-        text: parsed.text,
+        text: messageText,
         segments: parsed.segments,
         replyToMessageId: parsed.replyToMessageId,
         isBot,

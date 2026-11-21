@@ -300,6 +300,15 @@ export class GatewayEventSubscriber {
       botQQ,
       settings.bot.names[0],
     );
+    const mentionEnriched = await this.#gateway.enrichMentionNames(
+      kind,
+      chatId,
+      parsed.segments,
+      botQQ,
+    );
+    const messageText = mentionEnriched
+      ? parseOneBotSegments(parsed.segments, botQQ, settings.bot.names[0]).text
+      : parsed.text;
     const isBot = Boolean(botQQ && userId === botQQ);
     const senderName = await this.#gateway.resolveSenderName({
       userId,
@@ -331,7 +340,7 @@ export class GatewayEventSubscriber {
       onebotMessageId,
       userId,
       senderName,
-      text: parsed.text,
+      text: messageText,
       segments: parsed.segments,
       replyToMessageId: parsed.replyToMessageId,
       isBot,
