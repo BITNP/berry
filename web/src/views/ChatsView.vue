@@ -243,9 +243,18 @@ async function handleCreateChat() {
   creating.value = true;
 
   try {
+    const payload =
+      createForm.value.kind === "private"
+        ? {
+            kind: createForm.value.kind,
+            chatId: createForm.value.chatId,
+            title: createForm.value.title,
+            enabled: createForm.value.enabled,
+          }
+        : createForm.value;
     const saved = await apiFetch<ChatRow>("/api/admin/chats", {
       method: "POST",
-      body: JSON.stringify(createForm.value),
+      body: JSON.stringify(payload),
     });
 
     createModalOpen.value = false;
@@ -672,7 +681,13 @@ onUnmounted(() => {
               <div class="chat-row-sub">
                 <span class="status-dot" :class="chat.enabled ? 'on' : 'off'" />
                 <span class="chat-row-mode">
-                  {{ triggerLabelMap[chat.triggerMode] }}
+                  {{
+                    chat.kind === "private"
+                      ? chat.enabled
+                        ? "私聊"
+                        : "已停用"
+                      : triggerLabelMap[chat.triggerMode]
+                  }}
                 </span>
                 <span class="mono chat-row-id">{{ chat.chatId }}</span>
               </div>
@@ -721,6 +736,7 @@ onUnmounted(() => {
                 />
               </NSpace>
               <NSelect
+                v-if="activeChat.kind === 'group'"
                 class="w-115"
                 :options="triggerOptions"
                 size="small"
@@ -929,10 +945,14 @@ onUnmounted(() => {
         <NFormItem label="显示名称">
           <NInput
             v-model:value="createForm.title"
-            placeholder="例如 BITNP 技术部工作群"
+            :placeholder="
+              createForm.kind === 'private'
+                ? '留空自动获取用户昵称'
+                : '留空自动获取群名'
+            "
           />
         </NFormItem>
-        <NFormItem label="触发策略">
+        <NFormItem v-if="createForm.kind === 'group'" label="触发策略">
           <NSelect
             v-model:value="createForm.triggerMode"
             :options="triggerOptions"

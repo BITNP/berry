@@ -519,7 +519,10 @@ onMounted(() => {
               tag
             />
           </NFormItem>
-          <NFormItem label="群触发模式">
+          <NFormItem
+            v-if="!dryRunForm.chatKey.startsWith('private:')"
+            label="群触发模式"
+          >
             <NSelect
               v-model:value="dryRunForm.triggerMode"
               :options="[
@@ -544,7 +547,11 @@ onMounted(() => {
           </NFormItem>
           <NFormItem label="标记">
             <NSpace :size="20">
-              <NSpace align="center" :size="6">
+              <NSpace
+                v-if="!dryRunForm.chatKey.startsWith('private:')"
+                align="center"
+                :size="6"
+              >
                 <NSwitch v-model:value="dryRunForm.mentionedBot" size="small" />
                 <span>@ 树莓娘</span>
               </NSpace>
