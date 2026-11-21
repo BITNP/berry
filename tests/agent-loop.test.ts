@@ -272,8 +272,7 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
   app.mainTools.register(
     defineTool({
       name: "custom_echo",
-      description: "测试扩展主工具",
-      capability: "自定义扩展主工具。",
+      description: "自定义扩展主工具。",
       parameters: Type.Object(
         { text: Type.String({ minLength: 1 }) },
         { additionalProperties: false },

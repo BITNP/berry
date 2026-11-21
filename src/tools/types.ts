@@ -66,8 +66,6 @@ export function defineTool<S extends TObject>(spec: {
   parameters: S;
   mutating?: boolean;
   available?: (services: AgentServices) => boolean;
-  capability?:
-    string | ((services: AgentServices) => string | null | undefined);
   execute: (args: Static<S>, ctx: ToolContext) => Promise<unknown>;
 }): ToolDefinition {
   function describeCapability(services: AgentServices): string | null {
@@ -75,11 +73,7 @@ export function defineTool<S extends TObject>(spec: {
       return null;
     }
 
-    const raw =
-      typeof spec.capability === "function"
-        ? spec.capability(services)
-        : (spec.capability ?? spec.description);
-    const trimmed = raw?.trim();
+    const trimmed = spec.description.trim();
 
     return trimmed ? `- ${spec.name}: ${trimmed}` : null;
   }
