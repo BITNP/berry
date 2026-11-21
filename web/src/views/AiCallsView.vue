@@ -838,27 +838,11 @@ onMounted(() => {
         <NTabPane name="context" tab="全局上下文">
           <NSpace v-if="conversation" :size="12" vertical>
             <div class="filter-bar space-between">
-              <NSpace align="center" :size="10" wrap>
-                <NRadioGroup
-                  size="small"
-                  :value="contextMode"
-                  @update:value="
-                    (v: 'active' | 'full') => {
-                      contextMode = v;
-                      if (v === 'full') void loadFullTape();
-                    }
-                  "
-                >
-                  <NRadioButton value="active">当前活跃视图</NRadioButton>
-                  <NRadioButton value="full">完整 Tape 时间线</NRadioButton>
-                </NRadioGroup>
-                <NText class="mono sub-note" depth="3">
-                  session: {{ conversation.sessionId }}，显示
-                  {{ contextItems.length }} 条，afterMessageId:
-                  {{ conversation.afterMessageId }}，更新于
-                  {{ formatTime(conversation.updatedAt) }}
-                </NText>
-              </NSpace>
+              <NText class="mono sub-note" depth="3">
+                session: {{ conversation.sessionId }} · afterMessageId:
+                {{ conversation.afterMessageId }} · 更新于
+                {{ formatTime(conversation.updatedAt) }}
+              </NText>
               <NPopconfirm @positive-click="handleResetConversation">
                 <template #trigger>
                   <NButton
@@ -924,87 +908,128 @@ onMounted(() => {
               size="small"
               title="待消费投递回执"
             >
-              <pre class="code-block">{{
+              <pre class="code-block pending-results-block">{{
                 JSON.stringify(conversation.pendingResults, null, 2)
               }}</pre>
             </NCard>
 
-            <ChronoVirtualList
-              class="context-vlist"
-              :empty-text="
-                loadingTape
-                  ? '正在加载完整 Tape...'
-                  : '全局上下文当前暂无短期轮次'
-              "
-              :item-size="54"
-              :items="contextItems"
-              key-field="key"
-            >
-              <template #default="{ item }">
-                <div class="context-vlist-item">
-                  <div class="turn-box">
-                    <div class="turn-head">
-                      <span class="mono turn-time">#{{ item.index }}</span>
-                      <NTag
-                        v-if="item.kind === 'anchor'"
-                        size="tiny"
-                        :type="
-                          item.anchorReason === 'reset' ? 'warning' : 'success'
-                        "
-                      >
-                        {{
-                          item.anchorReason === "reset"
-                            ? "anchor: reset"
-                            : "anchor: compact"
-                        }}
-                      </NTag>
-                      <NTag v-else size="tiny" :type="roleTagType(item.role)">
-                        {{ item.role }}
-                      </NTag>
-                      <NTag v-if="item.chatKey" size="tiny" type="default">
-                        {{ item.chatKey }}
-                      </NTag>
-                      <NTag
-                        v-for="(toolName, tIdx) in item.toolNames"
-                        :key="`${toolName}-${tIdx}`"
-                        size="tiny"
-                        type="info"
-                      >
-                        {{ toolName }}
-                      </NTag>
-                      <NButton
-                        v-if="item.sidecarId"
-                        secondary
-                        size="tiny"
-                        type="primary"
-                        @click="openSidecar(item.sidecarId)"
-                      >
-                        Sidecar {{ item.sidecarId }}
-                      </NButton>
-                      <span v-if="item.toolCallId" class="mono turn-time">
-                        {{ item.toolCallId }}
-                      </span>
-                      <NButton
-                        v-if="item.isLong"
-                        class="ml-auto"
-                        quaternary
-                        size="tiny"
-                        @click="toggleTurnExpand(item.key)"
-                      >
-                        {{
-                          expandedTurns[item.key]
-                            ? "收起"
-                            : `展开全文 (${item.body.length.toLocaleString()} 字)`
-                        }}
-                      </NButton>
-                    </div>
-                    <pre class="code-block mt-xs">{{
-                      expandedTurns[item.key] ? item.body : item.preview
-                    }}</pre>
-                  </div>
+            <div class="context-scroll-panel">
+              <div class="context-scroll-head">
+                <div class="context-scroll-title">
+                  <span>
+                    {{
+                      contextMode === "full"
+                        ? "完整 Tape 时间线"
+                        : "活跃对话轮次"
+                    }}
+                  </span>
+                  <NText class="tabular sub-note" depth="3">
+                    {{ contextItems.length }} 条
+                  </NText>
                 </div>
-              </template>
-            </ChronoVirtualList>
+                <NRadioGroup
+                  size="small"
+                  :value="contextMode"
+                  @update:value="
+                    (v: 'active' | 'full') => {
+                      contextMode = v;
+                      if (v === 'full') void loadFullTape();
+                    }
+                  "
+                >
+                  <NRadioButton value="active">当前活跃视图</NRadioButton>
+                  <NRadioButton value="full">完整 Tape</NRadioButton>
+                </NRadioGroup>
+              </div>
+
+              <ChronoVirtualList
+                class="context-vlist"
+                :empty-text="
+                  loadingTape
+                    ? '正在加载完整 Tape...'
+                    : '全局上下文当前暂无短期轮次'
+                "
+                :item-size="54"
+                :items="contextItems"
+                key-field="key"
+              >
+                <template #default="{ item }">
+                  <div class="context-vlist-item">
+                    <div
+                      class="turn-box"
+                      :class="
+                        item.kind === 'anchor'
+                          ? item.anchorReason === 'reset'
+                            ? 'turn-box-anchor-reset'
+                            : 'turn-box-anchor-compact'
+                          : ''
+                      "
+                    >
+                      <div class="turn-head">
+                        <span class="mono turn-time">#{{ item.index }}</span>
+                        <NTag
+                          v-if="item.kind === 'anchor'"
+                          size="tiny"
+                          :type="
+                            item.anchorReason === 'reset'
+                              ? 'warning'
+                              : 'success'
+                          "
+                        >
+                          {{
+                            item.anchorReason === "reset"
+                              ? "anchor: reset"
+                              : "anchor: compact"
+                          }}
+                        </NTag>
+                        <NTag v-else size="tiny" :type="roleTagType(item.role)">
+                          {{ item.role }}
+                        </NTag>
+                        <NTag v-if="item.chatKey" size="tiny" type="default">
+                          {{ item.chatKey }}
+                        </NTag>
+                        <NTag
+                          v-for="(toolName, tIdx) in item.toolNames"
+                          :key="`${toolName}-${tIdx}`"
+                          size="tiny"
+                          type="info"
+                        >
+                          {{ toolName }}
+                        </NTag>
+                        <NButton
+                          v-if="item.sidecarId"
+                          secondary
+                          size="tiny"
+                          type="primary"
+                          @click="openSidecar(item.sidecarId)"
+                        >
+                          Sidecar {{ item.sidecarId }}
+                        </NButton>
+                        <span v-if="item.toolCallId" class="mono turn-time">
+                          {{ item.toolCallId }}
+                        </span>
+                        <NButton
+                          v-if="item.isLong"
+                          class="ml-auto"
+                          quaternary
+                          size="tiny"
+                          @click="toggleTurnExpand(item.key)"
+                        >
+                          {{
+                            expandedTurns[item.key]
+                              ? "收起"
+                              : `展开全文 (${item.body.length.toLocaleString()} 字)`
+                          }}
+                        </NButton>
+                      </div>
+                      <pre class="code-block mt-xs">{{
+                        expandedTurns[item.key] ? item.body : item.preview
+                      }}</pre>
+                    </div>
+                  </div>
+                </template>
+              </ChronoVirtualList>
+            </div>
           </NSpace>
         </NTabPane>
 
