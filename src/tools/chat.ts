@@ -174,7 +174,7 @@ export const searchChatMessagesTool = defineTool({
       limit: args.limit ?? 60,
     });
     const [enriched, oldestAfter] = await Promise.all([
-      media.enrichMessagesText(targetChatKey, rows),
+      media.enrichMessagesText(targetChatKey, rows, ids),
       store.messages.oldest(targetChatKey),
     ]);
 
@@ -247,7 +247,7 @@ export const readChatWindowTool = defineTool({
     }
 
     const [enriched, reactionMap, oldestAfter] = await Promise.all([
-      media.enrichMessagesText(targetChatKey, rows),
+      media.enrichMessagesText(targetChatKey, rows, ids),
       store.reactions.aggregateForMessages(
         targetChatKey,
         rows.map((r) => r.onebotMessageId),

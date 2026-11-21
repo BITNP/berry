@@ -6,10 +6,14 @@ import { fileTypeFromBuffer } from "file-type";
 import OpenAI from "openai";
 
 import { completeChat } from "../agent/llm.ts";
+import type { ModelIds } from "../agent/model-ids.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
 import type { MessageGatewayClient } from "../gateway/client.ts";
 import type { ExtractedAttachment } from "../gateway/segments.ts";
-import { parseOneBotSegments } from "../gateway/segments.ts";
+import {
+  parseOneBotSegments,
+  renderMessageTextForModel,
+} from "../gateway/segments.ts";
 import type { Store } from "../store/index.ts";
 import type { ChatKey, MessageAssetRecord, MessageRecord } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
@@ -115,6 +119,7 @@ export class MediaProcessor {
   public async enrichMessagesText(
     chatKey: ChatKey,
     messages: MessageRecord[],
+    ids?: ModelIds,
   ): Promise<Map<number, string>> {
     const out = new Map<number, string>();
 
@@ -122,14 +127,20 @@ export class MediaProcessor {
       return out;
     }
 
-    const ids = messages.map((m) => m.id);
+    const settings = this.#getSettings();
+    const messageIds = messages.map((m) => m.id);
     const onebotIds = messages.map((m) => m.onebotMessageId);
     const [assetMap, reactionMap] = await Promise.all([
-      this.#store.assets.listForMessages(ids),
+      this.#store.assets.listForMessages(messageIds),
       this.#store.reactions.aggregateForMessages(chatKey, onebotIds),
     ]);
 
     for (const msg of messages) {
+      const baseText = renderMessageTextForModel(msg, {
+        botQQ: settings.bot.botQQ,
+        botName: settings.bot.names[0],
+        ids,
+      });
       const extra: string[] = [];
       const assets = assetMap.get(msg.id) ?? [];
 
@@ -160,7 +171,7 @@ export class MediaProcessor {
 
       out.set(
         msg.id,
-        extra.length > 0 ? `${msg.text}\n${extra.join("\n")}`.trim() : msg.text,
+        extra.length > 0 ? `${baseText}\n${extra.join("\n")}`.trim() : baseText,
       );
     }
 
@@ -336,11 +347,7 @@ export class MediaProcessor {
           ? (node.sender as Record<string, unknown>)
           : {};
       const senderName = String(
-        sender.card ??
-          sender.nickname ??
-          node.nickname ??
-          sender.user_id ??
-          "成员",
+        sender.card || sender.nickname || node.nickname || "成员",
       );
       const content = node.message ?? node.content ?? "";
       const parsed = parseOneBotSegments(content, botQQ);

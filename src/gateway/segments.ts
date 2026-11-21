@@ -1,4 +1,5 @@
-import type { OneBotSegment } from "../types.ts";
+import type { ModelIds } from "../agent/model-ids.ts";
+import type { MessageRecord, OneBotSegment } from "../types.ts";
 import { qfaceName } from "./qface.ts";
 
 export interface ExtractedAttachment {
@@ -16,7 +17,16 @@ export interface ParsedSegments {
   attachments: ExtractedAttachment[];
 }
 
+interface ParsedContactCard {
+  kind: "user" | "group";
+  rawId: string;
+  name: string;
+  tag: string;
+}
+
 const CQ_PATTERN = /\[CQ:([\w.-]+)(?:,([^\]]*))?\]/g;
+const HTTP_URL_RE = /^https?:\/\//i;
+const DIGITS_RE = /^\d+$/;
 
 const unescapeCQ = (value: string): string =>
   value
@@ -25,7 +35,131 @@ const unescapeCQ = (value: string): string =>
     .replaceAll("&#93;", "]")
     .replaceAll("&amp;", "&");
 
-function summarizeJsonCard(rawData: unknown): string {
+function formatContactCard(card: ParsedContactCard, ids?: ModelIds): string {
+  const ref =
+    ids && card.rawId
+      ? card.kind === "group"
+        ? ids.groupRef(card.rawId)
+        : ids.userRef(card.rawId)
+      : "";
+
+  if (card.name && ref) {
+    return `[${card.tag}: ${card.name} (${ref})]`;
+  }
+
+  if (ref) {
+    return `[${card.tag}: ${ref}]`;
+  }
+
+  if (card.name) {
+    return `[${card.tag}: ${card.name}]`;
+  }
+
+  return `[${card.tag}]`;
+}
+
+function parseContactFromJsonCard(
+  doc: Record<string, unknown>,
+  meta: Record<string, unknown> | null,
+  prompt: string,
+): ParsedContactCard | null {
+  const app = typeof doc.app === "string" ? doc.app : "";
+  const view = typeof doc.view === "string" ? doc.view : "";
+  const contactObj =
+    meta?.contact && typeof meta.contact === "object"
+      ? (meta.contact as Record<string, unknown>)
+      : null;
+
+  let candidate: Record<string, unknown> | null = contactObj;
+
+  if (!candidate && meta) {
+    for (const value of Object.values(meta)) {
+      if (!value || typeof value !== "object") {
+        continue;
+      }
+
+      const inner = value as Record<string, unknown>;
+      const jump =
+        typeof inner.jumpUrl === "string"
+          ? inner.jumpUrl
+          : typeof inner.qqdocurl === "string"
+            ? inner.qqdocurl
+            : "";
+
+      if (jump.startsWith("mqqapi://card/show_pslcard")) {
+        candidate = inner;
+
+        break;
+      }
+    }
+  }
+
+  const isContactCard =
+    Boolean(candidate) ||
+    view === "contact" ||
+    app === "com.tencent.contact.lua" ||
+    app === "com.tencent.troopsharecard";
+
+  if (!isContactCard) {
+    return null;
+  }
+
+  const inner = candidate ?? {};
+  const jumpUrl =
+    typeof inner.jumpUrl === "string"
+      ? inner.jumpUrl.trim()
+      : typeof inner.qqdocurl === "string"
+        ? inner.qqdocurl.trim()
+        : "";
+  let urlUin = "";
+  let urlGroupCode = "";
+  let urlCardType = "";
+
+  if (jumpUrl) {
+    try {
+      const parsed = new URL(jumpUrl);
+
+      urlUin = parsed.searchParams.get("uin")?.trim() ?? "";
+      urlGroupCode = parsed.searchParams.get("group_code")?.trim() ?? "";
+      urlCardType = parsed.searchParams.get("card_type")?.trim() ?? "";
+    } catch {
+      // Ignore malformed internal scheme URL.
+    }
+  }
+
+  const rawTag = typeof inner.tag === "string" ? inner.tag.trim() : "";
+  const kind: "user" | "group" =
+    urlCardType === "group" ||
+    Boolean(urlGroupCode) ||
+    app === "com.tencent.troopsharecard" ||
+    rawTag.includes("群") ||
+    prompt.includes("群")
+      ? "group"
+      : "user";
+  const tag = rawTag || (kind === "group" ? "推荐群聊" : "推荐好友");
+
+  let rawId = "";
+
+  if (DIGITS_RE.test(urlGroupCode)) {
+    rawId = urlGroupCode;
+  } else if (DIGITS_RE.test(urlUin)) {
+    rawId = urlUin;
+  } else if (typeof inner.contact === "string") {
+    rawId = inner.contact.match(/\d{5,}/)?.[0] ?? "";
+  }
+
+  const nickname =
+    typeof inner.nickname === "string" ? inner.nickname.trim() : "";
+  const title = typeof inner.title === "string" ? inner.title.trim() : "";
+  const promptName = prompt
+    .replace(/^\[?推荐(?:联系人|好友|群聊)\]?[：:]\s*/, "")
+    .trim();
+  const name = nickname || title || promptName;
+
+  return { kind, rawId, name, tag };
+}
+
+function summarizeJsonCard(rawData: unknown, ids?: ModelIds): string {
   if (typeof rawData !== "string" || !rawData.trim()) {
     return "[卡片消息]";
   }
@@ -38,6 +172,12 @@ function summarizeJsonCard(rawData: unknown): string {
         ? (doc.meta as Record<string, unknown>)
         : null;
 
+    const contact = parseContactFromJsonCard(doc, meta, prompt);
+
+    if (contact) {
+      return formatContactCard(contact, ids);
+    }
+
     if (meta) {
       for (const value of Object.values(meta)) {
         if (value && typeof value === "object") {
@@ -45,12 +185,13 @@ function summarizeJsonCard(rawData: unknown): string {
           const title =
             typeof inner.title === "string" ? inner.title.trim() : "";
           const desc = typeof inner.desc === "string" ? inner.desc.trim() : "";
-          const link =
+          const rawLink =
             typeof inner.qqdocurl === "string"
               ? inner.qqdocurl.trim()
               : typeof inner.jumpUrl === "string"
                 ? inner.jumpUrl.trim()
                 : "";
+          const link = HTTP_URL_RE.test(rawLink) ? rawLink : "";
           const parts = [title, desc, link].filter(Boolean);
 
           if (parts.length > 0) {
@@ -135,6 +276,7 @@ export function parseOneBotSegments(
   rawMessage: unknown,
   botQQ: string,
   botName = "树莓娘",
+  ids?: ModelIds,
 ): ParsedSegments {
   const segments = normalizeSegments(rawMessage);
   const parts: string[] = [];
@@ -155,7 +297,7 @@ export function parseOneBotSegments(
       }
 
       case "at": {
-        const qq = String(seg.data.qq ?? "");
+        const qq = String(seg.data.qq ?? "").trim();
         const isBotMention = Boolean(qq && botQQ && qq === botQQ);
 
         if (isBotMention) {
@@ -168,6 +310,10 @@ export function parseOneBotSegments(
           parts.push("@全体成员");
         } else if (isBotMention) {
           parts.push(`@${botName || "树莓娘"}`);
+        } else if (ids && DIGITS_RE.test(qq)) {
+          const ref = ids.userRef(qq);
+
+          parts.push(name ? `@${name} (${ref})` : `@${ref}`);
         } else if (name) {
           parts.push(`@${name}`);
         } else if (qq) {
@@ -253,8 +399,27 @@ export function parseOneBotSegments(
         break;
       }
 
+      case "contact": {
+        const kind = seg.data.type === "group" ? "group" : "user";
+        const rawId = String(seg.data.id ?? "").trim();
+
+        parts.push(
+          formatContactCard(
+            {
+              kind,
+              rawId: DIGITS_RE.test(rawId) ? rawId : "",
+              name: "",
+              tag: kind === "group" ? "推荐群聊" : "推荐好友",
+            },
+            ids,
+          ),
+        );
+
+        break;
+      }
+
       case "json": {
-        parts.push(summarizeJsonCard(seg.data.data));
+        parts.push(summarizeJsonCard(seg.data.data, ids));
 
         break;
       }
@@ -280,4 +445,20 @@ export function parseOneBotSegments(
     mentionedBot,
     attachments,
   };
+}
+
+export function renderMessageTextForModel(
+  message: Pick<MessageRecord, "text" | "segments">,
+  options: { botQQ: string; botName?: string; ids?: ModelIds },
+): string {
+  if (message.segments.length === 0) {
+    return message.text;
+  }
+
+  return parseOneBotSegments(
+    message.segments,
+    options.botQQ,
+    options.botName,
+    options.ids,
+  ).text;
 }

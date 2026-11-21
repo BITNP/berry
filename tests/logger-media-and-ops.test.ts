@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { ModelIds } from "../src/agent/model-ids.ts";
 import {
   qfaceName,
   resolveReactionEmojiId,
   searchQFaceCatalog,
 } from "../src/gateway/qface.ts";
-import { parseOneBotSegments } from "../src/gateway/segments.ts";
+import {
+  parseOneBotSegments,
+  renderMessageTextForModel,
+} from "../src/gateway/segments.ts";
 import { previousNaturalWeek } from "../src/guild/automation.ts";
 import { computeNextRunAt } from "../src/store/schedules.ts";
 import { Logger, formatPrettyLogLine } from "../src/utils/logger.ts";
@@ -154,6 +158,122 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   assert.ok(parsed.text.includes("[表情: 赞]"));
   assert.ok(parsed.text.includes("BITNP 纳新公告"));
   assert.ok(parsed.text.includes("https://bitnp.net/join"));
+
+  // Contact cards, group share cards, native contact segments, mqqapi:// links,
+  // and @ mentions never leak raw QQ/group IDs to the model and register u_*/g_* handles.
+  const friendCardJson = JSON.stringify({
+    app: "com.tencent.contact.lua",
+    prompt: "推荐联系人：Kat",
+    view: "contact",
+    meta: {
+      contact: {
+        nickname: "Kat",
+        contact: "账号：1215926530",
+        tag: "推荐好友",
+        jumpUrl:
+          "mqqapi://card/show_pslcard?src_type=internal&source=sharecard&version=1&uin=1215926530",
+      },
+    },
+  });
+  const groupCardJson = JSON.stringify({
+    app: "com.tencent.troopsharecard",
+    prompt: "推荐群聊：技术群",
+    view: "contact",
+    meta: {
+      contact: {
+        nickname: "技术群",
+        tag: "推荐群聊",
+        jumpUrl:
+          "mqqapi://card/show_pslcard?card_type=group&group_code=88776655",
+      },
+    },
+  });
+  const internalLinkCardJson = JSON.stringify({
+    app: "com.tencent.structmsg",
+    prompt: "群活动",
+    meta: {
+      news: {
+        title: "活动卡片",
+        jumpUrl: "mqqapi://internal/action?uin=987654321",
+      },
+    },
+  });
+
+  const storedFriendCard = parseOneBotSegments(
+    [{ type: "json", data: { data: friendCardJson } }],
+    "999999",
+  );
+
+  assert.equal(storedFriendCard.text, "[推荐好友: Kat]");
+  assert.equal(storedFriendCard.text.includes("1215926530"), false);
+  assert.equal(storedFriendCard.text.includes("mqqapi://"), false);
+
+  const ids = new ModelIds();
+  const modelText = renderMessageTextForModel(
+    {
+      text: "[分享: mqqapi://card/show_pslcard?uin=1215926530]",
+      segments: [
+        { type: "json", data: { data: friendCardJson } },
+        { type: "text", data: { text: " " } },
+        { type: "json", data: { data: groupCardJson } },
+        { type: "text", data: { text: " " } },
+        { type: "contact", data: { type: "qq", id: "555666777" } },
+        { type: "text", data: { text: " " } },
+        { type: "at", data: { qq: "12345" } },
+        { type: "text", data: { text: " " } },
+        { type: "json", data: { data: internalLinkCardJson } },
+      ],
+    },
+    { botQQ: "999999", ids },
+  );
+
+  const katRef = ids.userRef("1215926530");
+  const groupRef = ids.groupRef("88776655");
+  const nativeContactRef = ids.userRef("555666777");
+  const atRef = ids.userRef("12345");
+
+  assert.ok(modelText.includes(`[推荐好友: Kat (${katRef})]`));
+  assert.ok(modelText.includes(`[推荐群聊: 技术群 (${groupRef})]`));
+  assert.ok(modelText.includes(`[推荐好友: ${nativeContactRef}]`));
+  assert.ok(modelText.includes(`@${atRef}`));
+  assert.ok(modelText.includes("[分享: 活动卡片]"));
+  assert.equal(modelText.includes("1215926530"), false);
+  assert.equal(modelText.includes("88776655"), false);
+  assert.equal(modelText.includes("555666777"), false);
+  assert.equal(modelText.includes("12345"), false);
+  assert.equal(modelText.includes("987654321"), false);
+  assert.equal(modelText.includes("mqqapi://"), false);
+  assert.equal(ids.resolveUser(katRef), "1215926530");
+  assert.equal(ids.resolveTargetChatKey(katRef), "private:1215926530");
+  assert.equal(ids.resolveTargetChatKey(groupRef), "group:88776655");
+
+  // Even previously stored messages with legacy unsanitized text are desensitized via segments.
+  const { message: legacyCardMsg } = await app.store.messages.capture({
+    kind: "private",
+    chatId: "20001",
+    onebotMessageId: "ob-card-legacy-1",
+    userId: "20001",
+    senderName: "主席",
+    text: "[分享: mqqapi://card/show_pslcard?uin=1215926530]",
+    segments: [{ type: "json", data: { data: friendCardJson } }],
+    replyToMessageId: null,
+    isBot: false,
+    mentionedBot: false,
+    sentAt: Date.now(),
+  });
+  const enrichIds = new ModelIds();
+  const enrichedMap = await app.media.enrichMessagesText(
+    "private:20001",
+    [legacyCardMsg],
+    enrichIds,
+  );
+  const enrichedCardText = enrichedMap.get(legacyCardMsg.id)!;
+
+  assert.equal(
+    enrichedCardText,
+    `[推荐好友: Kat (${enrichIds.userRef("1215926530")})]`,
+  );
+  assert.equal(enrichedCardText.includes("1215926530"), false);
 
   await captureText(app, {
     kind: "group",

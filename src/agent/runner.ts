@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import type { RuntimeSettings } from "../config/settings.ts";
 import { resolveThinkingEffort } from "../config/settings.ts";
 import { resolveReactionEmojiId } from "../gateway/qface.ts";
+import { renderMessageTextForModel } from "../gateway/segments.ts";
 import { hasManagementAccess } from "../identity/permissions.ts";
 import type { ToolRegistry } from "../tools/index.ts";
 import {
@@ -182,11 +183,11 @@ export class BerryAgent {
       ...requestMessages.map((m) => m.id),
       ...quotedMessages.map((m) => m.id),
     ]);
-    const enrichedText = await media.enrichMessagesText(input.chatKey, [
-      ...requestMessages,
-      ...quotedMessages,
-      ...recentContext,
-    ]);
+    const enrichedText = await media.enrichMessagesText(
+      input.chatKey,
+      [...requestMessages, ...quotedMessages, ...recentContext],
+      ids,
+    );
 
     const mapMessage = (msg: MessageRecord) => ({
       id: msg.id,
@@ -453,11 +454,19 @@ export class BerryAgent {
         sourceMessage: {
           userRef,
           senderName: message.senderName,
-          text: message.text,
+          text: renderMessageTextForModel(message, {
+            botQQ: settings.bot.botQQ,
+            botName: settings.bot.names[0],
+            ids,
+          }),
         },
         recentContext: context.map((m) => ({
           senderName: m.senderName,
-          text: m.text.slice(0, 400),
+          text: renderMessageTextForModel(m, {
+            botQQ: settings.bot.botQQ,
+            botName: settings.bot.names[0],
+            ids,
+          }).slice(0, 400),
         })),
         memoryIndex,
       }),
