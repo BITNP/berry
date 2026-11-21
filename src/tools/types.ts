@@ -3,6 +3,7 @@ import * as Value from "typebox/value";
 
 import type { AgentTool } from "../agent/loop.ts";
 import type { ModelIds } from "../agent/model-ids.ts";
+import type { BunkoClient } from "../bunko/client.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
 import type { MessageGatewayClient } from "../gateway/client.ts";
 import type { GuildInternalClient } from "../guild/client.ts";
@@ -18,6 +19,7 @@ export interface AgentServices {
   gateway: MessageGatewayClient;
   media: MediaProcessor;
   knowledge: KnowledgeBase;
+  bunko: BunkoClient;
   directory: IdentityDirectory;
   guild: GuildInternalClient;
   mcp: McpHub;
@@ -30,7 +32,7 @@ export interface ToolActor {
   actorSubject: string | null;
   actorName: string | null;
   actorIsAdmin: boolean;
-  actorIsManager: boolean;
+  actorIsPrivileged: boolean;
   actorAdmitted: boolean;
   triggerMessageId?: number | null;
 }
@@ -41,85 +43,114 @@ export interface ToolContext {
   ids: ModelIds;
 }
 
-export type CapabilitySummary = string | string[] | null | undefined;
+export const isPrivilegedActor = (actor: ToolActor): boolean =>
+  actor.actorIsAdmin || actor.actorIsPrivileged;
 
-export interface ToolDefinition {
+export const requirePrivileged =
+  (action: string) =>
+  (ctx: ToolContext): string | null =>
+    isPrivilegedActor(ctx.actor) ? null : `仅管理员或网协管理层可${action}`;
+
+export interface Tool {
+  readonly kind: "tool";
   readonly name: string;
   readonly description: string;
   readonly parameters: Record<string, unknown>;
   readonly mutating?: boolean;
-  readonly describeCapability?: (services: AgentServices) => CapabilitySummary;
-  bind: (ctx: ToolContext) => AgentTool;
+  readonly available?: (services: AgentServices) => boolean;
+  readonly guard?: (ctx: ToolContext) => string | null;
+  readonly bind: (ctx: ToolContext) => AgentTool;
 }
 
-export interface DynamicToolSource {
+export interface ToolProvider {
+  readonly kind: "provider";
   readonly id: string;
-  readonly describeCapability?: (services: AgentServices) => CapabilitySummary;
-  resolve: (ctx: ToolContext) => AgentTool[];
+  readonly describe?: (services: AgentServices) => readonly string[];
+  readonly resolve: (ctx: ToolContext) => readonly AgentTool[];
 }
 
-export type ToolSource = ToolDefinition | DynamicToolSource;
+export type ToolEntry = Tool | ToolProvider;
 
-export function defineTool<S extends TObject>(spec: {
+export const defineTool = <S extends TObject>(spec: {
   name: string;
   description: string;
   parameters: S;
   mutating?: boolean;
   available?: (services: AgentServices) => boolean;
+  guard?: (ctx: ToolContext) => string | null;
   execute: (args: Static<S>, ctx: ToolContext) => Promise<unknown>;
-}): ToolDefinition {
-  function describeCapability(services: AgentServices): string | null {
-    if (spec.available && !spec.available(services)) {
-      return null;
-    }
-
-    const trimmed = spec.description.trim();
-
-    return trimmed ? `- ${spec.name}: ${trimmed}` : null;
-  }
-
-  return {
+}): Tool => ({
+  kind: "tool",
+  name: spec.name,
+  description: spec.description,
+  parameters: spec.parameters as Record<string, unknown>,
+  mutating: spec.mutating,
+  available: spec.available,
+  guard: spec.guard,
+  bind: (ctx) => ({
     name: spec.name,
     description: spec.description,
     parameters: spec.parameters as Record<string, unknown>,
     mutating: spec.mutating,
-    describeCapability,
-    bind: (ctx) => ({
-      name: spec.name,
-      description: spec.description,
-      parameters: spec.parameters as Record<string, unknown>,
-      mutating: spec.mutating,
-      execute: (rawArgs) => {
-        const candidate = Value.Default(
-          spec.parameters,
-          structuredClone(rawArgs),
-        );
+    execute: async (rawArgs) => {
+      const denied = spec.guard?.(ctx);
 
-        if (!Value.Check(spec.parameters, candidate)) {
-          const details = [...Value.Errors(spec.parameters, candidate)]
-            .map((err) => `${err.instancePath || "/"} ${err.message}`)
-            .join("; ");
+      if (denied) {
+        throw new Error(denied);
+      }
 
-          throw new Error(
-            `Invalid tool arguments for ${spec.name}: ${details}`,
-          );
-        }
+      const candidate = Value.Default(
+        spec.parameters,
+        structuredClone(rawArgs),
+      );
 
-        return spec.execute(candidate, ctx);
-      },
-    }),
-  };
-}
+      if (!Value.Check(spec.parameters, candidate)) {
+        const details = [...Value.Errors(spec.parameters, candidate)]
+          .map((err) => `${err.instancePath || "/"} ${err.message}`)
+          .join("; ");
+
+        throw new Error(`Invalid tool arguments for ${spec.name}: ${details}`);
+      }
+
+      return spec.execute(candidate, ctx);
+    },
+  }),
+});
+
+export const defineToolProvider = (spec: {
+  id: string;
+  describe?: (services: AgentServices) => readonly string[];
+  resolve: (ctx: ToolContext) => readonly AgentTool[];
+}): ToolProvider => ({
+  kind: "provider",
+  id: spec.id,
+  describe: spec.describe,
+  resolve: spec.resolve,
+});
 
 export function resolveTools(
-  sources: readonly ToolSource[],
+  entries: readonly ToolEntry[],
   ctx: ToolContext,
 ): AgentTool[] {
   const resolved: AgentTool[] = [];
   const seen = new Set<string>();
 
-  for (const source of sources) {
-    const items = "bind" in source ? [source.bind(ctx)] : source.resolve(ctx);
+  for (const entry of entries) {
+    let items: readonly AgentTool[];
+
+    if (entry.kind === "tool") {
+      if (entry.available && !entry.available(ctx.services)) {
+        continue;
+      }
+
+      if (entry.guard?.(ctx)) {
+        continue;
+      }
+
+      items = [entry.bind(ctx)];
+    } else {
+      items = entry.resolve(ctx);
+    }
 
     for (const tool of items) {
       if (seen.has(tool.name)) {

@@ -12,7 +12,6 @@ export class BerryDatabase {
   public readonly db: BerryDb;
   public readonly dataDir: string;
   public readonly knowledgeDir: string;
-  public readonly notebookDir: string;
   public readonly assetsDir: string;
   public readonly avatarsDir: string;
   #sqlite: DatabaseSync;
@@ -24,7 +23,6 @@ export class BerryDatabase {
     dirs: {
       dataDir: string;
       knowledgeDir: string;
-      notebookDir: string;
       assetsDir: string;
       avatarsDir: string;
     },
@@ -33,21 +31,18 @@ export class BerryDatabase {
     this.#sqlite = sqlite;
     this.dataDir = dirs.dataDir;
     this.knowledgeDir = dirs.knowledgeDir;
-    this.notebookDir = dirs.notebookDir;
     this.assetsDir = dirs.assetsDir;
     this.avatarsDir = dirs.avatarsDir;
   }
 
   public static async open(dataDir: string): Promise<BerryDatabase> {
     const knowledgeDir = join(dataDir, "knowledge");
-    const notebookDir = join(dataDir, "notebooks");
     const assetsDir = join(dataDir, "assets");
     const avatarsDir = join(dataDir, "avatars");
 
     await Promise.all([
       mkdir(dataDir, { recursive: true }),
       mkdir(knowledgeDir, { recursive: true }),
-      mkdir(notebookDir, { recursive: true }),
       mkdir(join(assetsDir, "images"), { recursive: true }),
       mkdir(avatarsDir, { recursive: true }),
     ]);
@@ -92,7 +87,6 @@ export class BerryDatabase {
     return new BerryDatabase(db, sqlite, {
       dataDir,
       knowledgeDir,
-      notebookDir,
       assetsDir,
       avatarsDir,
     });

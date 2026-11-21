@@ -2,7 +2,6 @@ import { Type } from "typebox";
 
 import { parseChatKey } from "../types.ts";
 import { assertCanReadChat, resolveAuthorizedChat } from "./chat.ts";
-import type { ToolDefinition } from "./types.ts";
 import { defineTool } from "./types.ts";
 
 export const inspectMediaTool = defineTool({
@@ -63,5 +62,3 @@ export const inspectMediaTool = defineTool({
     return { messageId: targetId, assets };
   },
 });
-
-export const mediaTools: readonly ToolDefinition[] = [inspectMediaTool];

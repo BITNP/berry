@@ -4,13 +4,12 @@ import { TZDate } from "@date-fns/tz";
 import { format, startOfWeek, subWeeks } from "date-fns";
 
 import { completeChat } from "../agent/llm.ts";
+import type { BunkoClient } from "../bunko/client.ts";
 import type { EnvConfig } from "../config/env.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
 import { resolveThinkingEffort } from "../config/settings.ts";
 import type { MessageGatewayClient } from "../gateway/client.ts";
 import type { IdentityDirectory } from "../identity/keycloak.ts";
-import type { KnowledgeBase } from "../knowledge/files.ts";
-import type { McpHub } from "../mcp/hub.ts";
 import type { Store } from "../store/index.ts";
 import { computeNextRunAt } from "../store/schedules.ts";
 import { makeChatKey } from "../types.ts";
@@ -48,8 +47,7 @@ export class GuildAutomationRunner {
   #store: Store;
   #directory: IdentityDirectory;
   #gateway: MessageGatewayClient;
-  #knowledge: KnowledgeBase;
-  #mcp: McpHub;
+  #bunko: BunkoClient;
   #getSettings: () => RuntimeSettings;
   #logger = new Logger("guild:auto");
   #timer: ReturnType<typeof setInterval> | null = null;
@@ -68,8 +66,7 @@ export class GuildAutomationRunner {
     store: Store,
     directory: IdentityDirectory,
     gateway: MessageGatewayClient,
-    knowledge: KnowledgeBase,
-    mcp: McpHub,
+    bunko: BunkoClient,
     getSettings: () => RuntimeSettings,
   ) {
     this.#env = env;
@@ -77,8 +74,7 @@ export class GuildAutomationRunner {
     this.#store = store;
     this.#directory = directory;
     this.#gateway = gateway;
-    this.#knowledge = knowledge;
-    this.#mcp = mcp;
+    this.#bunko = bunko;
     this.#getSettings = getSettings;
   }
 
@@ -268,10 +264,18 @@ export class GuildAutomationRunner {
   }
 
   public async runWeeklyReport(atMs = Date.now()): Promise<{
-    path: string;
+    documentId: string;
+    title: string;
+    url: string;
+    created: boolean;
     periodStart: string;
   }> {
     this.#requireEnabled();
+    if (!this.#bunko.enabled) {
+      throw new Error(
+        "Bunko 云文档未配置（BERRY_BUNKO_API_URL / BERRY_BUNKO_API_KEY），无法归档公会周报",
+      );
+    }
 
     const settings = this.#getSettings();
     const period = previousNaturalWeek(atMs);
@@ -310,7 +314,7 @@ export class GuildAutomationRunner {
             {
               role: "system",
               content:
-                "你是 BITNP 公会周报整理助手。统计区间为 UTC+8 上一自然周，当前未完成和逾期是生成时刻的实时状态，不是历史快照。只依据提供的数据总结进展、讨论、未完成事项与需要关注的问题，使用平实中文 Markdown。",
+                "你是 BITNP 公会周报整理助手。统计区间为 UTC+8 上一自然周，当前未完成和逾期是生成时刻的实时状态，不是历史快照。只依据提供的数据总结进展、讨论、未完成事项及需要关注的问题，使用标准 GFM 中文 Markdown（禁止原始 HTML 标签、图片语法或公式语法）。",
             },
             {
               role: "user",
@@ -362,20 +366,28 @@ export class GuildAutomationRunner {
 ${summary}
 `;
 
-    const relPath = `guild-reports/${period.label}.md`;
+    const published = await this.#bunko.publishOrAppend({
+      title,
+      folderId: settings.guildAutomation.weeklyFolderId || null,
+      markdown,
+      idempotencyKey: `guild-weekly:${period.label}:${Math.floor(atMs / 1000)}`,
+    });
 
-    await this.#knowledge.writeNotebook(relPath, markdown, "replace");
     await this.#store.cursors.set(WEEKLY_CURSOR, period.label);
+    this.#logger.info("Published guild weekly report to Bunko", {
+      documentId: published.documentId,
+      title: published.title,
+      created: published.created,
+      url: published.url,
+    });
 
-    if (settings.guildAutomation.weeklyUploadTool) {
-      await this.#mcp.call(settings.guildAutomation.weeklyUploadTool, {
-        title,
-        markdown,
-        metadata: { periodStart: period.label },
-      });
-    }
-
-    return { path: relPath, periodStart: period.label };
+    return {
+      documentId: published.documentId,
+      title: published.title,
+      url: published.url,
+      created: published.created,
+      periodStart: period.label,
+    };
   }
 
   #shouldStream(): boolean {

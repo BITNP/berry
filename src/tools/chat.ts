@@ -2,8 +2,8 @@ import { Type } from "typebox";
 
 import type { ChatKey } from "../types.ts";
 import { makeChatKey, parseChatKey } from "../types.ts";
-import type { ToolContext, ToolDefinition } from "./types.ts";
-import { defineTool } from "./types.ts";
+import type { Tool, ToolContext } from "./types.ts";
+import { defineTool, isPrivilegedActor } from "./types.ts";
 
 export async function assertCanReadChat(
   ctx: ToolContext,
@@ -17,19 +17,19 @@ export async function assertCanReadChat(
     throw new Error("无权读取其他用户的私聊消息");
   }
 
-  const isMemberOrAdmin = actor.actorIsAdmin || actor.actorAdmitted;
+  const isPrivileged = isPrivilegedActor(actor);
 
-  if (!isMemberOrAdmin && targetChatKey !== actor.chatKey) {
+  if (!isPrivileged && targetChatKey !== actor.chatKey) {
     throw new Error(
-      "外部或未绑定网协通行证的人员仅可查阅当前会话记录，无权跨群或跨会话读取历史消息",
+      "普通权限仅可查阅当前会话记录，无权跨群或跨会话读取历史消息",
     );
   }
 
-  if (kind === "group" && !isMemberOrAdmin) {
+  if (kind === "group" && !isPrivileged) {
     const chatCfg = await services.store.chats.get(targetChatKey);
 
     if (chatCfg?.internal) {
-      throw new Error("该群为网协内部工作群，仅限网协在籍成员或管理员查阅");
+      throw new Error("该群为网协内部工作群，仅限管理员或网协管理层查阅");
     }
   }
 }
@@ -55,7 +55,7 @@ export async function resolveAuthorizedChat(
 export const listChatsTool = defineTool({
   name: "list_chats",
   description:
-    "列出当前发言人有权访问的会话（管理员与网协在籍成员可列出群聊及本人私聊，外部人员仅可见当前非内部会话）。可传 includeGatewayGroups=true 补充拉取网关群列表（仅网协在籍成员及管理员）。",
+    "列出当前发言人有权访问的会话（管理员及网协管理层可列出群聊及本人私聊，普通权限仅可见当前非内部会话）。可传 includeGatewayGroups=true 补充拉取网关群列表（仅管理员及网协管理层）。",
   parameters: Type.Object(
     {
       includeGatewayGroups: Type.Optional(Type.Boolean()),
@@ -66,7 +66,7 @@ export const listChatsTool = defineTool({
     const { store, gateway } = ctx.services;
     const settings = ctx.services.getSettings();
     const { actor, ids } = ctx;
-    const isMemberOrAdmin = actor.actorIsAdmin || actor.actorAdmitted;
+    const isPrivileged = isPrivilegedActor(actor);
     const all = await store.chats.list();
     const visible = all.filter((c) => {
       if (actor.actorIsAdmin) {
@@ -77,7 +77,7 @@ export const listChatsTool = defineTool({
         return c.chatId === actor.senderQQ;
       }
 
-      if (isMemberOrAdmin) {
+      if (isPrivileged) {
         return true;
       }
 
@@ -94,7 +94,7 @@ export const listChatsTool = defineTool({
       internal: c.internal,
     }));
 
-    if (args.includeGatewayGroups && isMemberOrAdmin && gateway.configured) {
+    if (args.includeGatewayGroups && isPrivileged && gateway.configured) {
       const gwGroups = await gateway.getGroupList().catch(() => []);
 
       for (const g of gwGroups) {
@@ -276,6 +276,7 @@ export const fetchOlderHistoryTool = defineTool({
   name: "fetch_older_history",
   description:
     "从 QQ 网关向前翻页拉取指定会话更早的历史消息并缓存到本地（按本地最早一条消息继续向前翻页）。当关键词检索未命中或需要查看更早几天的讨论时调用。",
+  available: (services) => services.gateway.configured,
   parameters: Type.Object(
     {
       targetRef: Type.Optional(Type.String()),
@@ -286,10 +287,6 @@ export const fetchOlderHistoryTool = defineTool({
   ),
   execute: async (args, ctx) => {
     const { store, gateway } = ctx.services;
-
-    if (!gateway.configured) {
-      throw new Error("message-gateway 未配置，无法拉取远端历史消息");
-    }
 
     const {
       targetChatKey,
@@ -315,7 +312,7 @@ export const fetchOlderHistoryTool = defineTool({
   },
 });
 
-export const chatHistoryTools: readonly ToolDefinition[] = [
+export const chatHistoryTools: readonly Tool[] = [
   listChatsTool,
   searchChatMessagesTool,
   readChatWindowTool,

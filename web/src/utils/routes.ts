@@ -1,7 +1,6 @@
 import type { RouteLocationRaw } from "vue-router";
 
 export type AiCallsTab = "calls" | "gate" | "context";
-export type DocsTab = "knowledge" | "notebook";
 export type LogsTab = "logs" | "jobs" | "deliveries";
 export type JobLaneFilter = "all" | "background" | "realtime";
 export type SettingsTab =
@@ -44,9 +43,8 @@ export const routes = {
     path: "/ai",
     query: cleanQuery(query),
   }),
-  docs: (tab: DocsTab): RouteLocationRaw => ({
+  docs: (): RouteLocationRaw => ({
     path: "/docs",
-    query: { tab },
   }),
   guild: (): RouteLocationRaw => ({ path: "/guild" }),
   memories: (): RouteLocationRaw => ({ path: "/memories" }),

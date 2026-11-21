@@ -14,6 +14,7 @@ async function main(): Promise<void> {
     devAuthBypass: env.devAuthBypass,
     gatewayConfigured: app.gateway.configured,
     guildApiConfigured: app.guild.enabled,
+    bunkoConfigured: app.bunko.enabled,
   });
 
   logger.info("berry ready", {
@@ -21,6 +22,7 @@ async function main(): Promise<void> {
     devAuthBypass: env.devAuthBypass,
     gatewayConfigured: app.gateway.configured,
     guildApiConfigured: app.guild.enabled,
+    bunkoConfigured: app.bunko.enabled,
   });
 
   async function shutdown(signal: string) {

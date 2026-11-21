@@ -141,7 +141,7 @@ export const runtimeSettingsSchema = Type.Object(
           ],
           { default: "mention_only" },
         ),
-        adminBypassGate: Type.Boolean({ default: false }),
+        adminBypassGate: Type.Boolean({ default: true }),
         adminQQs: Type.Array(Type.String({ pattern: "^\\d+$" }), {
           default: [],
         }),
@@ -162,7 +162,7 @@ export const runtimeSettingsSchema = Type.Object(
         weeklySchedule: Type.Union([scheduleSpecSchema, Type.Null()], {
           default: null,
         }),
-        weeklyUploadTool: Type.String({ default: "" }),
+        weeklyFolderId: Type.String({ default: "" }),
       },
       { default: {}, additionalProperties: false },
     ),
@@ -175,7 +175,7 @@ export const runtimeSettingsSchema = Type.Object(
         prompt: Type.String({
           default: "整理这段时间内有价值的群聊讨论、技术结论、争议和后续事项。",
         }),
-        uploadTool: Type.String({ default: "" }),
+        folderId: Type.String({ default: "" }),
       },
       { default: {}, additionalProperties: false },
     ),

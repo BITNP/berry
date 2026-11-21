@@ -4,13 +4,13 @@ import { scheduleSpecSchema } from "../config/settings.ts";
 import type { ScheduleSpec } from "../types.ts";
 import { parseChatKey } from "../types.ts";
 import type { ToolActor } from "./types.ts";
-import { defineTool } from "./types.ts";
+import { defineTool, isPrivilegedActor } from "./types.ts";
 
 const MIN_NON_ADMIN_INTERVAL_SECONDS = 300;
 
-function assertMemberOrAdminForSchedule(actor: ToolActor, verb: string): void {
-  if (!actor.actorIsAdmin && !actor.actorAdmitted) {
-    throw new Error(`外部或未绑定网协通行证的人员无权${verb}定时任务`);
+function assertPrivilegedForSchedule(actor: ToolActor, verb: string): void {
+  if (!isPrivilegedActor(actor)) {
+    throw new Error(`仅管理员或网协管理层可${verb}定时任务`);
   }
 }
 
@@ -38,7 +38,7 @@ function assertScheduleIntervalAllowed(
 export const scheduleManageTool = defineTool({
   name: "schedule_manage",
   description:
-    "列出、创建、更新或删除持久化定时任务（once/interval/daily/weekly/monthly/yearly）。仅网协在籍成员或管理员可创建/改删；非管理员仅限操作当前会话的任务且轮询间隔不得短于 5 分钟。",
+    "列出、创建、更新或删除持久化定时任务（once/interval/daily/weekly/monthly/yearly）。仅管理员或网协管理层可创建/改删；非管理员仅限操作当前会话的任务且轮询间隔不得短于 5 分钟。",
   parameters: Type.Object(
     {
       action: Type.Union([
@@ -76,7 +76,7 @@ export const scheduleManageTool = defineTool({
       }
 
       case "create": {
-        assertMemberOrAdminForSchedule(actor, "创建");
+        assertPrivilegedForSchedule(actor, "创建");
         assertScheduleIntervalAllowed(args.schedule, actor);
 
         let kind: "group" | "private" | "" = "";
@@ -117,7 +117,7 @@ export const scheduleManageTool = defineTool({
       }
 
       case "update": {
-        assertMemberOrAdminForSchedule(actor, "修改");
+        assertPrivilegedForSchedule(actor, "修改");
 
         const existing = await services.store.schedules.get(args.id ?? "");
 
@@ -146,7 +146,7 @@ export const scheduleManageTool = defineTool({
       }
 
       case "delete": {
-        assertMemberOrAdminForSchedule(actor, "删除");
+        assertPrivilegedForSchedule(actor, "删除");
 
         const existing = await services.store.schedules.get(args.id ?? "");
 

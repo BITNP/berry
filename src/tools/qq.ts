@@ -2,8 +2,7 @@ import { Type } from "typebox";
 
 import { searchQFaceCatalog } from "../gateway/qface.ts";
 import { resolveAuthorizedChat } from "./chat.ts";
-import type { ToolDefinition } from "./types.ts";
-import { defineTool } from "./types.ts";
+import { defineTool, isPrivilegedActor } from "./types.ts";
 
 export const qqDirectoryTool = defineTool({
   name: "qq_directory",
@@ -28,18 +27,14 @@ export const qqDirectoryTool = defineTool({
     const { gateway } = ctx.services;
     const { ids } = ctx;
 
-    if (!gateway.configured) {
-      throw new Error("message-gateway 未配置，无法查询 QQ 通讯录");
-    }
-
     const page = args.page ?? 1;
     const pageSize = args.pageSize ?? 30;
     const offset = (page - 1) * pageSize;
     const kw = args.query?.trim().toLowerCase() ?? "";
 
     if (args.scope === "groups") {
-      if (!ctx.actor.actorIsAdmin && !ctx.actor.actorAdmitted) {
-        throw new Error("外部或未绑定人员无权查询机器人所在的 QQ 群列表");
+      if (!isPrivilegedActor(ctx.actor)) {
+        throw new Error("普通权限无权查询机器人所在的 QQ 群列表");
       }
 
       const all = await gateway.getGroupList();
@@ -59,8 +54,8 @@ export const qqDirectoryTool = defineTool({
     }
 
     if (args.scope === "friends") {
-      if (!ctx.actor.actorIsAdmin && !ctx.actor.actorAdmitted) {
-        throw new Error("外部或未绑定人员无权查询机器人好友列表");
+      if (!isPrivilegedActor(ctx.actor)) {
+        throw new Error("普通权限无权查询机器人好友列表");
       }
 
       const all = await gateway.getFriendList();
@@ -121,8 +116,3 @@ export const searchQqEmojisTool = defineTool({
   execute: async (args) =>
     searchQFaceCatalog(args.query ?? "", args.limit ?? 30),
 });
-
-export const qqTools: readonly ToolDefinition[] = [
-  qqDirectoryTool,
-  searchQqEmojisTool,
-];

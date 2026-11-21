@@ -7,6 +7,7 @@ import { toNodeListener } from "h3";
 import { BerryAgent } from "./agent/runner.ts";
 import type { SubagentRegistry } from "./agent/subagents/index.ts";
 import { createDefaultSubagentRegistry } from "./agent/subagents/index.ts";
+import { BunkoClient } from "./bunko/client.ts";
 import type { EnvConfig } from "./config/env.ts";
 import type { RuntimeSettings } from "./config/settings.ts";
 import { SmallModelClassifier } from "./gate/classifier.ts";
@@ -41,6 +42,7 @@ export class BerryApp {
   public readonly avatars: AvatarCache;
   public readonly directory: IdentityDirectory;
   public readonly guild: GuildInternalClient;
+  public readonly bunko: BunkoClient;
   public readonly knowledge: KnowledgeBase;
   public readonly mcp: McpHub;
   public readonly classifier: SmallModelClassifier;
@@ -70,6 +72,7 @@ export class BerryApp {
     avatars: AvatarCache;
     directory: IdentityDirectory;
     guild: GuildInternalClient;
+    bunko: BunkoClient;
     knowledge: KnowledgeBase;
     mcp: McpHub;
     classifier: SmallModelClassifier;
@@ -94,6 +97,7 @@ export class BerryApp {
     this.avatars = options.avatars;
     this.directory = options.directory;
     this.guild = options.guild;
+    this.bunko = options.bunko;
     this.knowledge = options.knowledge;
     this.mcp = options.mcp;
     this.classifier = options.classifier;
@@ -127,13 +131,15 @@ export class BerryApp {
     const avatars = new AvatarCache(store);
     const directory = new IdentityDirectory(env);
     const guild = new GuildInternalClient(env);
-    const knowledge = new KnowledgeBase(store.knowledgeDir, store.notebookDir);
+    const bunko = new BunkoClient(env);
+    const knowledge = new KnowledgeBase(store.knowledgeDir);
     const mcp = new McpHub();
     const classifier = new SmallModelClassifier(store);
 
     logs.setSecretProvider(() => [
       env.gatewayToken,
       env.guildInternalToken,
+      env.bunkoApiKey,
       env.oidcClientSecret,
       env.keycloakClientSecret,
       activeSettings.mainModel.apiKey,
@@ -148,6 +154,7 @@ export class BerryApp {
       gateway,
       media,
       knowledge,
+      bunko,
       directory,
       guild,
       mcp,
@@ -186,8 +193,7 @@ export class BerryApp {
       store,
       directory,
       gateway,
-      knowledge,
-      mcp,
+      bunko,
       getSettings,
     );
 
@@ -212,6 +218,7 @@ export class BerryApp {
       avatars,
       directory,
       guild,
+      bunko,
       knowledge,
       mcp,
       classifier,

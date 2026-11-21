@@ -81,7 +81,7 @@ export function jobActionLinks(job: {
 
     case "group_digest": {
       return [
-        { label: "查看摘要笔记", to: routes.docs("notebook") },
+        { label: "群聊摘要设置", to: routes.settings("digest") },
         ...defaultChatLinks(job.chatKey),
       ];
     }
@@ -92,13 +92,10 @@ export function jobActionLinks(job: {
       ];
 
       if (job.payload.task === "weekly") {
-        items.push(
-          { label: "查看周报笔记", to: routes.docs("notebook") },
-          {
-            label: "查看周报 AI 调用",
-            to: routes.aiCalls({ purpose: "report" }),
-          },
-        );
+        items.push({
+          label: "查看周报 AI 调用",
+          to: routes.aiCalls({ purpose: "report" }),
+        });
       }
 
       return items;

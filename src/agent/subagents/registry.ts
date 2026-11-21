@@ -3,10 +3,14 @@ import { Type } from "typebox";
 import { resolveThinkingEffort } from "../../config/settings.ts";
 import type {
   AgentServices,
-  DynamicToolSource,
   ToolContext,
+  ToolProvider,
 } from "../../tools/types.ts";
-import { defineTool, resolveTools } from "../../tools/types.ts";
+import {
+  defineTool,
+  defineToolProvider,
+  resolveTools,
+} from "../../tools/types.ts";
 import { runChatToolLoop } from "../loop.ts";
 import type { SubagentDefinition, SubagentResult } from "./types.ts";
 
@@ -62,6 +66,14 @@ export class SubagentRegistry {
       throw new Error(`Unknown subagent kind: ${kind}`);
     }
 
+    if (def.available && !def.available(ctx.services)) {
+      return {
+        brief: `${def.title}当前未启用或未配置。`,
+        references: [],
+        mutated: false,
+      };
+    }
+
     const blockedBrief = def.checkAvailability?.(ctx);
 
     if (blockedBrief) {
@@ -106,7 +118,7 @@ export class SubagentRegistry {
   }
 
   public describeCapabilities(services: AgentServices): string[] {
-    const defs = this.list();
+    const defs = this.#availableDefs(services);
 
     if (defs.length === 0) {
       return [];
@@ -120,12 +132,12 @@ export class SubagentRegistry {
     ];
   }
 
-  public asDelegateToolSource(): DynamicToolSource {
-    return {
+  public asDelegateToolProvider(): ToolProvider {
+    return defineToolProvider({
       id: "delegate_subagent",
-      describeCapability: (services) => this.describeCapabilities(services),
+      describe: (services) => this.describeCapabilities(services),
       resolve: (ctx) => {
-        const defs = this.list();
+        const defs = this.#availableDefs(ctx.services);
 
         if (defs.length === 0) {
           return [];
@@ -150,6 +162,12 @@ export class SubagentRegistry {
 
         return [delegateTool.bind(ctx)];
       },
-    };
+    });
+  }
+
+  #availableDefs(services: AgentServices): SubagentDefinition[] {
+    return this.list().filter(
+      (def) => !def.available || def.available(services),
+    );
   }
 }

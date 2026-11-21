@@ -5,30 +5,23 @@ import { qqDirectoryTool, searchQqEmojisTool } from "./qq.ts";
 import { ToolRegistry } from "./registry.ts";
 import { scheduleManageTool } from "./schedule.ts";
 
-export { chatHistoryTools } from "./chat.ts";
-export { guildTools } from "./guild.ts";
-export { inspectMediaTool, mediaTools } from "./media.ts";
 export { memoryManageTool } from "./memory.ts";
-export { qqDirectoryTool, qqTools, searchQqEmojisTool } from "./qq.ts";
 export { ToolRegistry } from "./registry.ts";
-export { scheduleManageTool } from "./schedule.ts";
 export type {
   AgentServices,
-  CapabilitySummary,
-  DynamicToolSource,
+  Tool,
   ToolActor,
   ToolContext,
-  ToolDefinition,
-  ToolSource,
+  ToolEntry,
+  ToolProvider,
 } from "./types.ts";
-export { defineTool, resolveTools } from "./types.ts";
-export { mcpToolsSource, workspaceTools } from "./workspace.ts";
+export { defineTool, defineToolProvider, resolveTools } from "./types.ts";
 
 export const createDefaultMainToolRegistry = (
   subagents: SubagentRegistry,
 ): ToolRegistry =>
   new ToolRegistry().register(
-    subagents.asDelegateToolSource(),
+    subagents.asDelegateToolProvider(),
     memoryManageTool,
     scheduleManageTool,
     inspectMediaTool,

@@ -463,6 +463,7 @@ export function printStartupBanner(info: {
   devAuthBypass: boolean;
   gatewayConfigured: boolean;
   guildApiConfigured: boolean;
+  bunkoConfigured?: boolean;
 }): void {
   if (process.env.BERRY_LOG_JSON === "true") {
     return;
@@ -481,7 +482,7 @@ export function printStartupBanner(info: {
   ];
   const infoRows = [
     `  ${paint("➜", ANSI.brightCyan, color)}  ${paint("[控制台]", ANSI.gray, color)}  ${paint(info.url, `${ANSI.bold}${ANSI.cyan}`, color)}`,
-    `  ${paint("➜", ANSI.brightCyan, color)}  ${paint("[模块]  ", ANSI.gray, color)}  ${dot(info.gatewayConfigured, "QQ 网关")}   ${dot(info.guildApiConfigured, "公会看板")}   ${dot(info.devAuthBypass, info.devAuthBypass ? "开发免登" : "OIDC 鉴权")}`,
+    `  ${paint("➜", ANSI.brightCyan, color)}  ${paint("[模块]  ", ANSI.gray, color)}  ${dot(info.gatewayConfigured, "QQ 网关")}   ${dot(info.guildApiConfigured, "公会看板")}   ${dot(Boolean(info.bunkoConfigured), "Bunko 云文档")}   ${dot(info.devAuthBypass, info.devAuthBypass ? "开发免登" : "OIDC 鉴权")}`,
   ];
 
   const innerWidth = Math.max(

@@ -1,8 +1,29 @@
 import assert from "node:assert/strict";
+import { writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { ModelIds } from "../src/agent/model-ids.ts";
+import {
+  bunkoAppendDocumentTool,
+  bunkoCreateDocumentTool,
+  bunkoDeleteDocumentTool,
+  bunkoListTreeTool,
+  bunkoReadDocumentTool,
+  bunkoTools,
+} from "../src/tools/bunko.ts";
 import { listChatsTool, readChatWindowTool } from "../src/tools/chat.ts";
+import {
+  guildCreateNodeTool,
+  guildListTreeTool,
+  guildTools,
+} from "../src/tools/guild.ts";
+import {
+  listKnowledgeFilesTool,
+  readKnowledgeLinesTool,
+} from "../src/tools/knowledge.ts";
+import { mcpToolProvider } from "../src/tools/mcp.ts";
 import { memoryManageTool } from "../src/tools/memory.ts";
 import { qqDirectoryTool } from "../src/tools/qq.ts";
 import { scheduleManageTool } from "../src/tools/schedule.ts";
@@ -11,16 +32,13 @@ import type {
   ToolActor,
   ToolContext,
 } from "../src/tools/types.ts";
-import {
-  mcpToolsSource,
-  notebookDeleteTool,
-  notebookWriteTool,
-} from "../src/tools/workspace.ts";
+import { resolveTools } from "../src/tools/types.ts";
 import {
   captureText,
   chatReply,
   createTestBerryApp,
   startStubServer,
+  waitUntil,
 } from "./helpers.ts";
 
 const makeServices = (
@@ -30,6 +48,7 @@ const makeServices = (
   gateway: app.gateway,
   media: app.media,
   knowledge: app.knowledge,
+  bunko: app.bunko,
   directory: app.directory,
   guild: app.guild,
   mcp: app.mcp,
@@ -42,9 +61,74 @@ const makeCtx = (
   actor: ToolActor,
 ): ToolContext => ({ services, ids, actor });
 
-test("three-tier tool guards enforce chat, internal group, memory, schedule, workspace, and qq_directory boundaries", async (t) => {
-  const { app } = await createTestBerryApp({}, {}, t);
+test("two-tier tool guards enforce privileged vs standard boundaries across chats, knowledge/notebook, memory, schedule, guild, and qq_directory", async (t) => {
+  const guildStub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/api/internal/nodes" && req.method === "GET") {
+      res.end(
+        JSON.stringify([
+          {
+            id: 1,
+            parentId: null,
+            title: "总项目",
+            description: "",
+            dueAt: null,
+            completedAt: null,
+            tags: [],
+            sortOrder: 0,
+            childCount: 0,
+            commentCount: 0,
+            myRelation: "member",
+            updatedAt: "2026-11-21T00:00:00Z",
+          },
+        ]),
+      );
+
+      return;
+    }
+
+    if (req.url === "/api/internal/nodes" && req.method === "POST") {
+      res.statusCode = 201;
+      res.end(
+        JSON.stringify({
+          id: 9,
+          parentId: null,
+          title: "管理层节点",
+          description: "",
+          dueAt: null,
+          completedAt: null,
+          tags: [],
+          sortOrder: 0,
+          createdBySubject: "sub-mgmt",
+          breadcrumb: [],
+          directLeaders: [],
+          directMembers: [],
+          children: [],
+        }),
+      );
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      guildApiUrl: guildStub.url,
+      guildInternalToken: "guild-secret",
+    },
+    {},
+    t,
+  );
   const services = makeServices(app);
+
+  await writeFile(
+    join(app.store.knowledgeDir, "guide.md"),
+    "# 网协公开指南\n你好",
+    "utf8",
+  );
 
   await app.store.chats.upsert({
     kind: "group",
@@ -82,8 +166,8 @@ test("three-tier tool guards enforce chat, internal group, memory, schedule, wor
   const ids = new ModelIds();
   const publicRef = ids.groupRef("1001");
   const internalRef = ids.groupRef("2002");
-  const externalUserRef = ids.userRef("5001");
-  const otherUserRef = ids.userRef("6001");
+  const memberUserRef = ids.userRef("6001");
+  const mgmtUserRef = ids.userRef("7001");
 
   const externalActor: ToolActor = {
     chatKey: "group:1001",
@@ -91,29 +175,29 @@ test("three-tier tool guards enforce chat, internal group, memory, schedule, wor
     actorSubject: null,
     actorName: "路人",
     actorIsAdmin: false,
-    actorIsManager: false,
+    actorIsPrivileged: false,
     actorAdmitted: false,
-  };
-  const externalInInternalActor: ToolActor = {
-    ...externalActor,
-    chatKey: "group:2002",
   };
   const memberActor: ToolActor = {
     chatKey: "group:1001",
     senderQQ: "6001",
     actorSubject: "sub-member",
-    actorName: "部员",
+    actorName: "普通部员",
     actorIsAdmin: false,
-    actorIsManager: false,
+    actorIsPrivileged: false,
     actorAdmitted: true,
   };
-  const managerActor: ToolActor = {
+  const memberInInternalActor: ToolActor = {
+    ...memberActor,
+    chatKey: "group:2002",
+  };
+  const managementActor: ToolActor = {
     chatKey: "group:1001",
     senderQQ: "7001",
-    actorSubject: "sub-manager",
-    actorName: "部长",
+    actorSubject: "sub-mgmt",
+    actorName: "管理层",
     actorIsAdmin: false,
-    actorIsManager: true,
+    actorIsPrivileged: true,
     actorAdmitted: true,
   };
   const adminActor: ToolActor = {
@@ -122,46 +206,51 @@ test("three-tier tool guards enforce chat, internal group, memory, schedule, wor
     actorSubject: "sub-admin",
     actorName: "管理员",
     actorIsAdmin: true,
-    actorIsManager: true,
+    actorIsPrivileged: true,
     actorAdmitted: true,
   };
 
   // 1) Chat visibility, cross-group read, and internal group protection.
-  const externalChats = (await listChatsTool
-    .bind(makeCtx(services, ids, externalActor))
-    .execute({})) as { chats: { targetRef: string }[] };
+  // Both external users and ordinary bound members are standard-tier: only current non-internal chat is visible.
+  for (const stdActor of [externalActor, memberActor]) {
+    const visibleChats = (await listChatsTool
+      .bind(makeCtx(services, ids, stdActor))
+      .execute({})) as { chats: { targetRef: string }[] };
 
-  assert.equal(
-    externalChats.chats.some((c) => c.targetRef === internalRef),
-    false,
-  );
-  assert.equal(
-    externalChats.chats.some((c) => c.targetRef === publicRef),
-    true,
-  );
+    assert.equal(
+      visibleChats.chats.some((c) => c.targetRef === internalRef),
+      false,
+    );
+    assert.equal(
+      visibleChats.chats.some((c) => c.targetRef === publicRef),
+      true,
+    );
+
+    await assert.rejects(
+      () =>
+        readChatWindowTool
+          .bind(makeCtx(services, ids, stdActor))
+          .execute({ targetRef: internalRef }),
+      /无权跨群/,
+    );
+  }
 
   await assert.rejects(
     () =>
       readChatWindowTool
-        .bind(makeCtx(services, ids, externalActor))
-        .execute({ targetRef: internalRef }),
-    /无权跨群/,
-  );
-  await assert.rejects(
-    () =>
-      readChatWindowTool
-        .bind(makeCtx(services, ids, externalInInternalActor))
+        .bind(makeCtx(services, ids, memberInInternalActor))
         .execute({}),
     /内部工作群/,
   );
 
-  const memberInternalRead = (await readChatWindowTool
-    .bind(makeCtx(services, ids, memberActor))
+  // Management (privileged) can read internal groups across chats.
+  const mgmtInternalRead = (await readChatWindowTool
+    .bind(makeCtx(services, ids, managementActor))
     .execute({ targetRef: internalRef })) as { count: number };
 
-  assert.equal(memberInternalRead.count, 1);
+  assert.equal(mgmtInternalRead.count, 1);
 
-  // qq_directory blocks external users from enumerating groups/friends.
+  // qq_directory blocks standard users (including ordinary members) from enumerating groups/friends.
   const gwStub = await startStubServer((_req, res) => {
     res.setHeader("Content-Type", "application/json");
     res.end(JSON.stringify({ status: "ok", retcode: 0, data: [] }));
@@ -176,41 +265,35 @@ test("three-tier tool guards enforce chat, internal group, memory, schedule, wor
   await assert.rejects(
     () =>
       qqDirectoryTool
-        .bind(makeCtx(gwServices, ids, externalActor))
+        .bind(makeCtx(gwServices, ids, memberActor))
         .execute({ scope: "groups" }),
-    /无权查询/,
+    /普通权限无权查询/,
   );
   await assert.rejects(
     () =>
       qqDirectoryTool
-        .bind(makeCtx(gwServices, ids, externalActor))
+        .bind(makeCtx(gwServices, ids, memberActor))
         .execute({ scope: "friends" }),
-    /无权查询/,
+    /普通权限无权查询/,
   );
 
-  // 2) Memory guards: global (admin/manager), chat (admitted in current chat), user (self or admin).
-  await assert.rejects(
-    () =>
-      memoryManageTool.bind(makeCtx(services, ids, externalActor)).execute({
-        action: "upsert",
-        scope: "global",
-        key: "k1",
-        content: "bad",
-      }),
-    /全局记忆/,
-  );
-  await assert.rejects(
-    () =>
-      memoryManageTool.bind(makeCtx(services, ids, memberActor)).execute({
-        action: "upsert",
-        scope: "global",
-        key: "k1",
-        content: "bad",
-      }),
-    /全局记忆/,
-  );
-  const managerGlobal = (await memoryManageTool
-    .bind(makeCtx(services, ids, managerActor))
+  // 2) Memory guards: standard users are strictly read-only; privileged can write (management scoped to current chat/self + global).
+  for (const scope of ["global", "chat", "user"] as const) {
+    await assert.rejects(
+      () =>
+        memoryManageTool.bind(makeCtx(services, ids, memberActor)).execute({
+          action: "upsert",
+          scope,
+          ...(scope === "user" ? { userRef: memberUserRef } : {}),
+          key: `k-${scope}`,
+          content: "should-block",
+        }),
+      /仅管理员或网协管理层/,
+    );
+  }
+
+  const mgmtGlobal = (await memoryManageTool
+    .bind(makeCtx(services, ids, managementActor))
     .execute({
       action: "upsert",
       scope: "global",
@@ -219,21 +302,11 @@ test("three-tier tool guards enforce chat, internal group, memory, schedule, wor
       content: "有效全局记忆",
     })) as { mutated: boolean };
 
-  assert.equal(managerGlobal.mutated, true);
+  assert.equal(mgmtGlobal.mutated, true);
 
   await assert.rejects(
     () =>
-      memoryManageTool.bind(makeCtx(services, ids, externalActor)).execute({
-        action: "upsert",
-        scope: "chat",
-        key: "c1",
-        content: "bad",
-      }),
-    /网协在籍成员/,
-  );
-  await assert.rejects(
-    () =>
-      memoryManageTool.bind(makeCtx(services, ids, memberActor)).execute({
+      memoryManageTool.bind(makeCtx(services, ids, managementActor)).execute({
         action: "upsert",
         scope: "chat",
         targetRef: internalRef,
@@ -242,8 +315,8 @@ test("three-tier tool guards enforce chat, internal group, memory, schedule, wor
       }),
     /禁止跨会话/,
   );
-  const memberChatMem = (await memoryManageTool
-    .bind(makeCtx(services, ids, memberActor))
+  const mgmtChatMem = (await memoryManageTool
+    .bind(makeCtx(services, ids, managementActor))
     .execute({
       action: "upsert",
       scope: "chat",
@@ -252,46 +325,57 @@ test("three-tier tool guards enforce chat, internal group, memory, schedule, wor
       content: "周五例会",
     })) as { mutated: boolean };
 
-  assert.equal(memberChatMem.mutated, true);
+  assert.equal(mgmtChatMem.mutated, true);
 
   await assert.rejects(
     () =>
-      memoryManageTool.bind(makeCtx(services, ids, externalActor)).execute({
+      memoryManageTool.bind(makeCtx(services, ids, managementActor)).execute({
         action: "upsert",
         scope: "user",
-        userRef: otherUserRef,
+        userRef: memberUserRef,
         key: "u1",
         content: "tamper",
       }),
     /本人的个人记忆/,
   );
-  const selfUserMem = (await memoryManageTool
-    .bind(makeCtx(services, ids, externalActor))
+  const mgmtSelfUserMem = (await memoryManageTool
+    .bind(makeCtx(services, ids, managementActor))
     .execute({
       action: "upsert",
       scope: "user",
-      userRef: externalUserRef,
+      userRef: mgmtUserRef,
       key: "u1",
       summary: "偏好",
       content: "喜欢简短回复",
     })) as { mutated: boolean };
 
-  assert.equal(selfUserMem.mutated, true);
+  assert.equal(mgmtSelfUserMem.mutated, true);
 
-  // 3) Schedule guards: external denied, member scoped to current chat & >= 5m interval.
-  await assert.rejects(
-    () =>
-      scheduleManageTool.bind(makeCtx(services, ids, externalActor)).execute({
-        action: "create",
-        title: "外部定时",
-        content: "ping",
-        schedule: { kind: "interval", everyMinutes: 30 },
-      }),
-    /无权创建/,
-  );
+  // Standard users can still read allowed memories.
+  const memberReadGlobal = (await memoryManageTool
+    .bind(makeCtx(services, ids, memberActor))
+    .execute({
+      action: "read",
+      scope: "global",
+      key: "k1",
+    })) as { memory: { content: string } | null };
+
+  assert.equal(memberReadGlobal.memory?.content, "有效全局记忆");
+
+  // 3) Schedule guards: standard users denied writes; management scoped to current chat & >= 5m interval.
   await assert.rejects(
     () =>
       scheduleManageTool.bind(makeCtx(services, ids, memberActor)).execute({
+        action: "create",
+        title: "普通用户定时",
+        content: "ping",
+        schedule: { kind: "interval", everyMinutes: 30 },
+      }),
+    /仅管理员或网协管理层/,
+  );
+  await assert.rejects(
+    () =>
+      scheduleManageTool.bind(makeCtx(services, ids, managementActor)).execute({
         action: "create",
         title: "高频刷屏",
         content: "spam",
@@ -301,7 +385,7 @@ test("three-tier tool guards enforce chat, internal group, memory, schedule, wor
   );
   await assert.rejects(
     () =>
-      scheduleManageTool.bind(makeCtx(services, ids, memberActor)).execute({
+      scheduleManageTool.bind(makeCtx(services, ids, managementActor)).execute({
         action: "create",
         title: "跨群提醒",
         content: "hi",
@@ -311,8 +395,8 @@ test("three-tier tool guards enforce chat, internal group, memory, schedule, wor
     /非管理员禁止为其他群/,
   );
 
-  const memberTaskRes = (await scheduleManageTool
-    .bind(makeCtx(services, ids, memberActor))
+  const mgmtTaskRes = (await scheduleManageTool
+    .bind(makeCtx(services, ids, managementActor))
     .execute({
       action: "create",
       title: "本群提醒",
@@ -320,7 +404,7 @@ test("three-tier tool guards enforce chat, internal group, memory, schedule, wor
       schedule: { kind: "interval", everyMinutes: 30 },
     })) as { task: { id: string } };
 
-  assert.ok(memberTaskRes.task.id);
+  assert.ok(mgmtTaskRes.task.id);
 
   const adminOtherTaskRes = (await scheduleManageTool
     .bind(makeCtx(services, ids, adminActor))
@@ -332,54 +416,90 @@ test("three-tier tool guards enforce chat, internal group, memory, schedule, wor
       schedule: { kind: "interval", everySeconds: 10 },
     })) as { task: { id: string } };
 
-  // Member cannot list, update, or delete another chat's task.
-  const memberListed = (await scheduleManageTool
-    .bind(makeCtx(services, ids, memberActor))
+  const mgmtListed = (await scheduleManageTool
+    .bind(makeCtx(services, ids, managementActor))
     .execute({ action: "list" })) as { tasks: { id: string }[] };
 
   assert.deepEqual(
-    memberListed.tasks.map((task) => task.id),
-    [memberTaskRes.task.id],
+    mgmtListed.tasks.map((task) => task.id),
+    [mgmtTaskRes.task.id],
   );
   await assert.rejects(
     () =>
-      scheduleManageTool.bind(makeCtx(services, ids, memberActor)).execute({
+      scheduleManageTool.bind(makeCtx(services, ids, managementActor)).execute({
         action: "delete",
         id: adminOtherTaskRes.task.id,
       }),
     /禁止删除其他会话/,
   );
 
-  // 4) Workspace notebook writes & MCP tools blocked for external, allowed for members.
-  await assert.rejects(
-    () =>
-      notebookWriteTool
-        .bind(makeCtx(services, ids, externalActor))
-        .execute({ path: "hack.md", content: "nope" }),
-    /仅网协在籍成员或管理员/,
+  // 4) Workspace: knowledge/ is read-only for everyone; MCP tools require privileged role.
+  const stdFiles = (await listKnowledgeFilesTool
+    .bind(makeCtx(services, ids, memberActor))
+    .execute({})) as { path: string }[];
+
+  assert.equal(
+    stdFiles.some((f) => f.path === "guide.md"),
+    true,
   );
-  await assert.rejects(
-    () =>
-      notebookDeleteTool
-        .bind(makeCtx(services, ids, externalActor))
-        .execute({ path: "hack.md" }),
-    /仅网协在籍成员或管理员/,
-  );
+  const stdRead = (await readKnowledgeLinesTool
+    .bind(makeCtx(services, ids, memberActor))
+    .execute({ path: "guide.md" })) as { content: string };
+
+  assert.match(stdRead.content, /网协公开指南/);
   assert.deepEqual(
-    mcpToolsSource.resolve(makeCtx(services, ids, externalActor)),
+    mcpToolProvider.resolve(makeCtx(services, ids, memberActor)),
     [],
   );
 
-  await notebookWriteTool
+  // 5) Guild: bound ordinary member can read (write tools hidden by guard), writes require privileged role.
+  assert.deepEqual(
+    resolveTools(guildTools, makeCtx(services, ids, memberActor)).map(
+      (tool) => tool.name,
+    ),
+    [
+      "guild_resolve_member",
+      "guild_list_tree",
+      "guild_search_nodes",
+      "guild_get_node",
+      "guild_node_progress",
+    ],
+  );
+  assert.equal(
+    resolveTools(guildTools, makeCtx(services, ids, managementActor)).length,
+    guildTools.length,
+  );
+  const memberTree = (await guildListTreeTool
     .bind(makeCtx(services, ids, memberActor))
-    .execute({ path: "ok.md", content: "hello" });
-  await notebookDeleteTool
-    .bind(makeCtx(services, ids, memberActor))
-    .execute({ path: "ok.md" });
+    .execute({})) as { totalNodes: number; roots: { id: number }[] };
+
+  assert.equal(memberTree.totalNodes, 1);
+  assert.equal(memberTree.roots.length, 1);
+
+  await assert.rejects(
+    () =>
+      guildCreateNodeTool
+        .bind(makeCtx(services, ids, memberActor))
+        .execute({ title: "未授权节点" }),
+    /仅管理员或网协管理层/,
+  );
+
+  const mgmtNode = (await guildCreateNodeTool
+    .bind(makeCtx(services, ids, managementActor))
+    .execute({ title: "管理层节点" })) as { id: number };
+
+  assert.equal(mgmtNode.id, 9);
 });
 
-test("knownGroups hides other groups from external users and privateAccessMode gates stranger DMs at L0", async (t) => {
-  const capturedPayloads: string[] = [];
+test("gate privilege bypass, classifier privilege tags, qq_reaction guard, knownGroups, and privateAccessMode", async (t) => {
+  const capturedMainPayloads: string[] = [];
+  const capturedGateCandidates: {
+    userId: string;
+    privilege?: string;
+    text: string;
+  }[] = [];
+  const reactionRequests: string[] = [];
+
   const llmStub = await startStubServer((req, res, bodyText) => {
     res.setHeader("Content-Type", "application/json");
     if (req.url !== "/v1/chat/completions") {
@@ -390,11 +510,80 @@ test("knownGroups hides other groups from external users and privateAccessMode g
     }
 
     const reqJson = JSON.parse(bodyText) as {
+      model: string;
       messages: { role: string; content: string | null }[];
     };
 
-    capturedPayloads.push(reqJson.messages.at(-1)?.content ?? "");
+    if (reqJson.model === "gpt-test-gate") {
+      const payload = JSON.parse(reqJson.messages[1]!.content!) as {
+        candidates: {
+          messageId: number;
+          userId: string;
+          privilege?: string;
+          text: string;
+        }[];
+      };
+
+      for (const item of payload.candidates) {
+        capturedGateCandidates.push({
+          userId: item.userId,
+          privilege: item.privilege,
+          text: item.text,
+        });
+      }
+
+      res.end(
+        JSON.stringify(
+          chatReply({
+            decisions: payload.candidates.map((c) => ({
+              messageId: c.messageId,
+              action: c.text.includes("静默记忆") ? "memory" : "ignore",
+              confidence: 0.9,
+              reason: "测试分流",
+            })),
+          }),
+        ),
+      );
+
+      return;
+    }
+
+    const content = reqJson.messages.at(-1)?.content ?? "";
+
+    capturedMainPayloads.push(content);
+
+    if (content.includes("打个表情测试")) {
+      const match = /"quoteRef":"(m_[^"]+)"/.exec(content);
+
+      res.end(
+        JSON.stringify(
+          chatReply({
+            units: match
+              ? [
+                  {
+                    kind: "qq_reaction",
+                    messageId: match[1]!,
+                    emojiId: "㊗️",
+                  },
+                ]
+              : [],
+          }),
+        ),
+      );
+
+      return;
+    }
+
     res.end(JSON.stringify(chatReply({ units: [] })));
+  }, t);
+
+  const gwStub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url?.includes("set_msg_emoji_like")) {
+      reactionRequests.push(req.url);
+    }
+
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
   }, t);
 
   const kcStub = await startStubServer((req, res) => {
@@ -425,9 +614,39 @@ test("knownGroups hides other groups from external users and privateAccessMode g
     }
 
     if (
+      req.url?.includes("qq_number%3A40001") ||
+      req.url?.includes("qq_number:40001")
+    ) {
+      res.end(
+        JSON.stringify([
+          {
+            id: "sub-mgmt-1",
+            username: "mgmt1",
+            firstName: "网协部长",
+            enabled: true,
+            attributes: { qq_number: ["40001"] },
+          },
+        ]),
+      );
+
+      return;
+    }
+
+    if (
       req.url?.includes("/users/sub-member-1/role-mappings/realm/composite")
     ) {
       res.end(JSON.stringify([{ name: "permission-techdept-access" }]));
+
+      return;
+    }
+
+    if (req.url?.includes("/users/sub-mgmt-1/role-mappings/realm/composite")) {
+      res.end(
+        JSON.stringify([
+          { name: "permission-management-access" },
+          { name: "permission-techdept-access" },
+        ]),
+      );
 
       return;
     }
@@ -437,6 +656,8 @@ test("knownGroups hides other groups from external users and privateAccessMode g
 
   const { app } = await createTestBerryApp(
     {
+      gatewayUrl: gwStub.url,
+      gatewayToken: "gw-tok",
       mainBaseUrl: `${llmStub.url}/v1`,
       gateBaseUrl: `${llmStub.url}/v1`,
       keycloakAdminUrl: `${kcStub.url}/admin/realms/bitnp`,
@@ -445,8 +666,12 @@ test("knownGroups hides other groups from external users and privateAccessMode g
       keycloakClientSecret: "secret",
     },
     {
+      gateModel: {
+        batchWindowMs: 100,
+      },
       policy: {
         adminQQs: ["10001"],
+        adminBypassGate: true,
         privateDefaultEnabled: true,
         privateAccessMode: "members_and_admins",
       },
@@ -459,7 +684,7 @@ test("knownGroups hides other groups from external users and privateAccessMode g
     chatId: "100",
     title: "外部群",
     enabled: true,
-    triggerMode: "mention_only",
+    triggerMode: "smart_observe",
   });
   await app.store.chats.upsert({
     kind: "group",
@@ -470,14 +695,15 @@ test("knownGroups hides other groups from external users and privateAccessMode g
     internal: true,
   });
 
-  // External user invoke in group:100 should NOT see group:200 in knownGroups.
-  const extMsg = await captureText(app, {
+  // 1) Ordinary member invoke in group:100 should NOT see group:200 in knownGroups,
+  //    has tier="standard", and qq_reaction unit is hard-blocked.
+  const memberMsg = await captureText(app, {
     kind: "group",
     chatId: "100",
-    id: "ob-ext-1",
-    userId: "50005",
-    senderName: "路人",
-    text: "你好",
+    id: "ob-member-react",
+    userId: "30001",
+    senderName: "普通部员",
+    text: "打个表情测试",
     mentionedBot: true,
   });
 
@@ -486,17 +712,107 @@ test("knownGroups hides other groups from external users and privateAccessMode g
     chatKey: "group:100",
     kind: "group",
     chatId: "100",
-    triggerMessageIds: [extMsg.message.id],
-    senderId: "50005",
-    senderName: "路人",
+    triggerMessageIds: [memberMsg.message.id],
+    senderId: "30001",
+    senderName: "普通部员",
   });
 
-  const payloadJson = capturedPayloads[0] ?? "";
+  const memberPayload = capturedMainPayloads[0] ?? "";
 
-  assert.doesNotMatch(payloadJson, /机密内部群/);
-  assert.match(payloadJson, /"role":"external"/);
+  assert.doesNotMatch(memberPayload, /机密内部群/);
+  assert.match(memberPayload, /"tier":"standard"/);
+  assert.match(memberPayload, /"role":"member"/);
+  assert.equal(reactionRequests.length, 0);
 
-  // Stranger DM is ignored at L0 without queueing a gate_batch job.
+  // 2) Management user (permission-management-access) gets tier="privileged", sees internal group,
+  //    and qq_reaction is dispatched.
+  const mgmtMsg = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "ob-mgmt-react",
+    userId: "40001",
+    senderName: "网协部长",
+    text: "打个表情测试",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:100",
+    kind: "group",
+    chatId: "100",
+    triggerMessageIds: [mgmtMsg.message.id],
+    senderId: "40001",
+    senderName: "网协部长",
+  });
+
+  const mgmtPayload = capturedMainPayloads[1] ?? "";
+
+  assert.match(mgmtPayload, /机密内部群/);
+  assert.match(mgmtPayload, /"tier":"privileged"/);
+  assert.match(mgmtPayload, /"role":"management"/);
+  assert.equal(reactionRequests.length, 1);
+
+  // 3) Direct @ by management user bypasses small-model classifier at L0.
+  const mgmtDirect = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "ob-mgmt-direct",
+    userId: "40001",
+    senderName: "网协部长",
+    text: "@树莓娘 😡",
+    mentionedBot: true,
+  });
+
+  await app.gate.ingest(mgmtDirect.message);
+  const mgmtGateDecisions = await app.store.gate.list({
+    chatKey: "group:100",
+    limit: 5,
+  });
+
+  assert.equal(mgmtGateDecisions.items[0]?.stage, "l0_rule");
+  assert.equal(mgmtGateDecisions.items[0]?.action, "reply");
+  assert.match(mgmtGateDecisions.items[0]?.reason ?? "", /管理层直连/);
+
+  // 4) Non-@ messages in smart_observe pass privilege tag to classifier, and standard "memory" is downgraded to ignore.
+  const nonAtMgmt = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "ob-mgmt-nonat",
+    userId: "40001",
+    senderName: "网协部长",
+    text: "给这条消息打个㊗️",
+  });
+  const nonAtMember = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "ob-member-mem",
+    userId: "30001",
+    senderName: "普通部员",
+    text: "静默记忆测试",
+  });
+
+  await app.gate.ingest(nonAtMgmt.message);
+  await app.gate.ingest(nonAtMember.message);
+  await delay(140);
+  await app.worker.drainOnce();
+
+  assert.equal(
+    capturedGateCandidates.find((c) => c.userId === "40001")?.privilege,
+    "privileged",
+  );
+  assert.equal(
+    capturedGateCandidates.find((c) => c.userId === "30001")?.privilege,
+    "standard",
+  );
+  const memJobs = (await app.store.jobs.list({ chatKey: "group:100" })).filter(
+    (j) => j.kind === "memory_update",
+  );
+
+  assert.equal(memJobs.length, 0);
+
+  // 5) Stranger DM is ignored at L0 under members_and_admins; admitted member DM passes;
+  //    under admins_only, ordinary member DM is ignored while management & admin pass.
   const strangerDm = await captureText(app, {
     kind: "private",
     chatId: "50005",
@@ -507,18 +823,11 @@ test("knownGroups hides other groups from external users and privateAccessMode g
   });
 
   await app.gate.ingest(strangerDm.message);
-  const strangerJobs = await app.store.jobs.list({ chatKey: "private:50005" });
+  assert.equal(
+    (await app.store.jobs.list({ chatKey: "private:50005" })).length,
+    0,
+  );
 
-  assert.equal(strangerJobs.length, 0);
-  const strangerDecisions = await app.store.gate.list({
-    chatKey: "private:50005",
-    limit: 5,
-  });
-
-  assert.equal(strangerDecisions.items[0]?.action, "ignore");
-  assert.equal(strangerDecisions.items[0]?.stage, "l0_rule");
-
-  // Admitted member DM passes L0 under members_and_admins.
   const memberDm = await captureText(app, {
     kind: "private",
     chatId: "30001",
@@ -529,11 +838,11 @@ test("knownGroups hides other groups from external users and privateAccessMode g
   });
 
   await app.gate.ingest(memberDm.message);
-  const memberJobs = await app.store.jobs.list({ chatKey: "private:30001" });
+  assert.equal(
+    (await app.store.jobs.list({ chatKey: "private:30001" })).length,
+    1,
+  );
 
-  assert.equal(memberJobs.length, 1);
-
-  // Under admins_only, admitted non-admin member DM is also ignored at L0, while admin passes.
   await app.updateSettings({
     ...app.settings,
     policy: {
@@ -558,19 +867,479 @@ test("knownGroups hides other groups from external users and privateAccessMode g
   });
 
   assert.equal(memberDecisions.items[0]?.action, "ignore");
-  assert.match(memberDecisions.items[0]?.reason ?? "", /仅管理员/);
+  assert.match(memberDecisions.items[0]?.reason ?? "", /管理层/);
 
-  const adminDm = await captureText(app, {
+  const mgmtDm = await captureText(app, {
     kind: "private",
-    chatId: "10001",
-    id: "ob-admin-dm",
-    userId: "10001",
-    senderName: "管理员",
+    chatId: "40001",
+    id: "ob-mgmt-dm",
+    userId: "40001",
+    senderName: "网协部长",
     text: "检查状态",
   });
 
-  await app.gate.ingest(adminDm.message);
-  const adminJobs = await app.store.jobs.list({ chatKey: "private:10001" });
+  await app.gate.ingest(mgmtDm.message);
+  assert.equal(
+    (await app.store.jobs.list({ chatKey: "private:40001" })).length,
+    1,
+  );
+});
 
-  assert.equal(adminJobs.length, 1);
+test("Bunko tools enforce standard-user ACL visibility, privileged writes/appends/soft-delete, and groupDigest publishing", async (t) => {
+  const folderPublicId = "01950000-0000-7000-8000-000000000010";
+  const folderPrivateId = "01950000-0000-7000-8000-000000000020";
+  const docPublicId = "01950000-0000-7000-8000-000000000101";
+  const docMemberId = "01950000-0000-7000-8000-000000000102";
+  const docPrivateId = "01950000-0000-7000-8000-000000000103";
+  const docDeptOnlyId = "01950000-0000-7000-8000-000000000104";
+  const docInPrivateFolderId = "01950000-0000-7000-8000-000000000105";
+  const createdDocs: { title: string; folderId?: string; markdown?: string }[] =
+    [];
+  const appendedCalls: { docId: string; key: string; markdown: string }[] = [];
+  const deletedDocs: string[] = [];
+
+  const bunkoStub = await startStubServer((req, res, bodyText) => {
+    res.setHeader("Content-Type", "application/json");
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+    if (url.pathname === "/api/v1/tree" && req.method === "GET") {
+      const fid = url.searchParams.get("folderId");
+
+      if (!fid) {
+        res.end(
+          JSON.stringify({
+            folder: null,
+            breadcrumb: [],
+            folders: [
+              { id: folderPublicId, name: "公开区", isPrivate: false },
+              { id: folderPrivateId, name: "管理层私密", isPrivate: true },
+            ],
+            documents: [
+              {
+                id: docPublicId,
+                title: "网协简介",
+                folderId: null,
+                isPublic: true,
+                isPrivate: false,
+                version: 1,
+                updatedAt: "2026-11-21T00:00:00Z",
+              },
+              {
+                id: docMemberId,
+                title: "全员手册",
+                folderId: null,
+                isPublic: false,
+                isPrivate: false,
+                version: 1,
+                updatedAt: "2026-11-21T00:00:00Z",
+              },
+              {
+                id: docPrivateId,
+                title: "主席团密件",
+                folderId: null,
+                isPublic: false,
+                isPrivate: true,
+                version: 1,
+                updatedAt: "2026-11-21T00:00:00Z",
+              },
+              {
+                id: docDeptOnlyId,
+                title: "技术部内部",
+                folderId: null,
+                isPublic: false,
+                isPrivate: false,
+                version: 1,
+                updatedAt: "2026-11-21T00:00:00Z",
+              },
+            ],
+            aliases: [],
+          }),
+        );
+
+        return;
+      }
+
+      if (fid === folderPrivateId) {
+        res.end(
+          JSON.stringify({
+            folder: {
+              id: folderPrivateId,
+              name: "管理层私密",
+              isPrivate: true,
+            },
+            breadcrumb: [{ id: folderPrivateId, name: "管理层私密" }],
+            folders: [],
+            documents: [
+              {
+                id: docInPrivateFolderId,
+                title: "私密目录文档",
+                folderId: folderPrivateId,
+                isPublic: false,
+                isPrivate: false,
+                version: 1,
+                updatedAt: "2026-11-21T00:00:00Z",
+              },
+            ],
+            aliases: [],
+          }),
+        );
+
+        return;
+      }
+
+      res.end(
+        JSON.stringify({
+          folder: { id: folderPublicId, name: "公开区", isPrivate: false },
+          breadcrumb: [{ id: folderPublicId, name: "公开区" }],
+          folders: [],
+          documents: [],
+          aliases: [],
+        }),
+      );
+
+      return;
+    }
+
+    if (url.pathname === "/api/v1/tree/path") {
+      const docId = url.searchParams.get("documentId");
+
+      res.end(
+        JSON.stringify({
+          breadcrumb:
+            docId === docInPrivateFolderId
+              ? [{ id: folderPrivateId, name: "管理层私密" }]
+              : [],
+        }),
+      );
+
+      return;
+    }
+
+    if (url.pathname.endsWith("/access")) {
+      const docId = url.pathname.split("/")[4];
+      const map: Record<string, unknown> = {
+        [docPublicId]: {
+          custom: false,
+          rules: [],
+          isPublic: true,
+          isPrivate: false,
+          folderId: null,
+        },
+        [docMemberId]: {
+          custom: false,
+          rules: [],
+          isPublic: false,
+          isPrivate: false,
+          folderId: null,
+        },
+        [docPrivateId]: {
+          custom: false,
+          rules: [],
+          isPublic: false,
+          isPrivate: true,
+          folderId: null,
+        },
+        [docDeptOnlyId]: {
+          custom: true,
+          rules: [
+            {
+              principalType: "department",
+              principalId: "techdept",
+              permission: "read",
+            },
+          ],
+          isPublic: false,
+          isPrivate: false,
+          folderId: null,
+        },
+        [docInPrivateFolderId]: {
+          custom: false,
+          rules: [],
+          isPublic: false,
+          isPrivate: false,
+          folderId: folderPrivateId,
+        },
+      };
+
+      res.end(JSON.stringify(map[docId ?? ""] ?? map[docPrivateId]));
+
+      return;
+    }
+
+    if (url.pathname.endsWith("/content") && req.method === "GET") {
+      res.end(
+        JSON.stringify({
+          markdown: "# 正文\n测试内容",
+          materialized: true,
+          version: 1,
+          headVersion: 1,
+          stale: false,
+        }),
+      );
+
+      return;
+    }
+
+    if (url.pathname.endsWith("/content/append") && req.method === "POST") {
+      const docId = url.pathname.split("/")[4] ?? "";
+      const payload = JSON.parse(bodyText) as { markdown: string };
+
+      appendedCalls.push({
+        docId,
+        key: String(req.headers["idempotency-key"] ?? ""),
+        markdown: payload.markdown,
+      });
+      res.end(JSON.stringify({ version: 2 }));
+
+      return;
+    }
+
+    if (url.pathname === "/api/v1/documents" && req.method === "POST") {
+      const payload = JSON.parse(bodyText) as {
+        title: string;
+        folderId?: string;
+        markdown?: string;
+      };
+
+      createdDocs.push(payload);
+      res.statusCode = 201;
+      res.end(
+        JSON.stringify({
+          document: {
+            id: "01950000-0000-7000-8000-000000000999",
+            title: payload.title,
+            folderId: payload.folderId ?? null,
+            isPublic: false,
+            isPrivate: false,
+            version: 1,
+            updatedAt: "2026-11-21T00:00:00Z",
+          },
+        }),
+      );
+
+      return;
+    }
+
+    if (url.pathname.startsWith("/api/v1/documents/") && req.method === "GET") {
+      const docId = url.pathname.split("/")[4] ?? "";
+
+      res.end(
+        JSON.stringify({
+          document: {
+            id: docId,
+            title: "测试文档",
+            folderId: null,
+            isPublic: docId === docPublicId,
+            isPrivate: docId === docPrivateId,
+            version: 1,
+            updatedAt: "2026-11-21T00:00:00Z",
+          },
+        }),
+      );
+
+      return;
+    }
+
+    if (
+      url.pathname.startsWith("/api/v1/documents/") &&
+      req.method === "DELETE"
+    ) {
+      const docId = url.pathname.split("/")[4] ?? "";
+
+      deletedDocs.push(docId);
+      res.end(JSON.stringify({ deleted: true, hard: false }));
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  }, t);
+
+  const llmStub = await startStubServer((_req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(chatReply({ brief: "- 讨论了 Bunko 迁移方案" })));
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      bunkoApiUrl: bunkoStub.url,
+      bunkoApiKey: "bunko_app_test_token",
+      bunkoPublicUrl: "https://docs.bitnp.net",
+      bunkoWorkspaceSlug: "bitnp",
+      mainBaseUrl: `${llmStub.url}/v1`,
+    },
+    {
+      groupDigest: {
+        minMessages: 1,
+        folderId: folderPublicId,
+      },
+    },
+    t,
+  );
+  const services = makeServices(app);
+  const ids = new ModelIds();
+
+  const externalActor: ToolActor = {
+    chatKey: "group:1001",
+    senderQQ: "5001",
+    actorSubject: null,
+    actorName: "路人",
+    actorIsAdmin: false,
+    actorIsPrivileged: false,
+    actorAdmitted: false,
+  };
+  const memberActor: ToolActor = {
+    chatKey: "group:1001",
+    senderQQ: "6001",
+    actorSubject: "sub-member",
+    actorName: "普通部员",
+    actorIsAdmin: false,
+    actorIsPrivileged: false,
+    actorAdmitted: true,
+  };
+  const managementActor: ToolActor = {
+    chatKey: "group:1001",
+    senderQQ: "7001",
+    actorSubject: "sub-mgmt",
+    actorName: "管理层",
+    actorIsAdmin: false,
+    actorIsPrivileged: true,
+    actorAdmitted: true,
+  };
+
+  // Standard users only get read tools resolved via Tool.guard.
+  assert.deepEqual(
+    resolveTools(bunkoTools, makeCtx(services, ids, memberActor)).map(
+      (tool) => tool.name,
+    ),
+    ["bunko_list_tree", "bunko_read_document"],
+  );
+  assert.equal(
+    resolveTools(bunkoTools, makeCtx(services, ids, managementActor)).length,
+    5,
+  );
+
+  // External user: sees only public docs & non-private folders.
+  const extTree = (await bunkoListTreeTool
+    .bind(makeCtx(services, ids, externalActor))
+    .execute({})) as {
+    folders: { id: string }[];
+    documents: { id: string }[];
+  };
+
+  assert.deepEqual(
+    extTree.folders.map((f) => f.id),
+    [folderPublicId],
+  );
+  assert.deepEqual(
+    extTree.documents.map((d) => d.id),
+    [docPublicId],
+  );
+  await assert.rejects(
+    () =>
+      bunkoReadDocumentTool
+        .bind(makeCtx(services, ids, externalActor))
+        .execute({ documentId: docMemberId }),
+    /私密或受限文档/,
+  );
+
+  // Ordinary bound member: sees public + all-member non-private doc, blocked from private, dept-only, and private-folder docs.
+  const memberTree = (await bunkoListTreeTool
+    .bind(makeCtx(services, ids, memberActor))
+    .execute({})) as { documents: { id: string }[] };
+
+  assert.deepEqual(
+    memberTree.documents.map((d) => d.id),
+    [docPublicId, docMemberId],
+  );
+  await assert.rejects(
+    () =>
+      bunkoReadDocumentTool
+        .bind(makeCtx(services, ids, memberActor))
+        .execute({ documentId: docPrivateId }),
+    /私密或受限文档/,
+  );
+  await assert.rejects(
+    () =>
+      bunkoReadDocumentTool
+        .bind(makeCtx(services, ids, memberActor))
+        .execute({ documentId: docDeptOnlyId }),
+    /私密或受限文档/,
+  );
+  await assert.rejects(
+    () =>
+      bunkoReadDocumentTool
+        .bind(makeCtx(services, ids, memberActor))
+        .execute({ documentId: docInPrivateFolderId }),
+    /私密或受限文档/,
+  );
+  await assert.rejects(
+    () =>
+      bunkoCreateDocumentTool
+        .bind(makeCtx(services, ids, memberActor))
+        .execute({ title: "禁止新建" }),
+    /仅管理员或网协管理层/,
+  );
+
+  // Privileged user can read private docs and create/append/soft-delete.
+  const privRead = (await bunkoReadDocumentTool
+    .bind(makeCtx(services, ids, managementActor))
+    .execute({ documentId: docPrivateId })) as { content: string; url: string };
+
+  assert.match(privRead.content, /测试内容/);
+  assert.equal(
+    privRead.url,
+    `https://docs.bitnp.net/bitnp/doc/${docPrivateId}`,
+  );
+
+  await bunkoCreateDocumentTool
+    .bind(makeCtx(services, ids, managementActor))
+    .execute({
+      title: "会议纪要",
+      folderId: folderPublicId,
+      markdown: "## 要点\n\n- 已迁移",
+    });
+  await bunkoAppendDocumentTool
+    .bind(makeCtx(services, ids, managementActor))
+    .execute({
+      documentId: docMemberId,
+      markdown: "- 补充一条",
+    });
+  await bunkoDeleteDocumentTool
+    .bind(makeCtx(services, ids, managementActor))
+    .execute({ documentId: docMemberId });
+
+  assert.equal(createdDocs[0]?.title, "会议纪要");
+  assert.equal(appendedCalls.length, 1);
+  assert.ok(appendedCalls[0]?.key.startsWith("berry:"));
+  assert.deepEqual(deletedDocs, [docMemberId]);
+
+  // Group digest publishes directly to Bunko folderId.
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "8888",
+    title: "核心技术群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+  await captureText(app, {
+    kind: "group",
+    chatId: "8888",
+    id: "m-digest-1",
+    userId: "7001",
+    senderName: "管理层",
+    text: "周报和群聊摘要都迁到 Bunko 了",
+  });
+
+  await app.scheduler.enqueueDigestNow("8888", 24);
+  await app.worker.drainOnce();
+  await waitUntil(() =>
+    createdDocs.some(
+      (d) =>
+        d.folderId === folderPublicId &&
+        d.title.includes("核心技术群 讨论摘要") &&
+        (d.markdown ?? "").includes("Bunko 迁移方案"),
+    ),
+  );
 });

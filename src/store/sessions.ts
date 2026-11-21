@@ -1,8 +1,9 @@
 import { randomBytes } from "node:crypto";
 
-import type { SitePermissions } from "bitnp-authz";
-
+import type { BerryPermissions } from "../identity/permissions.ts";
 import type { BerryDatabase } from "./database.ts";
+
+export type AdminPermissions = BerryPermissions;
 
 export interface AdminSession {
   id: string;
@@ -10,7 +11,7 @@ export interface AdminSession {
   name: string;
   email: string;
   avatar: string;
-  permissions: SitePermissions;
+  permissions: AdminPermissions;
   csrfToken: string;
   expiresAt: number;
 }
@@ -29,7 +30,7 @@ export class AdminSessionsStore {
     name: string;
     email: string;
     avatar: string;
-    permissions: SitePermissions;
+    permissions: AdminPermissions;
   }): Promise<AdminSession> {
     const now = Date.now();
     const id = randomBytes(32).toString("base64url");
@@ -94,7 +95,7 @@ export class AdminSessionsStore {
       name: row.name,
       email: row.email,
       avatar: row.avatar,
-      permissions: JSON.parse(row.permissions_json) as SitePermissions,
+      permissions: JSON.parse(row.permissions_json) as AdminPermissions,
       csrfToken: row.csrf_token,
       expiresAt: row.expires_at,
     };

@@ -1,140 +1,87 @@
 <script setup lang="ts">
-import { Code, Eye, FilePlus, RefreshCw, Save, Trash2 } from "@lucide/vue";
+import { Code, ExternalLink, Eye, RefreshCw } from "@lucide/vue";
 import {
   NButton,
   NCard,
   NEmpty,
-  NForm,
-  NFormItem,
   NInput,
-  NModal,
-  NPopconfirm,
-  NRadioButton,
-  NRadioGroup,
   NSpace,
   NTag,
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, onMounted, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { computed, onMounted, ref } from "vue";
 
 import { apiFetch } from "../api/client.ts";
 import MarkdownPreview from "../components/MarkdownPreview.vue";
-import { useLiveRefresh } from "../composables/useEventStream.ts";
 import { formatBytes, formatTime } from "../utils/format.ts";
 
 interface DocFileRow {
-  scope: "knowledge" | "notebook";
   path: string;
   sizeBytes: number;
   updatedAt: number;
 }
 
-const route = useRoute();
-const router = useRouter();
 const message = useMessage();
 
 const loadingList = ref(false);
 const loadingDoc = ref(false);
-const saving = ref(false);
 const files = ref<DocFileRow[]>([]);
-const activeScope = ref<"knowledge" | "notebook">(
-  route.query.tab === "notebook" ? "notebook" : "knowledge",
-);
+const bunkoConfigured = ref(false);
+const bunkoWorkspaceUrl = ref("");
 const searchText = ref("");
 
 const selectedFile = ref<DocFileRow | null>(null);
 const content = ref("");
-const dirty = ref(false);
-const notebookMode = ref<"edit" | "preview">("edit");
-const showKnowledgeRaw = ref(false);
-
-const newModalOpen = ref(false);
-const newPath = ref("");
+const showRaw = ref(false);
 
 const filteredFiles = computed(() => {
   const kw = searchText.value.trim().toLowerCase();
 
-  return files.value.filter((f) => {
-    if (f.scope !== activeScope.value) {
-      return false;
-    }
-
-    return !kw || f.path.toLowerCase().includes(kw);
-  });
+  return files.value.filter((f) => !kw || f.path.toLowerCase().includes(kw));
 });
 
 async function loadFiles() {
   loadingList.value = true;
 
   try {
-    const res = await apiFetch<{ items: DocFileRow[] }>("/api/admin/docs");
+    const res = await apiFetch<{
+      items: DocFileRow[];
+      bunkoConfigured?: boolean;
+      bunkoWorkspaceUrl?: string;
+    }>("/api/admin/docs");
 
     files.value = res.items;
+    bunkoConfigured.value = Boolean(res.bunkoConfigured);
+    bunkoWorkspaceUrl.value = res.bunkoWorkspaceUrl ?? "";
 
     if (selectedFile.value) {
-      const exists = res.items.some(
-        (f) =>
-          f.scope === selectedFile.value?.scope &&
-          f.path === selectedFile.value?.path,
-      );
+      const exists = res.items.some((f) => f.path === selectedFile.value?.path);
 
       if (!exists) {
         selectedFile.value = null;
         content.value = "";
-        dirty.value = false;
       }
     }
   } catch (err) {
-    message.error(err instanceof Error ? err.message : "加载文件目录失败");
+    message.error(err instanceof Error ? err.message : "加载知识库目录失败");
   } finally {
     loadingList.value = false;
   }
 }
 
-useLiveRefresh({
-  events: ["job_update", "llm_call"],
-  debounceMs: 500,
-  match: (type, data) => {
-    if (!data || typeof data !== "object") {
-      return false;
-    }
-
-    if (type === "job_update") {
-      const ev = data as { kind?: string; state?: string };
-
-      return (
-        ev.state === "done" &&
-        (ev.kind === "group_digest" || ev.kind === "guild_task")
-      );
-    }
-
-    const ev = data as { purpose?: string };
-
-    return ev.purpose === "subagent:workspace_operator";
-  },
-  refresh: () => loadFiles(),
-});
-
 async function selectFile(file: DocFileRow) {
   loadingDoc.value = true;
   selectedFile.value = file;
-  showKnowledgeRaw.value = false;
+  showRaw.value = false;
 
   try {
-    const qs = new URLSearchParams({
-      scope: file.scope,
-      path: file.path,
-    });
-    const res = await apiFetch<{
-      scope: "knowledge" | "notebook";
-      path: string;
-      content: string;
-    }>(`/api/admin/docs/content?${qs.toString()}`);
+    const qs = new URLSearchParams({ path: file.path });
+    const res = await apiFetch<{ path: string; content: string }>(
+      `/api/admin/docs/content?${qs.toString()}`,
+    );
 
     content.value = res.content;
-    dirty.value = false;
   } catch (err) {
     message.error(err instanceof Error ? err.message : "读取文档失败");
   } finally {
@@ -142,111 +89,10 @@ async function selectFile(file: DocFileRow) {
   }
 }
 
-async function handleSave() {
-  if (selectedFile.value?.scope !== "notebook") {
-    return;
-  }
-
-  saving.value = true;
-
-  try {
-    await apiFetch("/api/admin/docs/content", {
-      method: "PUT",
-      body: JSON.stringify({
-        path: selectedFile.value.path,
-        content: content.value,
-      }),
-    });
-    dirty.value = false;
-    message.success("笔记已保存");
-    await loadFiles();
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "保存失败");
-  } finally {
-    saving.value = false;
-  }
-}
-
-async function handleDelete() {
-  if (selectedFile.value?.scope !== "notebook") {
-    return;
-  }
-
-  try {
-    await apiFetch(
-      `/api/admin/docs/content?path=${encodeURIComponent(selectedFile.value.path)}`,
-      { method: "DELETE" },
-    );
-    selectedFile.value = null;
-    content.value = "";
-    dirty.value = false;
-    message.success("笔记已删除");
-    await loadFiles();
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "删除失败");
-  }
-}
-
-async function handleCreateNote() {
-  const path = newPath.value.trim().replace(/^\/+/, "");
-
-  if (!path) {
-    message.warning("请填写笔记相对路径");
-
-    return;
-  }
-
-  const normalized = path.endsWith(".md") ? path : `${path}.md`;
-
-  saving.value = true;
-
-  try {
-    await apiFetch("/api/admin/docs/content", {
-      method: "PUT",
-      body: JSON.stringify({
-        path: normalized,
-        content: `# ${normalized.replace(/\.md$/, "")}\n\n`,
-      }),
-    });
-    newModalOpen.value = false;
-    newPath.value = "";
-    activeScope.value = "notebook";
-    await loadFiles();
-    const target = files.value.find(
-      (f) => f.scope === "notebook" && f.path === normalized,
-    );
-
-    if (target) {
-      await selectFile(target);
-    }
-
-    message.success("已创建笔记");
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "创建失败");
-  } finally {
-    saving.value = false;
-  }
-}
-
-watch(activeScope, (tab) => {
-  if (route.query.tab !== tab) {
-    void router.replace({ query: { ...route.query, tab } });
-  }
-});
-
-watch(
-  () => route.query.tab,
-  (tab) => {
-    if (tab === "knowledge" || tab === "notebook") {
-      activeScope.value = tab;
-    }
-  },
-);
-
 onMounted(async () => {
   await loadFiles();
 
-  const first = files.value.find((f) => f.scope === activeScope.value);
+  const first = files.value[0];
 
   if (first) {
     await selectFile(first);
@@ -257,41 +103,40 @@ onMounted(async () => {
 <template>
   <div>
     <div class="page-bar">
-      <h1 class="page-title">资料库</h1>
+      <NSpace align="center" :size="10">
+        <h1 class="page-title">只读知识库</h1>
+        <NTag size="small" :type="bunkoConfigured ? 'success' : 'default'">
+          {{ bunkoConfigured ? "Bunko 云文档已接入" : "Bunko 云文档未配置" }}
+        </NTag>
+      </NSpace>
       <NSpace :size="8">
+        <NButton
+          v-if="bunkoWorkspaceUrl"
+          :href="bunkoWorkspaceUrl"
+          rel="noopener noreferrer"
+          size="small"
+          tag="a"
+          target="_blank"
+        >
+          <template #icon>
+            <ExternalLink :size="14" />
+          </template>
+          打开 Bunko 云文档
+        </NButton>
         <NButton :loading="loadingList" size="small" @click="loadFiles">
           <template #icon>
             <RefreshCw :size="14" />
           </template>
           刷新目录
         </NButton>
-        <NButton size="small" type="primary" @click="newModalOpen = true">
-          <template #icon>
-            <FilePlus :size="14" />
-          </template>
-          新建笔记
-        </NButton>
       </NSpace>
     </div>
 
     <div class="docs-grid">
       <NCard class="docs-sidebar" size="small">
-        <NRadioGroup
-          v-model:value="activeScope"
-          class="scope-switch"
-          size="small"
-        >
-          <NRadioButton class="scope-btn" value="knowledge">
-            只读知识库
-          </NRadioButton>
-          <NRadioButton class="scope-btn" value="notebook">
-            树莓娘笔记
-          </NRadioButton>
-        </NRadioGroup>
-
         <NInput
           v-model:value="searchText"
-          class="my-sm"
+          class="mb-sm"
           clearable
           placeholder="筛选文件名"
           size="small"
@@ -300,19 +145,15 @@ onMounted(async () => {
         <NEmpty
           v-if="filteredFiles.length === 0"
           class="my-lg"
-          description="当前分类暂无文档"
+          description="本地 knowledge/ 暂无只读文档"
         />
 
         <div class="file-list">
           <button
             v-for="file in filteredFiles"
-            :key="`${file.scope}:${file.path}`"
+            :key="file.path"
             class="file-item"
-            :class="{
-              active:
-                selectedFile?.scope === file.scope &&
-                selectedFile?.path === file.path,
-            }"
+            :class="{ active: selectedFile?.path === file.path }"
             type="button"
             @click="selectFile(file)"
           >
@@ -329,131 +170,36 @@ onMounted(async () => {
         <template v-if="selectedFile">
           <div class="viewer-header">
             <NSpace align="center" :size="8">
-              <NTag
-                size="small"
-                :type="selectedFile.scope === 'knowledge' ? 'info' : 'primary'"
-              >
-                {{
-                  selectedFile.scope === "knowledge"
-                    ? "只读知识库"
-                    : "树莓娘笔记"
-                }}
-              </NTag>
+              <NTag size="small" type="info">只读知识库</NTag>
               <NText class="mono" strong>{{ selectedFile.path }}</NText>
-              <NTag v-if="dirty" size="tiny" type="warning">未保存</NTag>
             </NSpace>
 
-            <NSpace :size="8">
-              <NButton
-                v-if="selectedFile.scope === 'knowledge'"
-                size="small"
-                @click="showKnowledgeRaw = !showKnowledgeRaw"
-              >
-                <template #icon>
-                  <Code v-if="!showKnowledgeRaw" :size="14" />
-                  <Eye v-else :size="14" />
-                </template>
-                {{ showKnowledgeRaw ? "渲染预览" : "查看源码" }}
-              </NButton>
-
-              <template v-if="selectedFile.scope === 'notebook'">
-                <NButton
-                  size="small"
-                  @click="
-                    notebookMode = notebookMode === 'edit' ? 'preview' : 'edit'
-                  "
-                >
-                  <template #icon>
-                    <Eye v-if="notebookMode === 'edit'" :size="14" />
-                    <Code v-else :size="14" />
-                  </template>
-                  {{ notebookMode === "edit" ? "预览" : "编辑" }}
-                </NButton>
-                <NButton
-                  :loading="saving"
-                  size="small"
-                  type="primary"
-                  @click="handleSave"
-                >
-                  <template #icon>
-                    <Save :size="14" />
-                  </template>
-                  保存
-                </NButton>
-                <NPopconfirm @positive-click="handleDelete">
-                  <template #trigger>
-                    <NButton quaternary size="small" type="error">
-                      <template #icon>
-                        <Trash2 :size="14" />
-                      </template>
-                    </NButton>
-                  </template>
-                  确定删除笔记 {{ selectedFile.path }} ？
-                </NPopconfirm>
+            <NButton size="small" @click="showRaw = !showRaw">
+              <template #icon>
+                <Code v-if="!showRaw" :size="14" />
+                <Eye v-else :size="14" />
               </template>
-            </NSpace>
+              {{ showRaw ? "渲染预览" : "查看源码" }}
+            </NButton>
           </div>
 
-          <div v-if="selectedFile.scope === 'knowledge'">
-            <pre v-if="showKnowledgeRaw" class="code-block">{{ content }}</pre>
-            <MarkdownPreview v-else :source="content" />
-          </div>
-
-          <div v-else>
-            <NInput
-              v-if="notebookMode === 'edit'"
-              v-model:value="content"
-              :autosize="{ minRows: 16, maxRows: 32 }"
-              class="mono"
-              type="textarea"
-              @update:value="dirty = true"
-            />
-            <MarkdownPreview v-else :source="content" />
-          </div>
+          <pre v-if="showRaw" class="code-block">{{ content }}</pre>
+          <MarkdownPreview v-else :source="content" />
         </template>
 
         <NEmpty
           v-else
           class="py-empty"
-          description="从左侧选择一份文档或新建笔记"
+          description="从左侧选择一份只读知识库文档；协作文档、周报及摘要已统一迁移至 Bunko 云文档"
         />
       </NCard>
     </div>
-
-    <NModal
-      v-model:show="newModalOpen"
-      class="modal-sm"
-      preset="card"
-      title="新建笔记"
-    >
-      <NForm label-placement="top" size="small">
-        <NFormItem label="文件相对路径（存储在 data/notebooks 下）">
-          <NInput
-            v-model:value="newPath"
-            placeholder="例如 meeting-notes/2026-11.md"
-            @keyup.enter="handleCreateNote"
-          />
-        </NFormItem>
-        <NSpace justify="end">
-          <NButton @click="newModalOpen = false">取消</NButton>
-          <NButton :loading="saving" type="primary" @click="handleCreateNote">
-            创建
-          </NButton>
-        </NSpace>
-      </NForm>
-    </NModal>
   </div>
 </template>
 
 <style scoped>
-.scope-switch {
-  display: flex;
-  width: 100%;
-}
-
-.scope-btn {
-  flex: 1;
-  text-align: center;
+.mb-sm {
+  margin-bottom: 10px;
 }
 
 .docs-grid {

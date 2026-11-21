@@ -1,7 +1,7 @@
 import type {
   AgentServices,
   ToolContext,
-  ToolSource,
+  ToolEntry,
 } from "../../tools/types.ts";
 import type { ThinkingEffort } from "../loop.ts";
 
@@ -34,9 +34,9 @@ export interface SubagentDefinition {
    */
   readonly systemPrompt: string | ((ctx: ToolContext) => string);
   /**
-   * Static or dynamic tool sources available inside this subagent.
+   * Tools and providers available inside this subagent.
    */
-  readonly tools: readonly ToolSource[];
+  readonly tools: readonly ToolEntry[];
   /**
    * Maximum tool-calling rounds for this subagent (defaults to 32).
    */
@@ -47,8 +47,13 @@ export interface SubagentDefinition {
    */
   readonly thinkingEffort?: ThinkingEffort;
   /**
-   * Optional precondition check before invoking the LLM loop. Return a
-   * non-empty string to short-circuit with that brief.
+   * Optional service-level availability check. When false, the subagent is
+   * omitted from <capabilities> and delegate_subagent.kind.
+   */
+  readonly available?: (services: AgentServices) => boolean;
+  /**
+   * Optional per-request precondition check before invoking the LLM loop.
+   * Return a non-empty string to short-circuit with that brief.
    */
   readonly checkAvailability?: (ctx: ToolContext) => string | null;
 }

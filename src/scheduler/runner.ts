@@ -81,10 +81,16 @@ export class ScheduleRunner {
   }
 
   public async runGroupDigest(job: JobRecord<"group_digest">): Promise<void> {
-    const { store, gateway, knowledge, mcp } = this.#services;
+    const { store, gateway, bunko } = this.#services;
     const settings = this.#services.getSettings();
-    const { chatKey, groupId, startTimeMs, endTimeMs, prompt, uploadTool } =
+    const { chatKey, groupId, startTimeMs, endTimeMs, prompt, folderId } =
       job.payload;
+
+    if (!bunko.enabled) {
+      throw new Error(
+        "Bunko 云文档未配置（BERRY_BUNKO_API_URL / BERRY_BUNKO_API_KEY），无法归档群聊摘要",
+      );
+    }
 
     await gateway.warmChatHistory("group", groupId, 200);
     const messages = await store.messages.search(chatKey, {
@@ -110,7 +116,7 @@ export class ScheduleRunner {
       `请整理 QQ 群「${chat?.title || groupId}」（targetRef=${gRef}）的阶段讨论摘要。`,
       `时间窗：${windowStartIso} ~ ${windowEndIso}（${formatDateTime(startTimeMs, settings.bot.timezone)} ~ ${formatDateTime(endTimeMs, settings.bot.timezone)}）。`,
       `请调用 search_chat_messages(targetRef="${gRef}", startTimeIso="${windowStartIso}", endTimeIso="${windowEndIso}", limit=120) 获取消息（需要更多上下文时配合 read_chat_window），`,
-      "并在 brief 字段直接输出清晰简洁的中文 Markdown 摘要，保留关键技术结论与待办。",
+      "并在 brief 字段直接输出清晰简洁的标准 GFM 中文 Markdown 摘要，保留关键技术结论及待办，禁止原始 HTML 标签、图片或公式语法。",
       `总结重点：${prompt}`,
     ].join("\n");
 
@@ -122,7 +128,7 @@ export class ScheduleRunner {
         actorSubject: null,
         actorName: null,
         actorIsAdmin: true,
-        actorIsManager: true,
+        actorIsPrivileged: true,
         actorAdmitted: true,
       },
       ids,
@@ -135,21 +141,23 @@ export class ScheduleRunner {
     }
 
     const day = formatDay(endTimeMs, settings.bot.timezone);
-    const stamp = formatDateTime(endTimeMs, settings.bot.timezone)
-      .replaceAll(":", "")
-      .replace(" ", "-");
-    const path = `group-digests/${groupId}/${day}-${stamp}.md`;
-    const title = `群 ${groupId} 讨论摘要 (${day})`;
+    const groupLabel = chat?.title?.trim() || `群 ${groupId}`;
+    const title = `${groupLabel} 讨论摘要 (${day})`;
+    const section = `## ${formatDateTime(startTimeMs, settings.bot.timezone)} - ${formatDateTime(endTimeMs, settings.bot.timezone)}\n\n${markdown}\n`;
 
-    await knowledge.writeNotebook(path, `# ${title}\n\n${markdown}\n`);
+    const published = await bunko.publishOrAppend({
+      title,
+      folderId: folderId || settings.groupDigest.folderId || null,
+      markdown: section,
+      idempotencyKey: `group-digest:${groupId}:${startTimeMs}-${endTimeMs}`,
+    });
 
-    if (uploadTool) {
-      await mcp.call(uploadTool, {
-        title,
-        markdown,
-        metadata: { groupId, startTimeMs, endTimeMs },
-      });
-    }
+    this.#logger.info("Published group digest to Bunko", {
+      groupId,
+      documentId: published.documentId,
+      created: published.created,
+      url: published.url,
+    });
   }
 
   public async triggerScheduleNow(scheduleId: string): Promise<boolean> {
@@ -187,7 +195,7 @@ export class ScheduleRunner {
         startTimeMs: now - Math.max(1, lookbackHours) * 3600 * 1000,
         endTimeMs: now,
         prompt: settings.groupDigest.prompt,
-        uploadTool: settings.groupDigest.uploadTool,
+        folderId: settings.groupDigest.folderId,
       },
       now,
     );
@@ -224,7 +232,7 @@ export class ScheduleRunner {
           startTimeMs: startMs,
           endTimeMs: now,
           prompt: settings.groupDigest.prompt,
-          uploadTool: settings.groupDigest.uploadTool,
+          folderId: settings.groupDigest.folderId,
         },
         now,
       );

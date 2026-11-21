@@ -350,7 +350,7 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
   assert.equal(seenSubagentReasoning, "low");
   assert.ok(seenMainToolNames.includes("custom_echo"));
   assert.ok(seenMainToolNames.includes("search_qq_emojis"));
-  assert.ok(seenMainToolNames.includes("qq_directory"));
+  assert.ok(!seenMainToolNames.includes("qq_directory"));
   assert.ok(seenMainToolNames.includes("inspect_media"));
   assert.match(seenMainSystem, /- custom_echo: 自定义扩展主工具。/);
   assert.match(seenMainSystem, /- search_qq_emojis: /);
@@ -358,8 +358,8 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
   assert.match(seenMainSystem, /\* ops_inspector: 执行自定义运维连通性检查。/);
 
   const chatAnalyst = app.subagents.get("chat_analyst");
-  const chatAnalystToolNames = (chatAnalyst?.tools ?? []).map((tool) =>
-    "name" in tool ? tool.name : tool.id,
+  const chatAnalystToolNames = (chatAnalyst?.tools ?? []).map((entry) =>
+    entry.kind === "tool" ? entry.name : entry.id,
   );
 
   assert.deepEqual(chatAnalystToolNames, [
@@ -375,6 +375,9 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
   )?.kind;
 
   assert.ok(kindProp?.enum?.includes("ops_inspector"));
+  assert.ok(kindProp?.enum?.includes("knowledge_operator"));
+  assert.ok(!kindProp?.enum?.includes("bunko_operator"));
+  assert.ok(!kindProp?.enum?.includes("mcp_operator"));
 
   const subCalls = await app.store.usage.listRecent({
     purpose: "subagent:ops_inspector",
@@ -400,6 +403,7 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
       gateway: app.gateway,
       media: app.media,
       knowledge: app.knowledge,
+      bunko: app.bunko,
       directory: app.directory,
       guild: app.guild,
       mcp: app.mcp,
@@ -411,7 +415,7 @@ test("extensible tool and subagent registries wire prompts, schemas, isolation, 
       actorSubject: null,
       actorName: "测试",
       actorIsAdmin: false,
-      actorIsManager: false,
+      actorIsPrivileged: false,
       actorAdmitted: false,
     },
     ids: new ModelIds(),

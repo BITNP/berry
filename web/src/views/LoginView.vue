@@ -11,7 +11,7 @@ const auth = useAuth();
 const errorMessage = computed(() => {
   switch (route.query.error) {
     case "not_admin": {
-      return "当前账号缺少网协系统管理员角色（permission-system-admin），无法进入控制台。";
+      return "当前账号缺少管理层角色（permission-management-access）或系统管理员角色（permission-system-admin），无法进入控制台。";
     }
 
     case "provider_unavailable": {

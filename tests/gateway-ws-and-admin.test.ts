@@ -355,6 +355,9 @@ test("OIDC PKCE login and callback using openid-client and bitnp-authz", async (
   let expectedChallenge = "";
   let expectedNonce = "";
   let issuerUrl = "";
+  let currentSub = "sub-admin-1";
+  let currentRoles = ["permission-system-admin", "permission-techdept-access"];
+  let expectedCode = "auth-code-1";
 
   const oidcStub = await startStubServer((req, res, bodyText) => {
     const reqUrl = new URL(req.url ?? "/", issuerUrl || "http://127.0.0.1");
@@ -394,7 +397,7 @@ test("OIDC PKCE login and callback using openid-client and bitnp-authz", async (
       assert.equal(form.get("grant_type"), "authorization_code");
       assert.equal(form.get("client_id"), "berry-console");
       assert.equal(form.get("client_secret"), "berry-oidc-secret");
-      assert.equal(form.get("code"), "auth-code-1");
+      assert.equal(form.get("code"), expectedCode);
       assert.equal(computedChallenge, expectedChallenge);
 
       const nowSec = Math.floor(Date.now() / 1000);
@@ -404,15 +407,15 @@ test("OIDC PKCE login and callback using openid-client and bitnp-authz", async (
       const payloadB64 = Buffer.from(
         JSON.stringify({
           iss: issuerUrl,
-          sub: "sub-admin-1",
+          sub: currentSub,
           aud: "berry-console",
           iat: nowSec,
           exp: nowSec + 300,
           nonce: expectedNonce,
-          name: "测试管理员",
-          email: "admin@bitnp.net",
+          name: "测试账号",
+          email: "user@bitnp.net",
           realm_access: {
-            roles: ["permission-system-admin", "permission-techdept-access"],
+            roles: currentRoles,
           },
         }),
       ).toString("base64url");
@@ -455,53 +458,159 @@ test("OIDC PKCE login and callback using openid-client and bitnp-authz", async (
 
   app.env.publicUrl = url;
 
-  const loginRes = await fetch(`${url}/api/auth/login?returnTo=%2Flogs`, {
-    redirect: "manual",
+  async function runOidcLogin(opts: {
+    sub: string;
+    roles: string[];
+    code: string;
+  }) {
+    currentSub = opts.sub;
+    currentRoles = opts.roles;
+    expectedCode = opts.code;
+
+    const loginRes = await fetch(`${url}/api/auth/login?returnTo=%2Flogs`, {
+      redirect: "manual",
+    });
+
+    assert.equal(loginRes.status, 302);
+    const authUrl = new URL(loginRes.headers.get("location") ?? "");
+
+    assert.equal(authUrl.origin, oidcStub.url);
+    assert.equal(authUrl.searchParams.get("code_challenge_method"), "S256");
+    expectedChallenge = authUrl.searchParams.get("code_challenge") ?? "";
+    expectedNonce = authUrl.searchParams.get("nonce") ?? "";
+    const state = authUrl.searchParams.get("state") ?? "";
+
+    assert.ok(expectedChallenge && expectedNonce && state);
+
+    const cbUrl = new URL(`${url}/api/auth/callback`);
+
+    cbUrl.searchParams.set("code", opts.code);
+    cbUrl.searchParams.set("state", state);
+
+    return fetch(cbUrl, { redirect: "manual" });
+  }
+
+  // 1. System admin succeeds.
+  const adminCbRes = await runOidcLogin({
+    sub: "sub-admin-1",
+    roles: ["permission-system-admin", "permission-techdept-access"],
+    code: "auth-code-1",
   });
 
-  assert.equal(loginRes.status, 302);
-  const authUrl = new URL(loginRes.headers.get("location") ?? "");
+  assert.equal(adminCbRes.status, 302);
+  assert.equal(adminCbRes.headers.get("location"), "/logs");
+  const adminSessionPair =
+    (adminCbRes.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
 
-  assert.equal(authUrl.origin, oidcStub.url);
-  assert.equal(authUrl.searchParams.get("code_challenge_method"), "S256");
-  expectedChallenge = authUrl.searchParams.get("code_challenge") ?? "";
-  expectedNonce = authUrl.searchParams.get("nonce") ?? "";
-  const state = authUrl.searchParams.get("state") ?? "";
+  assert.match(adminSessionPair, /^berry_session=/);
 
-  assert.ok(expectedChallenge && expectedNonce && state);
-
-  const cbUrl = new URL(`${url}/api/auth/callback`);
-
-  cbUrl.searchParams.set("code", "auth-code-1");
-  cbUrl.searchParams.set("state", state);
-
-  const cbRes = await fetch(cbUrl, { redirect: "manual" });
-
-  assert.equal(cbRes.status, 302);
-  assert.equal(cbRes.headers.get("location"), "/logs");
-  const sessionPair =
-    (cbRes.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
-
-  assert.match(sessionPair, /^berry_session=/);
-
-  const statusJson = (await (
+  const adminStatusJson = (await (
     await fetch(`${url}/api/auth/status`, {
-      headers: { Cookie: sessionPair },
+      headers: { Cookie: adminSessionPair },
     })
   ).json()) as {
     state: string;
     user?: {
       subject: string;
-      permissions: { systemAdmin: boolean; accessDepartments: string[] };
+      permissions: {
+        systemAdmin: boolean;
+        managementAccess?: boolean;
+        accessDepartments: string[];
+      };
     };
   };
 
-  assert.equal(statusJson.state, "active");
-  assert.equal(statusJson.user?.subject, "sub-admin-1");
-  assert.equal(statusJson.user?.permissions.systemAdmin, true);
-  assert.deepEqual(statusJson.user?.permissions.accessDepartments, [
+  assert.equal(adminStatusJson.state, "active");
+  assert.equal(adminStatusJson.user?.subject, "sub-admin-1");
+  assert.equal(adminStatusJson.user?.permissions.systemAdmin, true);
+  assert.equal(adminStatusJson.user?.permissions.managementAccess, false);
+  assert.deepEqual(adminStatusJson.user?.permissions.accessDepartments, [
     "techdept",
   ]);
+
+  // 2. Management role (permission-management-access, without system-admin) succeeds.
+  const mgmtCbRes = await runOidcLogin({
+    sub: "sub-mgmt-1",
+    roles: ["permission-management-access", "permission-techdept-access"],
+    code: "auth-code-2",
+  });
+
+  assert.equal(mgmtCbRes.status, 302);
+  assert.equal(mgmtCbRes.headers.get("location"), "/logs");
+  const mgmtSessionPair =
+    (mgmtCbRes.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+
+  assert.match(mgmtSessionPair, /^berry_session=/);
+
+  const mgmtStatusJson = (await (
+    await fetch(`${url}/api/auth/status`, {
+      headers: { Cookie: mgmtSessionPair },
+    })
+  ).json()) as {
+    state: string;
+    user?: {
+      subject: string;
+      permissions: {
+        systemAdmin: boolean;
+        managementAccess?: boolean;
+      };
+    };
+  };
+
+  assert.equal(mgmtStatusJson.state, "active");
+  assert.equal(mgmtStatusJson.user?.subject, "sub-mgmt-1");
+  assert.equal(mgmtStatusJson.user?.permissions.systemAdmin, false);
+  assert.equal(mgmtStatusJson.user?.permissions.managementAccess, true);
+
+  const mgmtOverviewRes = await fetch(`${url}/api/admin/overview`, {
+    headers: { Cookie: mgmtSessionPair },
+  });
+
+  assert.equal(mgmtOverviewRes.status, 200);
+
+  // 3. Ordinary member without management-access or system-admin is rejected.
+  const memberCbRes = await runOidcLogin({
+    sub: "sub-member-1",
+    roles: ["permission-techdept-access"],
+    code: "auth-code-3",
+  });
+
+  assert.equal(memberCbRes.status, 302);
+  assert.equal(memberCbRes.headers.get("location"), "/login?error=not_admin");
+  assert.equal(memberCbRes.headers.get("set-cookie"), null);
+
+  // 4. Persisted session lacking both roles is treated as anonymous and rejected with 403.
+  const unprivSession = await app.store.sessions.create({
+    subject: "sub-unpriv",
+    name: "Member",
+    email: "",
+    avatar: "",
+    permissions: {
+      admitted: true,
+      systemAdmin: false,
+      managementAccess: false,
+      manager: false,
+      accessDepartments: ["techdept"],
+      managedDepartments: [],
+      positions: [],
+    },
+  });
+  const unprivCookie = `berry_session=${unprivSession.id}`;
+  const unprivStatus = (await (
+    await fetch(`${url}/api/auth/status`, {
+      headers: { Cookie: unprivCookie },
+    })
+  ).json()) as { state: string };
+
+  assert.equal(unprivStatus.state, "anonymous");
+  assert.equal(
+    (
+      await fetch(`${url}/api/admin/settings`, {
+        headers: { Cookie: unprivCookie },
+      })
+    ).status,
+    403,
+  );
 });
 
 test("MessageGatewayClient polls message-status past backoff ramp until terminal state, times out safely, and aborts on close", async (t) => {

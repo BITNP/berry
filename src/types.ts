@@ -163,7 +163,7 @@ export interface JobPayloads {
     startTimeMs: number;
     endTimeMs: number;
     prompt: string;
-    uploadTool: string;
+    folderId?: string;
   };
   guild_task: {
     task: GuildTaskKind;

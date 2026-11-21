@@ -19,6 +19,7 @@ import { Type } from "typebox";
 import type { BerryApp } from "../app.ts";
 import { parseSettings, scheduleSpecSchema } from "../config/settings.ts";
 import { errorMessage } from "../utils/time.ts";
+import { hasConsoleAccess } from "./auth.ts";
 import {
   idParamSchema,
   parseBody,
@@ -137,13 +138,6 @@ const lookupQuerySchema = Type.Object({
 });
 
 const docReadQuerySchema = Type.Object({
-  scope: Type.Union([Type.Literal("knowledge"), Type.Literal("notebook")], {
-    default: "notebook",
-  }),
-  path: Type.String({ default: "" }),
-});
-
-const docPathQuerySchema = Type.Object({
   path: Type.String({ default: "" }),
 });
 
@@ -236,11 +230,6 @@ const patchScheduleBodySchema = Type.Object({
   enabled: Type.Optional(Type.Boolean()),
 });
 
-const docWriteBodySchema = Type.Object({
-  path: nonBlankString,
-  content: Type.String(),
-});
-
 const purgeBodySchema = Type.Object({
   olderThanDays: Type.Integer({ minimum: 1, default: 30 }),
 });
@@ -267,6 +256,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       status: "ok",
       gatewayConfigured: berry.gateway.configured,
       gatewayStreamConnected: berry.gatewayEvents.connected,
+      bunkoConfigured: berry.bunko.enabled,
       workerRunning: berry.worker.running,
       devAuthBypass: berry.auth.devBypass,
       oidcConfigured: berry.auth.oidcConfigured,
@@ -289,7 +279,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       setHeader(event, "Cache-Control", "no-store");
       const session = await berry.auth.getSession(event);
 
-      if (!session?.permissions.systemAdmin) {
+      if (!session || !hasConsoleAccess(session.permissions)) {
         return {
           state: "anonymous",
           user: null,
@@ -376,6 +366,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         todayUsage,
         guildApiConfigured: berry.guild.enabled,
         guildStreamConnected: berry.guildAutomation.streamConnected,
+        bunkoConfigured: berry.bunko.enabled,
         keycloakConfigured: berry.directory.enabled,
         mcpServers: berry.mcp.statuses,
         storage: storageSummary,
@@ -957,7 +948,11 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
 
-      return { items: await berry.knowledge.listFiles("all") };
+      return {
+        items: await berry.knowledge.listFiles(),
+        bunkoConfigured: berry.bunko.enabled,
+        bunkoWorkspaceUrl: berry.bunko.workspaceUrl(),
+      };
     }),
   );
 
@@ -965,33 +960,42 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/docs/content",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const { scope, path } = await parseQuery(event, docReadQuerySchema);
+      const { path } = await parseQuery(event, docReadQuerySchema);
 
       return {
-        scope,
         path,
-        content: await berry.knowledge.readRaw(scope, path),
+        content: await berry.knowledge.readRaw(path),
       };
     }),
   );
 
-  router.put(
-    "/api/admin/docs/content",
+  router.get(
+    "/api/admin/bunko/folders",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const body = await parseBody(event, docWriteBodySchema);
 
-      return berry.knowledge.writeNotebook(body.path, body.content, "replace");
-    }),
-  );
+      if (!berry.bunko.enabled) {
+        return {
+          configured: false,
+          workspaceUrl: berry.bunko.workspaceUrl(),
+          folders: [],
+        };
+      }
 
-  router.delete(
-    "/api/admin/docs/content",
-    defineEventHandler(async (event) => {
-      await berry.auth.requireAdmin(event);
-      const { path } = await parseQuery(event, docPathQuerySchema);
-
-      return berry.knowledge.deleteNotebook(path);
+      try {
+        return {
+          configured: true,
+          workspaceUrl: berry.bunko.workspaceUrl(),
+          folders: await berry.bunko.listAllFolders(),
+        };
+      } catch (error) {
+        return {
+          configured: true,
+          workspaceUrl: berry.bunko.workspaceUrl(),
+          folders: [],
+          error: errorMessage(error),
+        };
+      }
     }),
   );
 
@@ -1032,6 +1036,9 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
           oidcIssuer: berry.env.oidcIssuer,
           guildApiUrl: berry.env.guildApiUrl,
           guildPublicUrl: berry.env.guildPublicUrl,
+          bunkoApiUrl: berry.env.bunkoApiUrl,
+          bunkoPublicUrl: berry.bunko.workspaceUrl(),
+          bunkoConfigured: berry.bunko.enabled,
         },
       };
     }),

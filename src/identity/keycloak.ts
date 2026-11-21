@@ -1,11 +1,11 @@
-import type { SitePermissions } from "bitnp-authz";
-import { fromRoles } from "bitnp-authz";
 import { LRUCache } from "lru-cache";
 import type { $Fetch, FetchResponse } from "ofetch";
 import { FetchError, ofetch } from "ofetch";
 
 import type { EnvConfig } from "../config/env.ts";
 import { Logger } from "../utils/logger.ts";
+import type { BerryPermissions } from "./permissions.ts";
+import { permissionsFromRoles } from "./permissions.ts";
 
 export interface DirectoryUser {
   subject: string;
@@ -13,7 +13,7 @@ export interface DirectoryUser {
   name: string;
   qq: string | null;
   enabled: boolean;
-  permissions: SitePermissions;
+  permissions: BerryPermissions;
 }
 
 const POSITIVE_TTL_MS = 5 * 60 * 1000;
@@ -259,7 +259,7 @@ export class IdentityDirectory {
       name: fullName || raw.username?.trim() || raw.id,
       qq: this.#extractQQ(raw),
       enabled: raw.enabled !== false,
-      permissions: fromRoles(roles),
+      permissions: permissionsFromRoles(roles),
     };
   }
 

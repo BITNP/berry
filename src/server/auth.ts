@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
 
-import { fromClaims } from "bitnp-authz";
 import type { H3Event } from "h3";
 import {
   createError,
@@ -16,6 +15,11 @@ import * as oidc from "openid-client";
 import { Type } from "typebox";
 
 import type { EnvConfig } from "../config/env.ts";
+import {
+  MANAGEMENT_ACCESS_ROLE,
+  hasManagementAccess,
+  permissionsFromClaims,
+} from "../identity/permissions.ts";
 import type { Store } from "../store/index.ts";
 import type { AdminSession } from "../store/sessions.ts";
 import { constantTimeEquals } from "../utils/crypto.ts";
@@ -32,6 +36,8 @@ const callbackQuerySchema = Type.Object({
 
 const SESSION_COOKIE = "berry_session";
 const PENDING_TTL_MS = 10 * 60 * 1000;
+
+export { MANAGEMENT_ACCESS_ROLE, hasManagementAccess as hasConsoleAccess };
 
 interface PendingLogin {
   nonce: string;
@@ -92,6 +98,7 @@ export class AdminAuthService {
         permissions: {
           admitted: true,
           systemAdmin: true,
+          managementAccess: true,
           manager: true,
           accessDepartments: ["techdept"],
           managedDepartments: ["techdept"],
@@ -122,11 +129,11 @@ export class AdminAuthService {
       });
     }
 
-    if (!session.permissions.systemAdmin) {
+    if (!hasManagementAccess(session.permissions)) {
       throw createError({
         statusCode: 403,
         statusMessage: "FORBIDDEN",
-        message: "仅限系统管理员访问",
+        message: "仅限网协管理层或系统管理员访问",
       });
     }
 
@@ -225,9 +232,9 @@ export class AdminAuthService {
         return sendRedirect(event, "/login?error=oidc_failed", 302);
       }
 
-      const permissions = fromClaims(claims);
+      const permissions = permissionsFromClaims(claims);
 
-      if (!permissions.systemAdmin) {
+      if (!hasManagementAccess(permissions)) {
         return sendRedirect(event, "/login?error=not_admin", 302);
       }
 

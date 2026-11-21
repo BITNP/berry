@@ -3,8 +3,10 @@ import { Type } from "typebox";
 import type { DirectoryUser } from "../identity/keycloak.ts";
 import type { GuildAuditAction } from "../types.ts";
 import { errorMessage } from "../utils/time.ts";
-import type { ToolContext, ToolDefinition } from "./types.ts";
-import { defineTool } from "./types.ts";
+import type { Tool, ToolContext } from "./types.ts";
+import { defineTool, requirePrivileged } from "./types.ts";
+
+const guildWriteGuard = requirePrivileged("执行公会看板写操作");
 
 const formatDirectoryMember = (user: DirectoryUser) => ({
   subject: user.subject,
@@ -184,8 +186,9 @@ export const guildNodeProgressTool = defineTool({
 export const guildCreateNodeTool = defineTool({
   name: "guild_create_node",
   description:
-    "代表当前发言人在公会看板创建根节点或子节点。创建前应先通过 guild_list_tree 确认现有层级及父节点 ID（周报、纪要等周期性/归档型内容应挂在总归档父节点下，避免单期文档散落在顶层）以及成员 subject。",
+    "代表当前发言人在公会看板创建任务/项目节点。公会看板仅用于项目管理及任务拆解，周报、会议纪要、复盘及归档型文档请写入 Bunko 云文档（通过 bunko_operator），不要作为公会节点创建。创建前先通过 guild_list_tree 确认现有层级及父节点 ID 以及成员 subject。",
   mutating: true,
+  guard: guildWriteGuard,
   parameters: Type.Object(
     {
       parentId: Type.Optional(
@@ -226,6 +229,7 @@ export const guildUpdateNodeTool = defineTool({
   name: "guild_update_node",
   description: "更新公会节点的标题、描述、截止时间、标签或完成状态。",
   mutating: true,
+  guard: guildWriteGuard,
   parameters: Type.Object(
     {
       nodeId: Type.Integer({ minimum: 1 }),
@@ -262,6 +266,7 @@ export const guildMoveNodeTool = defineTool({
   name: "guild_move_node",
   description: "将公会节点及其子树移动到另一个父节点下，或传 null 移为根节点。",
   mutating: true,
+  guard: guildWriteGuard,
   parameters: Type.Object(
     {
       nodeId: Type.Integer({ minimum: 1 }),
@@ -286,6 +291,7 @@ export const guildReplaceMembersTool = defineTool({
   description:
     "全量替换公会节点的直接负责人（leaders，至少 1 人）和直接成员（members，不能和 leaders 重叠）。调整前应先调用 guild_get_node 查看现有人员，避免误删需保留的成员。",
   mutating: true,
+  guard: guildWriteGuard,
   parameters: Type.Object(
     {
       nodeId: Type.Integer({ minimum: 1 }),
@@ -316,6 +322,7 @@ export const guildAddCommentTool = defineTool({
   name: "guild_add_comment",
   description: "在指定公会节点下发布一条进展评论。",
   mutating: true,
+  guard: guildWriteGuard,
   parameters: Type.Object(
     {
       nodeId: Type.Integer({ minimum: 1 }),
@@ -339,7 +346,7 @@ export const guildAddCommentTool = defineTool({
   },
 });
 
-export const guildTools: readonly ToolDefinition[] = [
+export const guildTools: readonly Tool[] = [
   guildResolveMemberTool,
   guildListTreeTool,
   guildSearchNodesTool,

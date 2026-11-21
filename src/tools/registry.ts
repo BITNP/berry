@@ -1,53 +1,53 @@
 import type { AgentTool } from "../agent/loop.ts";
-import type { AgentServices, ToolContext, ToolSource } from "./types.ts";
+import type { AgentServices, ToolContext, ToolEntry } from "./types.ts";
 import { resolveTools } from "./types.ts";
 
 export class ToolRegistry {
-  #sources: ToolSource[] = [];
+  #entries: ToolEntry[] = [];
   #keys = new Set<string>();
 
-  public register(...sources: ToolSource[]): this {
-    for (const source of sources) {
+  public register(...entries: ToolEntry[]): this {
+    for (const entry of entries) {
       const key =
-        "bind" in source ? `tool:${source.name}` : `source:${source.id}`;
+        entry.kind === "tool" ? `tool:${entry.name}` : `provider:${entry.id}`;
 
       if (this.#keys.has(key)) {
         throw new Error(`Duplicate tool registration: ${key}`);
       }
 
       this.#keys.add(key);
-      this.#sources.push(source);
+      this.#entries.push(entry);
     }
 
     return this;
   }
 
-  public listSources(): readonly ToolSource[] {
-    return this.#sources;
-  }
-
   public resolve(ctx: ToolContext): AgentTool[] {
-    return resolveTools(this.#sources, ctx);
+    return resolveTools(this.#entries, ctx);
   }
 
   public describeCapabilities(services: AgentServices): string[] {
     const lines: string[] = [];
 
-    for (const source of this.#sources) {
-      const desc = source.describeCapability?.(services);
+    for (const entry of this.#entries) {
+      if (entry.kind === "tool") {
+        if (entry.available && !entry.available(services)) {
+          continue;
+        }
 
-      if (!desc) {
+        const trimmed = entry.description.trim();
+
+        if (trimmed) {
+          lines.push(`- ${entry.name}: ${trimmed}`);
+        }
+
         continue;
       }
 
-      if (Array.isArray(desc)) {
-        for (const line of desc) {
-          if (line.trim()) {
-            lines.push(line);
-          }
+      for (const line of entry.describe?.(services) ?? []) {
+        if (line.trim()) {
+          lines.push(line);
         }
-      } else if (desc.trim()) {
-        lines.push(desc);
       }
     }
 

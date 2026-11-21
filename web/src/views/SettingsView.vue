@@ -102,7 +102,7 @@ interface RuntimeSettingsView {
     assignmentsEnabled: boolean;
     weeklyReportEnabled: boolean;
     weeklySchedule: WeeklySchedule | null;
-    weeklyUploadTool: string;
+    weeklyFolderId: string;
   };
   groupDigest: {
     enabled: boolean;
@@ -110,7 +110,7 @@ interface RuntimeSettingsView {
     intervalMinutes: number;
     minMessages: number;
     prompt: string;
-    uploadTool: string;
+    folderId: string;
   };
   mcpServers: McpServerFormRow[];
   media: {
@@ -132,6 +132,16 @@ interface EnvSummaryView {
   oidcIssuer: string;
   guildApiUrl: string;
   guildPublicUrl: string;
+  bunkoApiUrl: string;
+  bunkoPublicUrl: string;
+  bunkoConfigured: boolean;
+}
+
+interface BunkoFolderOption {
+  id: string;
+  name: string;
+  path: string;
+  isPrivate: boolean;
 }
 
 interface McpStatusRow {
@@ -204,6 +214,7 @@ const activeTab = ref(
 const settings = ref<RuntimeSettingsView | null>(null);
 const thinkingTasks = ref<ThinkingTaskOption[]>([]);
 const envSummary = ref<EnvSummaryView | null>(null);
+const bunkoFolders = ref<BunkoFolderOption[]>([]);
 const mcpStatuses = ref<McpStatusRow[]>([]);
 const mcpTools = ref<McpToolRow[]>([]);
 const storage = ref<StorageSummary | null>(null);
@@ -236,6 +247,14 @@ const mcpForm = ref<{
   headersList: [],
   allowedTools: [],
 });
+
+const bunkoFolderSelectOptions = computed(() => [
+  { label: "工作区根目录（默认）", value: "" },
+  ...bunkoFolders.value.map((f) => ({
+    label: f.isPrivate ? `${f.path}（私密）` : f.path,
+    value: f.id,
+  })),
+]);
 
 const weekdayOptions = [
   { label: "周一", value: "mon" },
@@ -316,7 +335,7 @@ async function loadSettings() {
   loading.value = true;
 
   try {
-    const [cfgRes, mcpRes, ovRes] = await Promise.all([
+    const [cfgRes, mcpRes, ovRes, bunkoRes] = await Promise.all([
       apiFetch<{
         settings: RuntimeSettingsView;
         thinkingTasks?: ThinkingTaskOption[];
@@ -326,6 +345,15 @@ async function loadSettings() {
         "/api/admin/mcp",
       ),
       apiFetch<{ storage: StorageSummary }>("/api/admin/overview"),
+      apiFetch<{
+        configured: boolean;
+        folders: BunkoFolderOption[];
+        error?: string;
+      }>("/api/admin/bunko/folders").catch(() => ({
+        configured: false,
+        folders: [] as BunkoFolderOption[],
+        error: "",
+      })),
     ]);
 
     settings.value = {
@@ -337,6 +365,7 @@ async function loadSettings() {
     };
     thinkingTasks.value = cfgRes.thinkingTasks ?? [];
     envSummary.value = cfgRes.envSummary;
+    bunkoFolders.value = bunkoRes.folders ?? [];
     mcpStatuses.value = mcpRes.statuses;
     mcpTools.value = mcpRes.tools;
     storage.value = ovRes.storage;
@@ -1010,7 +1039,10 @@ onMounted(() => {
                       label: '仅管理员及网协在籍成员',
                       value: 'members_and_admins',
                     },
-                    { label: '仅管理员', value: 'admins_only' },
+                    {
+                      label: '仅高级权限（管理员/管理层）',
+                      value: 'admins_only',
+                    },
                   ]"
                 />
               </NFormItem>
@@ -1027,7 +1059,7 @@ onMounted(() => {
                   ]"
                 />
               </NFormItem>
-              <NFormItem label="管理员消息跳过小模型过滤">
+              <NFormItem label="高级权限直连跳过小模型（@/引用/私聊）">
                 <NSwitch v-model:value="settings.policy.adminBypassGate" />
               </NFormItem>
             </div>
@@ -1062,8 +1094,23 @@ onMounted(() => {
                   :min="1"
                 />
               </NFormItem>
-              <NFormItem label="外部上传工具名（可选 MCP 工具）">
-                <NInput v-model:value="settings.groupDigest.uploadTool" />
+              <NFormItem label="Bunko 目标目录（留空写入工作区根目录）">
+                <NSelect
+                  v-if="bunkoFolders.length > 0"
+                  clearable
+                  filterable
+                  :options="bunkoFolderSelectOptions"
+                  placeholder="选择 Bunko 目录"
+                  :value="settings.groupDigest.folderId"
+                  @update:value="
+                    (v) => (settings!.groupDigest.folderId = v ?? '')
+                  "
+                />
+                <NInput
+                  v-else
+                  v-model:value="settings.groupDigest.folderId"
+                  placeholder="可选 Bunko 目录 UUID（留空写根目录）"
+                />
               </NFormItem>
             </div>
             <NFormItem label="纳入摘要的群号列表">
@@ -1115,9 +1162,22 @@ onMounted(() => {
                   v-model:value="settings.guildAutomation.weeklyReportEnabled"
                 />
               </NFormItem>
-              <NFormItem label="周报上传工具名（可选 MCP 工具）">
+              <NFormItem label="Bunko 周报归档目录（留空写入工作区根目录）">
+                <NSelect
+                  v-if="bunkoFolders.length > 0"
+                  clearable
+                  filterable
+                  :options="bunkoFolderSelectOptions"
+                  placeholder="选择 Bunko 周报目录"
+                  :value="settings.guildAutomation.weeklyFolderId"
+                  @update:value="
+                    (v) => (settings!.guildAutomation.weeklyFolderId = v ?? '')
+                  "
+                />
                 <NInput
-                  v-model:value="settings.guildAutomation.weeklyUploadTool"
+                  v-else
+                  v-model:value="settings.guildAutomation.weeklyFolderId"
+                  placeholder="可选 Bunko 目录 UUID（留空写根目录）"
                 />
               </NFormItem>
               <NFormItem label="自定义周报触发时刻">

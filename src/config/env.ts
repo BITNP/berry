@@ -21,6 +21,10 @@ export interface EnvConfig {
   guildApiUrl: string;
   guildInternalToken: string;
   guildPublicUrl: string;
+  bunkoApiUrl: string;
+  bunkoApiKey: string;
+  bunkoPublicUrl: string;
+  bunkoWorkspaceSlug: string;
   botQQ: string;
   allowedGroups: string[];
   mainBaseUrl: string;
@@ -135,6 +139,10 @@ export function loadEnvConfig(
     guildApiUrl: readEnv(env, "BERRY_GUILD_API_URL").replace(/\/+$/, ""),
     guildInternalToken: readEnv(env, "BERRY_GUILD_INTERNAL_TOKEN"),
     guildPublicUrl: readEnv(env, "BERRY_GUILD_PUBLIC_URL").replace(/\/+$/, ""),
+    bunkoApiUrl: readEnv(env, "BERRY_BUNKO_API_URL").replace(/\/+$/, ""),
+    bunkoApiKey: readEnv(env, "BERRY_BUNKO_API_KEY"),
+    bunkoPublicUrl: readEnv(env, "BERRY_BUNKO_PUBLIC_URL").replace(/\/+$/, ""),
+    bunkoWorkspaceSlug: readEnv(env, "BERRY_BUNKO_WORKSPACE_SLUG", "bitnp"),
     botQQ: readEnv(env, "BERRY_BOT_QQ"),
     allowedGroups: readDigitList(env, "BERRY_ALLOWED_GROUPS"),
     mainBaseUrl: readEnv(

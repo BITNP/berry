@@ -1,6 +1,8 @@
 import type { RuntimeSettings } from "../config/settings.ts";
 import type { MessageGatewayClient } from "../gateway/client.ts";
 import type { IdentityDirectory } from "../identity/keycloak.ts";
+import type { SenderPrivilege } from "../identity/permissions.ts";
+import { hasManagementAccess } from "../identity/permissions.ts";
 import type { MediaProcessor } from "../media/processor.ts";
 import type { Store } from "../store/index.ts";
 import type { JobRecord, MessageRecord } from "../types.ts";
@@ -38,20 +40,21 @@ export class MessageGate {
   async #resolveSenderAccess(
     userId: string,
     settings: RuntimeSettings,
-  ): Promise<{ isAdmin: boolean; isAdmitted: boolean }> {
+  ): Promise<{ isAdmin: boolean; isPrivileged: boolean; isAdmitted: boolean }> {
     if (settings.policy.adminQQs.includes(userId)) {
-      return { isAdmin: true, isAdmitted: true };
+      return { isAdmin: true, isPrivileged: true, isAdmitted: true };
     }
 
     if (!this.#directory.enabled) {
-      return { isAdmin: false, isAdmitted: false };
+      return { isAdmin: false, isPrivileged: false, isAdmitted: false };
     }
 
     const identity = await this.#directory.byQQ(userId).catch(() => null);
     const isAdmin = Boolean(identity?.permissions.systemAdmin);
-    const isAdmitted = isAdmin || Boolean(identity?.permissions.admitted);
+    const isPrivileged = isAdmin || hasManagementAccess(identity?.permissions);
+    const isAdmitted = isPrivileged || Boolean(identity?.permissions.admitted);
 
-    return { isAdmin, isAdmitted };
+    return { isAdmin, isPrivileged, isAdmitted };
   }
 
   public async ingest(message: MessageRecord): Promise<void> {
@@ -94,15 +97,29 @@ export class MessageGate {
       return;
     }
 
+    let cachedAccess: {
+      isAdmin: boolean;
+      isPrivileged: boolean;
+      isAdmitted: boolean;
+    } | null = null;
+    const getSenderAccess = async () => {
+      cachedAccess ??= await this.#resolveSenderAccess(
+        message.userId,
+        settings,
+      );
+
+      return cachedAccess;
+    };
+
     if (
       message.kind === "private" &&
       settings.policy.privateAccessMode !== "all"
     ) {
-      const access = await this.#resolveSenderAccess(message.userId, settings);
+      const access = await getSenderAccess();
       const allowed =
         settings.policy.privateAccessMode === "admins_only"
-          ? access.isAdmin
-          : access.isAdmin || access.isAdmitted;
+          ? access.isPrivileged
+          : access.isAdmitted;
 
       if (!allowed) {
         await this.#store.gate.record({
@@ -113,7 +130,7 @@ export class MessageGate {
           confidence: 1,
           reason:
             settings.policy.privateAccessMode === "admins_only"
-              ? "私聊门禁已设为仅管理员开放，已忽略非管理员私聊"
+              ? "私聊门禁已设为仅管理员或网协管理层开放，已忽略普通权限私聊"
               : "私聊门禁已设为仅管理员及网协在籍成员开放，已忽略未绑定或外部人员私聊",
           model: "l0-rule",
           durationMs: 0,
@@ -133,7 +150,9 @@ export class MessageGate {
     }
 
     if (isDirectInvocation && message.text.trim() === "#NEW#") {
-      if (!settings.policy.adminQQs.includes(message.userId)) {
+      const access = await getSenderAccess();
+
+      if (!access.isAdmin) {
         await this.#store.gate.record({
           chatKey: message.chatKey,
           messageId: message.id,
@@ -183,25 +202,27 @@ export class MessageGate {
       return;
     }
 
-    if (
-      settings.policy.adminBypassGate &&
-      isDirectInvocation &&
-      settings.policy.adminQQs.includes(message.userId)
-    ) {
-      await this.#store.gate.record({
-        chatKey: message.chatKey,
-        messageId: message.id,
-        action: "reply",
-        stage: "l0_rule",
-        confidence: 1,
-        reason: "管理员直连指令，跳过小模型分类",
-        model: "l0-rule",
-        durationMs: 0,
-      });
-      await this.#enqueueInvoke([message]);
-      this.#wake();
+    if (settings.policy.adminBypassGate && isDirectInvocation) {
+      const access = await getSenderAccess();
 
-      return;
+      if (access.isPrivileged) {
+        await this.#store.gate.record({
+          chatKey: message.chatKey,
+          messageId: message.id,
+          action: "reply",
+          stage: "l0_rule",
+          confidence: 1,
+          reason: access.isAdmin
+            ? "管理员直连指令，跳过小模型分类"
+            : "网协管理层直连指令，跳过小模型分类",
+          model: "l0-rule",
+          durationMs: 0,
+        });
+        await this.#enqueueInvoke([message]);
+        this.#wake();
+
+        return;
+      }
     }
 
     await this.#store.jobs.coalesceGateBatch(
@@ -263,11 +284,17 @@ export class MessageGate {
 
     const memIndex = await this.#store.memories.index(chat.chatKey);
     const userMems: Record<string, { key: string; summary: string }[]> = {};
+    const senderPrivileges: Record<string, SenderPrivilege> = {};
 
     for (const userId of new Set(activeCandidates.map((m) => m.userId))) {
       userMems[userId] = (
         await this.#store.memories.index(chat.chatKey, userId)
       ).user;
+      const access = await this.#resolveSenderAccess(userId, settings);
+
+      senderPrivileges[userId] = access.isPrivileged
+        ? "privileged"
+        : "standard";
     }
 
     const { results, model, durationMs } = await this.#classifier.classifyBatch(
@@ -276,32 +303,43 @@ export class MessageGate {
       await this.#enrichCandidates(chat.chatKey, activeCandidates),
       await this.#enrichContextLines(chat.chatKey, recentContext),
       { global: memIndex.global, chat: memIndex.chat, users: userMems },
+      senderPrivileges,
     );
 
     const replyMessages: MessageRecord[] = [];
     const byId = new Map(activeCandidates.map((m) => [m.id, m]));
 
     for (const decision of results) {
+      const msg = byId.get(decision.messageId);
+      const isPrivilegedSender = msg
+        ? senderPrivileges[msg.userId] === "privileged"
+        : false;
+      const effectiveAction =
+        decision.action === "memory" && !isPrivilegedSender
+          ? "ignore"
+          : decision.action;
+
       await this.#store.gate.record({
         chatKey: chat.chatKey,
         messageId: decision.messageId,
-        action: decision.action,
+        action: effectiveAction,
         stage: "l1_classifier",
         confidence: decision.confidence,
-        reason: decision.reason,
+        reason:
+          effectiveAction === decision.action
+            ? decision.reason
+            : `${decision.reason}（普通权限不触发静默记忆写入，已忽略）`,
         model,
         durationMs,
       });
-
-      const msg = byId.get(decision.messageId);
 
       if (!msg) {
         continue;
       }
 
-      if (decision.action === "reply") {
+      if (effectiveAction === "reply") {
         replyMessages.push(msg);
-      } else if (decision.action === "memory") {
+      } else if (effectiveAction === "memory") {
         await this.#store.jobs.enqueue(
           "memory_update",
           `memory:${chat.chatKey}:${msg.id}`,

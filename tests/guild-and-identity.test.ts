@@ -31,6 +31,7 @@ const startKeycloakStub = (t: TestContext) =>
         enabled: true,
         attributes: { qq_number: ["11111"] },
         roles: [
+          "permission-management-access",
           "permission-techdept-admin",
           "permission-techdept-access",
           "position-techdept-head",
@@ -607,6 +608,113 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
     res.end();
   }, t);
 
+  const bunkoCreates: {
+    title: string;
+    folderId?: string;
+    markdown?: string;
+    auth?: string;
+  }[] = [];
+  const bunkoAppends: {
+    docId: string;
+    markdown: string;
+    idempotencyKey?: string;
+  }[] = [];
+  let createdWeeklyId = "";
+  let createdWeeklyTitle = "";
+
+  const bunkoStub = await startStubServer((req, res, bodyText) => {
+    res.setHeader("Content-Type", "application/json");
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+    if (url.pathname === "/api/v1/documents" && req.method === "POST") {
+      const payload = JSON.parse(bodyText) as {
+        title: string;
+        folderId?: string;
+        markdown?: string;
+      };
+
+      bunkoCreates.push({
+        ...payload,
+        auth: req.headers.authorization,
+      });
+
+      if (createdWeeklyId && payload.title === createdWeeklyTitle) {
+        res.statusCode = 409;
+        res.end(JSON.stringify({ code: "name_taken", message: "文档已存在" }));
+
+        return;
+      }
+
+      createdWeeklyId = "01950000-0000-7000-8000-000000000001";
+      createdWeeklyTitle = payload.title;
+      res.statusCode = 201;
+      res.end(
+        JSON.stringify({
+          document: {
+            id: createdWeeklyId,
+            title: payload.title,
+            folderId: payload.folderId ?? null,
+            isPublic: false,
+            isPrivate: false,
+            version: 1,
+            updatedAt: "2026-11-21T00:00:00Z",
+          },
+        }),
+      );
+
+      return;
+    }
+
+    if (url.pathname === "/api/v1/tree" && req.method === "GET") {
+      res.end(
+        JSON.stringify({
+          folder: {
+            id: "01950000-0000-7000-8000-000000000099",
+            name: "公会周报",
+            isPrivate: false,
+          },
+          breadcrumb: [],
+          folders: [],
+          documents: createdWeeklyId
+            ? [
+                {
+                  id: createdWeeklyId,
+                  title: createdWeeklyTitle,
+                  folderId: "01950000-0000-7000-8000-000000000099",
+                  isPublic: false,
+                  isPrivate: false,
+                  version: 1,
+                  updatedAt: "2026-11-21T00:00:00Z",
+                },
+              ]
+            : [],
+          aliases: [],
+        }),
+      );
+
+      return;
+    }
+
+    if (
+      url.pathname === `/api/v1/documents/${createdWeeklyId}/content/append` &&
+      req.method === "POST"
+    ) {
+      const payload = JSON.parse(bodyText) as { markdown: string };
+
+      bunkoAppends.push({
+        docId: createdWeeklyId,
+        markdown: payload.markdown,
+        idempotencyKey: req.headers["idempotency-key"] as string | undefined,
+      });
+      res.end(JSON.stringify({ version: 2 }));
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  }, t);
+
   const { app } = await createTestBerryApp(
     {
       gatewayUrl: gatewayStub.url,
@@ -619,6 +727,10 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
       guildApiUrl: guildStub.url,
       guildInternalToken: "guild-internal-sec",
       guildPublicUrl: "https://guild.bitnp.net",
+      bunkoApiUrl: bunkoStub.url,
+      bunkoApiKey: "bunko_app_test_secret_key",
+      bunkoPublicUrl: "https://docs.bitnp.net",
+      bunkoWorkspaceSlug: "bitnp",
       mainBaseUrl: `${llmStub.url}/v1`,
     },
     {},
@@ -638,7 +750,7 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
       assignmentsEnabled: true,
       weeklyReportEnabled: true,
       weeklySchedule: { kind: "weekly", weekdays: ["mon"], time: "09:00" },
-      weeklyUploadTool: "",
+      weeklyFolderId: "01950000-0000-7000-8000-000000000099",
     },
   });
 
@@ -708,12 +820,29 @@ test("GuildAutomationRunner consumes SSE events, due-nodes, and activity-summary
   assert.equal(sentDms[1]!.userId, 22_222);
   assert.match(sentDms[1]!.text, /完善告警规则/);
 
-  // Weekly report writes markdown into notebooks.
+  // Weekly report publishes to Bunko target folder (and appends idempotently on 409 re-run).
   const report = await app.guildAutomation.runWeeklyReport();
-  const doc = await app.knowledge.readRaw("notebook", report.path);
 
-  assert.match(doc, /周内新增：2/);
-  assert.match(doc, /完成接口鉴权改造与告警联调/);
+  assert.equal(report.created, true);
+  assert.equal(report.documentId, createdWeeklyId);
+  assert.equal(
+    report.url,
+    `https://docs.bitnp.net/bitnp/doc/${createdWeeklyId}`,
+  );
+  assert.equal(bunkoCreates[0]?.auth, "Bearer bunko_app_test_secret_key");
+  assert.equal(
+    bunkoCreates[0]?.folderId,
+    "01950000-0000-7000-8000-000000000099",
+  );
+  assert.match(bunkoCreates[0]?.markdown ?? "", /周内新增：2/);
+  assert.match(bunkoCreates[0]?.markdown ?? "", /完成接口鉴权改造与告警联调/);
+
+  const rerun = await app.guildAutomation.runWeeklyReport();
+
+  assert.equal(rerun.created, false);
+  assert.equal(rerun.documentId, createdWeeklyId);
+  assert.equal(bunkoAppends.length, 1);
+  assert.ok(bunkoAppends[0]?.idempotencyKey?.startsWith("guild-weekly:"));
 });
 
 test("Duplicate QQ bindings are rejected and guild_replace_members updates node members with audit", async (t) => {

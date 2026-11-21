@@ -70,10 +70,6 @@ export class Store {
     return this.database.knowledgeDir;
   }
 
-  public get notebookDir(): string {
-    return this.database.notebookDir;
-  }
-
   public get assetsDir(): string {
     return this.database.assetsDir;
   }

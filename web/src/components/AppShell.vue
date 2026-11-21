@@ -108,6 +108,14 @@ const currentTitle = computed(() =>
   typeof route.meta.title === "string" ? route.meta.title : "控制台",
 );
 
+const userRoleLabel = computed(() => {
+  if (auth.devAuthBypass) {
+    return "开发免登";
+  }
+
+  return auth.user?.permissions.systemAdmin ? "系统管理员" : "网协管理层";
+});
+
 const botAvatarUrl = computed(() =>
   status.value?.botQQ ? `/api/admin/avatars/user/${status.value.botQQ}` : "",
 );
@@ -255,7 +263,7 @@ onUnmounted(() => {
             <div class="user-meta">
               <div class="user-name">{{ auth.user?.name || "管理员" }}</div>
               <div class="user-role">
-                {{ auth.devAuthBypass ? "开发免登" : "系统管理员" }}
+                {{ userRoleLabel }}
               </div>
             </div>
           </div>
