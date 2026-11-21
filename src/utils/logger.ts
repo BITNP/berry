@@ -1,4 +1,5 @@
 import { Writable } from "node:stream";
+import { stripVTControlCharacters } from "node:util";
 
 import pino from "pino";
 
@@ -433,6 +434,30 @@ export function formatPrettyLogLine(
   return `${head}\n${formattedErr}\n`;
 }
 
+const isWideCodePoint = (cp: number): boolean =>
+  (cp >= 0x11_00 && cp <= 0x11_5f) ||
+  (cp >= 0x2e_80 && cp <= 0xa4_cf && cp !== 0x30_3f) ||
+  (cp >= 0xac_00 && cp <= 0xd7_a3) ||
+  (cp >= 0xf9_00 && cp <= 0xfa_ff) ||
+  (cp >= 0xfe_10 && cp <= 0xfe_19) ||
+  (cp >= 0xfe_30 && cp <= 0xfe_6f) ||
+  (cp >= 0xff_00 && cp <= 0xff_60) ||
+  (cp >= 0xff_e0 && cp <= 0xff_e6) ||
+  (cp >= 0x2_00_00 && cp <= 0x3_ff_fd);
+
+function visibleWidth(text: string): number {
+  const plain = stripVTControlCharacters(text);
+  let width = 0;
+
+  for (const ch of plain) {
+    const cp = ch.codePointAt(0) ?? 0;
+
+    width += isWideCodePoint(cp) ? 2 : 1;
+  }
+
+  return width;
+}
+
 export function printStartupBanner(info: {
   url: string;
   devAuthBypass: boolean;
@@ -444,25 +469,40 @@ export function printStartupBanner(info: {
   }
 
   const color = shouldColorize();
-  const rule = "─".repeat(54);
-  const top = paint(`╭${rule}`, ANSI.gray, color);
-  const mid = paint(`├${rule}`, ANSI.gray, color);
-  const bot = paint(`╰${rule}`, ANSI.gray, color);
   const edge = paint("│", ANSI.gray, color);
   const logoColor = `${ANSI.bold}${ANSI.brightMagenta}`;
   const dot = (ok: boolean, label: string) =>
     `${paint(ok ? "●" : "○", ok ? ANSI.green : ANSI.gray, color)} ${paint(label, ok ? ANSI.white : ANSI.gray, color)}`;
 
+  const topRows = [
+    `  ${paint("█▀▄ █▀▀ █▀▄ █▀▄ █ █", logoColor, color)}   ${paint("Berry", `${ANSI.bold}${ANSI.white}`, color)}  ${paint("树莓娘控制台", ANSI.gray, color)}`,
+    `  ${paint("█▀▄ █▀▀ █▀▄ █▀▄ ▀█▀", logoColor, color)}   ${paint("BITNP QQ Agent Console", ANSI.dim, color)}`,
+    `  ${paint("▀▀  ▀▀▀ ▀ ▀ ▀ ▀  ▀ ", logoColor, color)}`,
+  ];
+  const infoRows = [
+    `  ${paint("➜", ANSI.brightCyan, color)}  ${paint("[控制台]", ANSI.gray, color)}  ${paint(info.url, `${ANSI.bold}${ANSI.cyan}`, color)}`,
+    `  ${paint("➜", ANSI.brightCyan, color)}  ${paint("[模块]  ", ANSI.gray, color)}  ${dot(info.gatewayConfigured, "QQ 网关")}   ${dot(info.guildApiConfigured, "公会看板")}   ${dot(info.devAuthBypass, info.devAuthBypass ? "开发免登" : "OIDC 鉴权")}`,
+  ];
+
+  const innerWidth = Math.max(
+    54,
+    ...[...topRows, ...infoRows].map((row) => visibleWidth(row) + 2),
+  );
+  const rule = "─".repeat(innerWidth);
+
+  function frameRow(row: string) {
+    const pad = " ".repeat(Math.max(0, innerWidth - visibleWidth(row)));
+
+    return `${edge}${row}${pad}${edge}`;
+  }
+
   const lines = [
     "",
-    top,
-    `${edge}  ${paint("█▀▄ █▀▀ █▀▄ █▀▄ █ ▌", logoColor, color)}   ${paint("Berry", `${ANSI.bold}${ANSI.white}`, color)}  ${paint("树莓娘控制台", ANSI.gray, color)}`,
-    `${edge}  ${paint("█▀▄ █▀▀ █▀▄ █▀▄ ▀█▀", logoColor, color)}   ${paint("BITNP QQ Agent Console", ANSI.dim, color)}`,
-    `${edge}  ${paint("█▄▀ ▀▀▀ ▀ ▀ ▀ ▀  ▀ ", logoColor, color)}`,
-    mid,
-    `${edge}  ${paint("➜", ANSI.brightCyan, color)}  ${paint("[控制台]", ANSI.gray, color)}  ${paint(info.url, `${ANSI.bold}${ANSI.cyan}`, color)}`,
-    `${edge}  ${paint("➜", ANSI.brightCyan, color)}  ${paint("[模块]  ", ANSI.gray, color)}  ${dot(info.gatewayConfigured, "QQ 网关")}   ${dot(info.guildApiConfigured, "公会看板")}   ${dot(info.devAuthBypass, info.devAuthBypass ? "开发免登" : "OIDC 鉴权")}`,
-    bot,
+    paint(`╭${rule}╮`, ANSI.gray, color),
+    ...topRows.map(frameRow),
+    paint(`├${rule}┤`, ANSI.gray, color),
+    ...infoRows.map(frameRow),
+    paint(`╰${rule}╯`, ANSI.gray, color),
     "",
   ];
 
