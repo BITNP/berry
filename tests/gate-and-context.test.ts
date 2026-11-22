@@ -798,7 +798,7 @@ test("memory_update exposes knownGroups so DM instructions can save chat-scoped 
   assert.match(dialogSystemPrompt, /记忆落库铁律/);
 });
 
-test("gate proactive cooldown passes recent botActivity and raises non-mention reply threshold", async (t) => {
+test("gate proactive cooldown ramps threshold for ambient chatter while allowing direct follow-ups and @mentions", async (t) => {
   const capturedActivities: {
     windowMinutes?: number;
     proactiveReplies?: number;
@@ -819,7 +819,7 @@ test("gate proactive cooldown passes recent botActivity and raises non-mention r
         softLimit: number;
         cooldownActive: boolean;
       };
-      candidates?: { messageId: number }[];
+      candidates?: { messageId: number; text: string }[];
     };
 
     res.setHeader("Content-Type", "application/json");
@@ -836,12 +836,23 @@ test("gate proactive cooldown passes recent botActivity and raises non-mention r
     res.end(
       JSON.stringify(
         chatReply({
-          decisions: userPayload.candidates.map((c) => ({
-            messageId: c.messageId,
-            action: "reply",
-            confidence: 0.78,
-            reason: "氛围不错可以接话",
-          })),
+          decisions: userPayload.candidates.map((c) =>
+            c.text.includes("撤回")
+              ? {
+                  messageId: c.messageId,
+                  action: "reply",
+                  confidence: 0.76,
+                  addressingBot: true,
+                  reason: "紧接上文直接追问树莓娘",
+                }
+              : {
+                  messageId: c.messageId,
+                  action: "reply",
+                  confidence: 0.74,
+                  addressingBot: false,
+                  reason: "氛围不错可以接话",
+                },
+          ),
         }),
       ),
     );
@@ -873,7 +884,7 @@ test("gate proactive cooldown passes recent botActivity and raises non-mention r
     triggerMode: "smart_observe",
   });
 
-  // Seed 2 recent non-mention proactive replies in the 10-minute window.
+  // Seed 2 recent non-mention proactive replies in the 10-minute window (hits softLimit=2 -> midpoint 0.77).
   for (let i = 1; i <= 2; i += 1) {
     const prev = await captureText(app, {
       kind: "group",
@@ -896,8 +907,10 @@ test("gate proactive cooldown passes recent botActivity and raises non-mention r
     });
   }
 
-  // Next batch has 1 non-mention chatter (0.78 < 0.88 -> throttled to ignore)
-  // and 1 explicit @mention (0.78 >= 0.65 -> direct mention bypasses cooldown -> reply).
+  // Batch has:
+  // 1) ambient chatter (addressingBot=false, 0.74 < 0.77 midpoint -> throttled to ignore),
+  // 2) direct follow-up without @ (addressingBot=true, 0.76 >= 0.65 -> bypasses cooldown -> reply),
+  // 3) explicit @mention (0.74 >= 0.65 -> bypasses cooldown -> reply).
   const nonAt = await captureText(app, {
     kind: "group",
     chatId: "6666",
@@ -905,6 +918,14 @@ test("gate proactive cooldown passes recent botActivity and raises non-mention r
     userId: "2002",
     senderName: "群友乙",
     text: "哈哈确实",
+  });
+  const followUp = await captureText(app, {
+    kind: "group",
+    chatId: "6666",
+    id: "cool-followup",
+    userId: "2002",
+    senderName: "群友乙",
+    text: "你能撤回自己的发言吗",
   });
   const directAt = await captureText(app, {
     kind: "group",
@@ -917,6 +938,7 @@ test("gate proactive cooldown passes recent botActivity and raises non-mention r
   });
 
   await app.gate.ingest(nonAt.message);
+  await app.gate.ingest(followUp.message);
   await app.gate.ingest(directAt.message);
   await delay(130);
   await app.worker.drainOnce();
@@ -927,12 +949,36 @@ test("gate proactive cooldown passes recent botActivity and raises non-mention r
 
   const decisions = await app.store.gate.listByMessageIds([
     nonAt.message.id,
+    followUp.message.id,
     directAt.message.id,
   ]);
 
   assert.equal(decisions.get(nonAt.message.id)?.[0]?.action, "ignore");
   assert.match(decisions.get(nonAt.message.id)?.[0]?.reason ?? "", /冷却节流/);
+  assert.match(decisions.get(nonAt.message.id)?.[0]?.reason ?? "", /0\.77/);
+  assert.equal(decisions.get(followUp.message.id)?.[0]?.action, "reply");
   assert.equal(decisions.get(directAt.message.id)?.[0]?.action, "reply");
+
+  // One more ambient message after followUp pushes proactiveReplies to 3 (> softLimit=2) -> full 0.88 ceiling.
+  const ambientAfter = await captureText(app, {
+    kind: "group",
+    chatId: "6666",
+    id: "cool-nonat-2",
+    userId: "2004",
+    senderName: "群友丁",
+    text: "确实如此",
+  });
+
+  await app.gate.ingest(ambientAfter.message);
+  await delay(130);
+  await app.worker.drainOnce();
+
+  const laterDecision = (
+    await app.store.gate.listByMessageIds([ambientAfter.message.id])
+  ).get(ambientAfter.message.id)?.[0];
+
+  assert.equal(laterDecision?.action, "ignore");
+  assert.match(laterDecision?.reason ?? "", /0\.88/);
 });
 
 test("group style distillation persists stylePrompt and injects chat.styleHint transiently per turn", async (t) => {

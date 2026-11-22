@@ -142,12 +142,12 @@ export const runtimeSettingsSchema = Type.Object(
         proactiveSoftLimit: Type.Integer({
           minimum: 0,
           maximum: 50,
-          default: 3,
+          default: 5,
         }),
         cooldownMinConfidence: Type.Number({
           minimum: 0,
           maximum: 1,
-          default: 0.88,
+          default: 0.82,
         }),
       },
       { default: {}, additionalProperties: false },

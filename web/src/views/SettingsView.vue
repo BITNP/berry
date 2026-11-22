@@ -748,7 +748,7 @@ onMounted(() => {
                   :min="0"
                 />
               </NFormItem>
-              <NFormItem label="冷却期非 @ 最低置信度">
+              <NFormItem label="冷却期主动插话最低置信度">
                 <NInputNumber
                   v-model:value="settings.gateModel.cooldownMinConfidence"
                   class="w-full"

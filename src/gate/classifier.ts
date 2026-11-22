@@ -19,6 +19,7 @@ const decisionItemSchema = Type.Object(
       Type.Literal("ignore"),
     ]),
     confidence: Type.Number({ minimum: 0, maximum: 1 }),
+    addressingBot: Type.Optional(Type.Boolean()),
     reason: Type.String({ minLength: 1 }),
   },
   { additionalProperties: false },
@@ -77,16 +78,19 @@ const GATE_SYSTEM_PROMPT = `你是 BITNP（网协）QQ 机器人“树莓娘”�
    - 实质提问、求助、指令、查群聊/云文档/公会看板、缩短链接、要求打/取消表情回应、设定规则或记忆 → reply；
    - 首次出现的离谱要求、甩作业代写或轻度互动（如打招呼、发单个表情、戳一戳 [戳了戳树莓娘]、叫“回答我”等）：若为私聊、发言人为 admin（且非要求闭嘴）、或本群 memoryHints.chat 要求积极互动，则可放行一次 reply（交给主模型简短回应、傲娇拒绝或回戳/贴表情）；若默认安静群且仅为持续刷屏/纯起哄调戏，或树莓娘刚才已拒绝过对方仍在纠缠，则判 ignore。
 3. 旁听模式未 @ 且未引用树莓娘（mentionedBot = false 且 quotedBot = false）：
-   - 默认宁静勿吵，不因“承接树莓娘上文”或“管理员轻度吐槽”就抢话；
-   - 结合 botActivity 防“越聊越嗨”：当 botActivity.cooldownActive = true（本群最近 windowMinutes 分钟内主动插话 proactiveReplies 已达软阈值 softLimit）时，说明树莓娘最近已经很活跃，务必显著提高非 @ 插话门槛——非明确追问或直接求助一律判 ignore（明确 @ 或引用树莓娘的消息不受冷却影响）；
-   - 仅在以下情况判 reply：① 明显在紧接着追问树莓娘刚说过的内容且确实需要树莓娘回答，② 提出了树莓娘可直接解决的明确请求，或 ③ 本群 memoryHints.chat 明确开启积极互动、语境自然适合回应且未处于冷却节流期。
+   - 区分“直接对树莓娘说话/追问（addressingBot = true）”和“非定向主动插话（addressingBot = false）”：
+     - 若发言人正在直接叫树莓娘的名字、追问树莓娘刚说过的话/刚做的动作、或继续和树莓娘进行连续对话（如刚聊完紧接着问“你能撤回自己的发言吗”“怎么没发出来”），标记 addressingBot = true，按正常语境判 reply，不要因为没点 @ 就机械装聋；
+     - 若只是群友间的闲聊、感叹或非定向讨论，标记 addressingBot = false；默认宁静勿吵，不因“管理员轻度吐槽”或“沾一点边”就强行抢话。
+   - 结合 botActivity 防“越聊越嗨”：当 botActivity.cooldownActive = true 时，冷却节流主要限制非定向主动插话（addressingBot = false），减少无意义抢话；对直接追问或连续对话（addressingBot = true）以及明确 @/引用树莓娘的消息不受冷却卡死。
+   - confidence 请如实评估“该消息有多需要回复”，不要因 cooldownActive = true 刻意压低 confidence（外层会对非定向主动插话做平滑阈值节流，避免双重扣分）。
+   - 仅在以下情况判 reply：① 明显在直接问树莓娘或紧接上文追问树莓娘刚说过的内容（addressingBot = true），② 提出了树莓娘可直接解决的明确请求，或 ③ 本群 memoryHints.chat 明确开启积极互动、语境自然适合回应且未处于高强度刷屏期。
 4. 静默记忆（仅限 role = "admin"）：
    - 长期记忆是每轮必注入的轻量“随身小本本”，**不是知识库**。仅当消息未要求当场回复、但明确产生了以下轻量事实时才判 memory：① 对树莓娘自身行为/发言/群活跃度或互动习惯的约定；② 成员称呼/外号/QQ身份映射、群别称或管理员个人稳定偏好；③ 管理员明确说“记下来/记住”的轻量规则；④ 极简且有时效的近期提醒/排期。
    - **以下内容属于知识库（Bunko）或任务看板（公会）范畴，严禁判 memory，直接 ignore**：群友讨论项目架构、技术实现方案、功能脑暴、优化待办、工作流程规范（SOP）、漏洞/故障长篇排查、会议形式偏好或协作工具说明。
 
 输出协议：
 严格返回一个 JSON 对象：
-{"decisions":[{"messageId":123,"action":"reply|memory|ignore","confidence":0.0,"reason":"简短中文原因"}]}
+{"decisions":[{"messageId":123,"action":"reply|memory|ignore","confidence":0.0,"addressingBot":false,"reason":"简短中文原因"}]}
 必须为每个候选 messageId 恰好输出一条记录，不要省略或编造 messageId。`;
 
 export class SmallModelClassifier {
@@ -233,10 +237,22 @@ export class SmallModelClassifier {
           chat.kind === "private" ||
           candidate.mentionedBot ||
           candidate.quotedBot;
-        const cooldownActive =
-          !isDirect && Boolean(botActivity?.cooldownActive);
+        const isAddressingBot = isDirect || item.addressingBot === true;
+        const overSoftLimit =
+          botActivity &&
+          botActivity.softLimit > 0 &&
+          botActivity.proactiveReplies >= botActivity.softLimit
+            ? botActivity.proactiveReplies - botActivity.softLimit
+            : -1;
+        const cooldownActive = !isAddressingBot && overSoftLimit >= 0;
+        const cooldownCeiling = Math.max(
+          gateCfg.minConfidence,
+          gateCfg.cooldownMinConfidence,
+        );
         const requiredConfidence = cooldownActive
-          ? Math.max(gateCfg.minConfidence, gateCfg.cooldownMinConfidence)
+          ? overSoftLimit === 0
+            ? Number(((gateCfg.minConfidence + cooldownCeiling) / 2).toFixed(2))
+            : cooldownCeiling
           : gateCfg.minConfidence;
 
         if (item.action === "reply" && item.confidence < requiredConfidence) {
@@ -245,12 +261,17 @@ export class SmallModelClassifier {
             action: "ignore",
             confidence: item.confidence,
             reason: cooldownActive
-              ? `冷却节流生效（近 ${botActivity!.windowMinutes} 分钟主动插话 ${botActivity!.proactiveReplies}/${botActivity!.softLimit} 次），置信度 ${item.confidence.toFixed(2)} 低于冷却阈值 ${requiredConfidence.toFixed(2)}：${item.reason}`
+              ? `冷却节流生效（近 ${botActivity!.windowMinutes} 分钟非召唤回复 ${botActivity!.proactiveReplies}/${botActivity!.softLimit} 次），置信度 ${item.confidence.toFixed(2)} 低于冷却阈值 ${requiredConfidence.toFixed(2)}：${item.reason}`
               : `置信度 ${item.confidence.toFixed(2)} 低于阈值 ${requiredConfidence.toFixed(2)}：${item.reason}`,
           };
         }
 
-        return item;
+        return {
+          messageId: item.messageId,
+          action: item.action,
+          confidence: item.confidence,
+          reason: item.reason,
+        };
       });
 
       return { results, model: modelName, durationMs };
