@@ -317,6 +317,32 @@ export class MessageGatewayClient {
     return this.#dispatcher.dispatchUnit(chatKey, unit, botQQ);
   }
 
+  public async recallMessage(messageId: string): Promise<void> {
+    if (!this.configured) {
+      throw new Error("Message gateway is not configured");
+    }
+
+    const clean = messageId.trim();
+
+    if (!clean || clean.startsWith("sent-")) {
+      throw new Error("该消息没有可用的 QQ 消息 ID，无法撤回");
+    }
+
+    const numericId = Number(clean);
+    const { body } = await this.callAction("delete_msg", {
+      message_id: Number.isSafeInteger(numericId) ? numericId : clean,
+    });
+
+    if (
+      body.status === "failed" ||
+      (typeof body.retcode === "number" && body.retcode !== 0)
+    ) {
+      throw new Error(
+        `撤回失败：${body.message || `retcode=${body.retcode ?? "unknown"}`}（可能超过 2 分钟撤回时限或缺少群管理权限）`,
+      );
+    }
+  }
+
   public waitForPendingTracks(): Promise<void> {
     return this.#dispatcher.waitForPendingTracks();
   }

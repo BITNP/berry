@@ -255,3 +255,92 @@ export const searchQqEmojisTool = defineTool({
   execute: async (args) =>
     searchQFaceCatalog(args.query ?? "", args.limit ?? 30),
 });
+
+export const recallMessageTool = defineTool({
+  name: "recall_message",
+  description:
+    "撤回 QQ 消息（调用 OneBot delete_msg）。树莓娘发错话/发错图、或管理员要求撤回时调用：传 messageRef（上下文里的 quoteRef / replyToQuoteRef 等 m_* 句柄）可撤回指定消息；省略 messageRef 时自动撤回目标会话中树莓娘最近一条未撤回消息。权限：撤回他人消息或跨会话撤回仅管理员可用（且撤回他人群消息需机器人具备群主/群管理权限）；撤回自己发的消息受 QQ 2 分钟时限约束。",
+  available: (services) => services.gateway.configured,
+  mutating: true,
+  parameters: Type.Object(
+    {
+      messageRef: Type.Optional(Type.String({ minLength: 1 })),
+      targetRef: Type.Optional(Type.String({ minLength: 1 })),
+    },
+    { additionalProperties: false },
+  ),
+  execute: async (args, ctx) => {
+    const { store, gateway } = ctx.services;
+    const admin = isAdmin(ctx.actor);
+
+    let target = null;
+
+    if (args.messageRef?.trim()) {
+      const meta = ctx.ids.resolveMessageMeta(args.messageRef.trim());
+      const targetChatKey = meta.chatKey ?? ctx.actor.chatKey;
+
+      if (targetChatKey !== ctx.actor.chatKey && !admin) {
+        throw new Error("仅管理员或网协管理层可跨会话撤回消息");
+      }
+
+      target = await store.messages.findByOnebotId(targetChatKey, meta.rawId);
+      if (!target) {
+        throw new Error(`未找到消息 ${args.messageRef}`);
+      }
+    } else {
+      const chat = resolveAuthorizedChat(ctx, args.targetRef);
+      const recent = await store.messages.recent(chat.targetChatKey, 30);
+
+      for (let i = recent.length - 1; i >= 0; i -= 1) {
+        const msg = recent[i]!;
+
+        if (msg.isBot && msg.recalledAt === null) {
+          target = msg;
+
+          break;
+        }
+      }
+
+      if (!target) {
+        throw new Error("近期没有可撤回的树莓娘消息");
+      }
+    }
+
+    if (target.chatKey !== ctx.actor.chatKey && !admin) {
+      throw new Error("仅管理员或网协管理层可跨会话撤回消息");
+    }
+
+    if (!target.isBot) {
+      if (!admin) {
+        throw new Error("仅管理员或网协管理层可要求撤回他人的消息");
+      }
+
+      if (target.kind !== "group") {
+        throw new Error("私聊无法撤回对方发送的消息");
+      }
+    }
+
+    if (target.recalledAt !== null) {
+      return {
+        ok: true,
+        alreadyRecalled: true,
+        messageRef: ctx.ids.messageRef(target.onebotMessageId, target.chatKey),
+      };
+    }
+
+    await gateway.recallMessage(target.onebotMessageId);
+    await store.messages.markRecalled(
+      target.chatKey,
+      target.onebotMessageId,
+      Date.now(),
+    );
+
+    return {
+      ok: true,
+      recalled: true,
+      isBotMessage: target.isBot,
+      messageRef: ctx.ids.messageRef(target.onebotMessageId, target.chatKey),
+      preview: target.text.slice(0, 80),
+    };
+  },
+});

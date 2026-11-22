@@ -1899,3 +1899,185 @@ test("sticker library auto-collects group stickers, enforces review, searches vi
   assert.equal(dedupRes.stickerId, uploaded.item.id);
   assert.equal(await app.store.stickers.count(), countBefore);
 });
+
+test("recall_message calls OneBot delete_msg, updates recalledAt, and enforces role/chat boundaries", async (t) => {
+  const deletedIds: unknown[] = [];
+  let failNextDelete = false;
+
+  const gwStub = await startStubServer((req, res, bodyText) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/api/v1/accounts/qq/delete_msg") {
+      const body = JSON.parse(bodyText) as { message_id?: unknown };
+
+      if (failNextDelete) {
+        failNextDelete = false;
+        res.end(
+          JSON.stringify({
+            status: "failed",
+            retcode: 100,
+            message: "recall window expired",
+          }),
+        );
+
+        return;
+      }
+
+      deletedIds.push(body.message_id);
+      res.end(JSON.stringify({ status: "ok", retcode: 0, data: null }));
+
+      return;
+    }
+
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gwStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+    },
+    {},
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "88001",
+    title: "撤回测试群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+  await app.store.chats.upsert({
+    kind: "private",
+    chatId: "10001",
+    title: "管理员私聊",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const { message: userMsg } = await app.store.messages.capture({
+    kind: "group",
+    chatId: "88001",
+    onebotMessageId: "90001",
+    userId: "30001",
+    senderName: "群友甲",
+    text: "群友发的一条消息",
+    segments: [],
+    isBot: false,
+    mentionedBot: false,
+    replyToMessageId: null,
+    sentAt: Date.now(),
+  });
+  const { message: botMsg1 } = await app.store.messages.capture({
+    kind: "group",
+    chatId: "88001",
+    onebotMessageId: "90002",
+    userId: "999999",
+    senderName: "树莓娘",
+    text: "树莓娘说错的第一句",
+    segments: [],
+    isBot: true,
+    mentionedBot: false,
+    replyToMessageId: null,
+    sentAt: Date.now() + 100,
+  });
+  const { message: botMsg2 } = await app.store.messages.capture({
+    kind: "group",
+    chatId: "88001",
+    onebotMessageId: "90003",
+    userId: "999999",
+    senderName: "树莓娘",
+    text: "树莓娘说错的第二句",
+    segments: [],
+    isBot: true,
+    mentionedBot: false,
+    replyToMessageId: null,
+    sentAt: Date.now() + 200,
+  });
+
+  const { ModelIds } = await import("../src/agent/model-ids.ts");
+  const { recallMessageTool } = await import("../src/tools/qq.ts");
+
+  const memberIds = new ModelIds();
+  const userMsgRef = memberIds.messageRef(
+    userMsg.onebotMessageId,
+    userMsg.chatKey,
+  );
+  const memberBound = recallMessageTool.bind({
+    services: app.services,
+    actor: {
+      chatKey: "group:88001",
+      senderQQ: "30001",
+      actorSubject: null,
+      actorName: "群友甲",
+      role: "member",
+    },
+    ids: memberIds,
+  });
+
+  // 1) Omitting messageRef recalls the bot's own latest message in current chat.
+  const selfRecall = (await memberBound.execute({})) as {
+    ok: boolean;
+    recalled: boolean;
+    isBotMessage: boolean;
+  };
+
+  assert.equal(selfRecall.ok, true);
+  assert.equal(selfRecall.recalled, true);
+  assert.equal(selfRecall.isBotMessage, true);
+  assert.deepEqual(deletedIds, [90_003]);
+  assert.notEqual((await app.store.messages.get(botMsg2.id))?.recalledAt, null);
+
+  // 2) Non-admin cannot recall another member's message.
+  await assert.rejects(
+    () => memberBound.execute({ messageRef: userMsgRef }),
+    /仅管理员/,
+  );
+
+  // 3) Admin in private chat can recall another member's group message and bot's older group message.
+  const adminIds = new ModelIds();
+  const adminUserMsgRef = adminIds.messageRef(
+    userMsg.onebotMessageId,
+    userMsg.chatKey,
+  );
+  const adminGroupRef = adminIds.groupRef("88001");
+  const adminBound = recallMessageTool.bind({
+    services: app.services,
+    actor: {
+      chatKey: "private:10001",
+      senderQQ: "10001",
+      actorSubject: null,
+      actorName: "管理员",
+      role: "admin",
+    },
+    ids: adminIds,
+  });
+
+  const adminRecallOther = (await adminBound.execute({
+    messageRef: adminUserMsgRef,
+  })) as { ok: boolean; isBotMessage: boolean };
+
+  assert.equal(adminRecallOther.ok, true);
+  assert.equal(adminRecallOther.isBotMessage, false);
+  assert.deepEqual(deletedIds, [90_003, 90_001]);
+  assert.notEqual((await app.store.messages.get(userMsg.id))?.recalledAt, null);
+
+  // 4) Gateway failure surfaces clear error and leaves recalledAt untouched.
+  failNextDelete = true;
+  await assert.rejects(
+    () => adminBound.execute({ targetRef: adminGroupRef }),
+    /撤回失败.*recall window expired/,
+  );
+  assert.equal((await app.store.messages.get(botMsg1.id))?.recalledAt, null);
+
+  // Retry succeeds and recalls botMsg1 cross-chat via targetRef.
+  const crossRecall = (await adminBound.execute({
+    targetRef: adminGroupRef,
+  })) as { ok: boolean; recalled: boolean };
+
+  assert.equal(crossRecall.ok, true);
+  assert.equal(crossRecall.recalled, true);
+  assert.deepEqual(deletedIds, [90_003, 90_001, 90_002]);
+  assert.notEqual((await app.store.messages.get(botMsg1.id))?.recalledAt, null);
+});

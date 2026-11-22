@@ -1,7 +1,11 @@
 import type { SubagentRegistry } from "../agent/subagents/registry.ts";
 import { inspectMediaTool } from "./media.ts";
 import { memoryManageTool } from "./memory.ts";
-import { qqDirectoryTool, searchQqEmojisTool } from "./qq.ts";
+import {
+  qqDirectoryTool,
+  recallMessageTool,
+  searchQqEmojisTool,
+} from "./qq.ts";
 import { ToolRegistry } from "./registry.ts";
 import { scheduleManageTool } from "./schedule.ts";
 import { shortenUrlTool } from "./shortlink.ts";
@@ -22,6 +26,7 @@ export const createDefaultMainToolRegistry = (
     inspectMediaTool,
     qqDirectoryTool,
     searchQqEmojisTool,
+    recallMessageTool,
     searchStickersTool,
     saveStickerToolProvider,
     shortenUrlTool,
