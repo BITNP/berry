@@ -8,120 +8,39 @@ import {
   RotateCcw,
   Search,
 } from "@lucide/vue";
-import type { DataTableColumns } from "naive-ui";
 import {
   NAlert,
   NButton,
-  NCard,
-  NDataTable,
   NEmpty,
-  NForm,
-  NFormItem,
   NInput,
-  NModal,
-  NPopconfirm,
   NRadioButton,
   NRadioGroup,
   NSelect,
   NSpace,
   NSpin,
-  NSwitch,
   NTabPane,
   NTabs,
   NTag,
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, h, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
-import ChronoVirtualList from "../components/ChronoVirtualList.vue";
 import TraceInspector from "../components/TraceInspector.vue";
+import GateDryRunModal from "../components/ai/GateDryRunModal.vue";
+import GlobalContextPane from "../components/ai/GlobalContextPane.vue";
+import UsageStatsPane from "../components/ai/UsageStatsPane.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useLiveRefresh } from "../composables/useEventStream.ts";
 import type { AiTraceView, TraceOutcome } from "../utils/ai.ts";
 import {
   PURPOSE_FILTER_OPTIONS,
   formatDurationHuman,
-  prettyMaybeJson,
   purposeMeta,
 } from "../utils/ai.ts";
-import { formatPercent, formatTime } from "../utils/format.ts";
-
-interface UsageBucket {
-  day: string;
-  purpose: string;
-  model: string;
-  calls: number;
-  inputTokens: number;
-  cachedInputTokens: number;
-  outputTokens: number;
-  avgDurationMs: number;
-}
-
-interface TapeHandoffView {
-  summary: string;
-  confirmedFacts: string[];
-  openTasks: string[];
-  pendingFollowups: string[];
-  sourceEntryIds: number[];
-}
-
-interface TapeEntryView {
-  id: number;
-  tapeId: string;
-  kind: "message" | "anchor";
-  turnId: string;
-  chatKey: string;
-  role: string;
-  sidecarId: string | null;
-  createdAt: number;
-  message?: {
-    role: string;
-    content: string | null;
-    tool_call_id?: string;
-    tool_calls?: {
-      id: string;
-      function: { name: string; arguments: string };
-    }[];
-  };
-  anchor?: {
-    reason: "compact" | "reset";
-    sessionId: string;
-    afterMessageId?: number;
-    cutoffEntryId: number;
-    handoff?: TapeHandoffView;
-  };
-}
-
-interface ConversationView {
-  chatKey: string;
-  sessionId: string;
-  summary: string;
-  handoff: TapeHandoffView | null;
-  anchorEntryId: number | null;
-  afterMessageId: number;
-  updatedAt: number;
-  entries: TapeEntryView[];
-  pendingResults: {
-    module: string;
-    status: string;
-    detail: string;
-    createdAt: number;
-  }[];
-}
-
-interface DryRunResponse {
-  result: {
-    messageId: number;
-    action: "reply" | "memory" | "ignore";
-    confidence: number;
-    reason: string;
-  };
-  model: string;
-  durationMs: number;
-}
+import { formatTime } from "../utils/format.ts";
 
 interface JobCountsSummary {
   pending: number;
@@ -129,13 +48,13 @@ interface JobCountsSummary {
   failed: number;
 }
 
+type AiTab = "calls" | "context" | "usage";
+type TraceScope = "active" | "all" | "error";
+
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
 const { chatOptions } = useChatOptions();
-
-type AiTab = "calls" | "context" | "usage";
-type TraceScope = "active" | "all" | "error";
 
 function resolveTab(rawTab: unknown): AiTab {
   if (rawTab === "context" || rawTab === "usage") {
@@ -168,45 +87,16 @@ function resolveScope(
 
 const activeTab = ref<AiTab>(resolveTab(route.query.tab));
 const loadingTraces = ref(false);
-const loadingMeta = ref(false);
 const traces = ref<AiTraceView[]>([]);
 const totalTraces = ref(0);
 const selectedTraceId = ref<string | null>(null);
 const jobCounts = ref<JobCountsSummary>({ pending: 0, running: 0, failed: 0 });
 const retryingJobs = ref(false);
-const usageBuckets = ref<UsageBucket[]>([]);
-const conversation = ref<ConversationView | null>(null);
-const contextMode = ref<"active" | "full">("active");
-const fullTapeEntries = ref<TapeEntryView[]>([]);
-const loadingTape = ref(false);
-const sidecarModalOpen = ref(false);
-const sidecarIdActive = ref<string | null>(null);
-const sidecarEntries = ref<TapeEntryView[]>([]);
-const loadingSidecar = ref(false);
-const resettingContext = ref(false);
-
 const dryRunOpen = ref(false);
-const dryRunBusy = ref(false);
-const dryRunForm = ref({
-  chatKey: "group:10248888",
-  triggerMode: "smart_observe",
-  senderName: "测试群友",
-  userId: "10001",
-  mentionedBot: false,
-  quotedBot: false,
-  text: "树莓娘，能帮忙查一下上周公会看板上还有哪些没做完吗？",
-  recentContextText: "硅草: 今天服务器刚部署完\n王润泽: 周末例会定在周日晚上",
-});
-const dryRunResult = ref<DryRunResponse | null>(null);
+const streamPaused = ref(false);
 
-const dryRunActionMap: Record<
-  DryRunResponse["result"]["action"],
-  { text: string; type: "success" | "info" | "default" }
-> = {
-  reply: { text: "回复", type: "success" },
-  memory: { text: "记入记忆", type: "info" },
-  ignore: { text: "忽略", type: "default" },
-};
+const contextPaneRef = ref<InstanceType<typeof GlobalContextPane> | null>(null);
+const usagePaneRef = ref<InstanceType<typeof UsageStatsPane> | null>(null);
 
 const hasJobBanner = computed(
   () =>
@@ -352,148 +242,6 @@ function outcomeTagType(
   }
 }
 
-const expandedTurns = ref<Record<string, boolean>>({});
-const TURN_PREVIEW_LIMIT = 900;
-
-interface ContextTurnItem {
-  key: string;
-  index: number;
-  kind: "message" | "anchor";
-  role: string;
-  chatKey: string;
-  toolCallId?: string;
-  toolNames: string[];
-  sidecarId: string | null;
-  anchorReason?: "compact" | "reset";
-  createdAt?: number;
-  body: string;
-  preview: string;
-  isLong: boolean;
-}
-
-function formatTapeEntry(entry: TapeEntryView): ContextTurnItem {
-  if (entry.kind === "anchor" && entry.anchor) {
-    const body = entry.anchor.handoff
-      ? JSON.stringify(entry.anchor.handoff, null, 2)
-      : `重置检查点（session: ${entry.anchor.sessionId}${entry.anchor.afterMessageId ? `, afterMessageId: ${entry.anchor.afterMessageId}` : ""}）`;
-    const isLong = body.length > TURN_PREVIEW_LIMIT;
-
-    return {
-      key: `tape-${entry.tapeId}-${entry.id}`,
-      index: entry.id,
-      kind: "anchor",
-      role: "anchor",
-      chatKey: entry.chatKey,
-      toolNames: [],
-      sidecarId: null,
-      anchorReason: entry.anchor.reason,
-      createdAt: entry.createdAt,
-      body,
-      preview: isLong ? `${body.slice(0, TURN_PREVIEW_LIMIT)}\n…` : body,
-      isLong,
-    };
-  }
-
-  const turn = entry.message;
-  const body = turn?.content
-    ? prettyMaybeJson(turn.content)
-    : turn?.tool_calls?.length
-      ? JSON.stringify(
-          turn.tool_calls.map((c) => ({
-            tool: c.function.name,
-            args: prettyMaybeJson(c.function.arguments),
-          })),
-          null,
-          2,
-        )
-      : "(empty)";
-  const isLong = body.length > TURN_PREVIEW_LIMIT;
-
-  return {
-    key: `tape-${entry.tapeId}-${entry.id}`,
-    index: entry.id,
-    kind: "message",
-    role: entry.role,
-    chatKey: entry.chatKey,
-    toolCallId: turn?.tool_call_id,
-    toolNames: (turn?.tool_calls ?? []).map((c) => c.function.name),
-    sidecarId: entry.sidecarId,
-    createdAt: entry.createdAt,
-    body,
-    preview: isLong ? `${body.slice(0, TURN_PREVIEW_LIMIT)}\n…` : body,
-    isLong,
-  };
-}
-
-const contextItems = computed<ContextTurnItem[]>(() => {
-  const useFull =
-    contextMode.value === "full" &&
-    (fullTapeEntries.value.length > 0 || !loadingTape.value);
-  const source = useFull
-    ? fullTapeEntries.value
-    : (conversation.value?.entries ?? []);
-
-  return source.map(formatTapeEntry);
-});
-
-function handleContextModeChange(mode: "active" | "full") {
-  if (mode === "full") {
-    loadingTape.value = true;
-    void loadFullTape();
-  }
-
-  contextMode.value = mode;
-}
-
-const sidecarItems = computed<ContextTurnItem[]>(() =>
-  sidecarEntries.value.map(formatTapeEntry),
-);
-
-function toggleTurnExpand(key: string) {
-  expandedTurns.value = {
-    ...expandedTurns.value,
-    [key]: !expandedTurns.value[key],
-  };
-}
-
-const usageTotals30d = computed(() => {
-  let totalCallCount = 0;
-  let inputTokens = 0;
-  let cachedInputTokens = 0;
-  let outputTokens = 0;
-
-  for (const row of usageBuckets.value) {
-    totalCallCount += row.calls;
-    inputTokens += row.inputTokens;
-    cachedInputTokens += row.cachedInputTokens;
-    outputTokens += row.outputTokens;
-  }
-
-  return {
-    calls: totalCallCount,
-    inputTokens,
-    cachedInputTokens,
-    outputTokens,
-    totalTokens: inputTokens + outputTokens,
-  };
-});
-
-function roleTagType(role: string): "info" | "primary" | "warning" | "default" {
-  if (role === "user") {
-    return "info";
-  }
-
-  if (role === "assistant") {
-    return "primary";
-  }
-
-  if (role === "tool") {
-    return "warning";
-  }
-
-  return "default";
-}
-
 async function loadTraces() {
   loadingTraces.value = true;
 
@@ -538,28 +286,6 @@ async function loadTraces() {
   }
 }
 
-async function loadMeta() {
-  loadingMeta.value = true;
-
-  try {
-    const [usageRes, convRes] = await Promise.all([
-      apiFetch<{ buckets: UsageBucket[] }>("/api/admin/usage?days=30"),
-      apiFetch<ConversationView>("/api/admin/conversation"),
-    ]);
-
-    usageBuckets.value = usageRes.buckets ?? [];
-    conversation.value = convRes;
-
-    if (contextMode.value === "full") {
-      await loadFullTape();
-    }
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "加载上下文和用量失败");
-  } finally {
-    loadingMeta.value = false;
-  }
-}
-
 async function loadJobStatus() {
   try {
     const res = await apiFetch<{ counts?: Partial<JobCountsSummary> }>(
@@ -594,103 +320,21 @@ async function handleRetryAllFailed() {
   }
 }
 
-async function handleDryRun() {
-  if (!dryRunForm.value.text.trim()) {
-    message.warning("请输入待测试的消息内容");
+async function refreshAll() {
+  if (activeTab.value === "context") {
+    await contextPaneRef.value?.refresh();
 
     return;
   }
 
-  dryRunBusy.value = true;
+  if (activeTab.value === "usage") {
+    await usagePaneRef.value?.refresh();
 
-  try {
-    dryRunResult.value = await apiFetch<DryRunResponse>(
-      "/api/admin/gate-decisions/dry-run",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          chatKey: dryRunForm.value.chatKey.trim() || "group:100000",
-          triggerMode: dryRunForm.value.triggerMode,
-          senderName: dryRunForm.value.senderName.trim() || "测试群友",
-          userId: dryRunForm.value.userId.trim() || "10001",
-          mentionedBot: dryRunForm.value.mentionedBot,
-          quotedBot: dryRunForm.value.quotedBot,
-          text: dryRunForm.value.text.trim(),
-          recentContext: dryRunForm.value.recentContextText
-            .split("\n")
-            .map((s) => s.trim())
-            .filter(Boolean),
-        }),
-      },
-    );
-    await loadTraces();
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "分流试跑失败");
-  } finally {
-    dryRunBusy.value = false;
+    return;
   }
+
+  await Promise.all([loadTraces(), loadJobStatus()]);
 }
-
-async function loadFullTape() {
-  loadingTape.value = true;
-
-  try {
-    const res = await apiFetch<{ entries: TapeEntryView[] }>(
-      "/api/admin/tape?tapeId=global&limit=300",
-    );
-
-    fullTapeEntries.value = res.entries;
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "加载完整 Tape 失败");
-  } finally {
-    loadingTape.value = false;
-  }
-}
-
-async function openSidecar(sidecarId: string) {
-  sidecarIdActive.value = sidecarId;
-  sidecarModalOpen.value = true;
-  loadingSidecar.value = true;
-  sidecarEntries.value = [];
-
-  try {
-    const res = await apiFetch<{ entries: TapeEntryView[] }>(
-      `/api/admin/tape?tapeId=${encodeURIComponent(`sidecar:${sidecarId}`)}&limit=200`,
-    );
-
-    sidecarEntries.value = res.entries;
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "加载子代理轨迹失败");
-  } finally {
-    loadingSidecar.value = false;
-  }
-}
-
-async function refreshAll() {
-  await Promise.all([
-    loadTraces(),
-    loadJobStatus(),
-    activeTab.value === "context" || activeTab.value === "usage"
-      ? loadMeta()
-      : Promise.resolve(),
-  ]);
-}
-
-async function handleResetConversation() {
-  resettingContext.value = true;
-
-  try {
-    await apiFetch("/api/admin/conversation/reset", { method: "POST" });
-    message.success("已追加全局上下文重置检查点");
-    await loadMeta();
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "重置上下文失败");
-  } finally {
-    resettingContext.value = false;
-  }
-}
-
-const streamPaused = ref(false);
 
 function togglePause() {
   streamPaused.value = !streamPaused.value;
@@ -703,8 +347,6 @@ useLiveRefresh({
   refresh: () => {
     if (activeTab.value === "calls") {
       void loadTraces();
-    } else if (activeTab.value === "usage") {
-      void loadMeta();
     }
   },
 });
@@ -715,17 +357,6 @@ useLiveRefresh({
   debounceMs: 400,
   refresh: () => {
     void loadJobStatus();
-  },
-});
-
-useLiveRefresh({
-  events: ["conversation_update"],
-  paused: streamPaused,
-  debounceMs: 600,
-  refresh: () => {
-    if (activeTab.value === "context") {
-      void loadMeta();
-    }
   },
 });
 
@@ -756,10 +387,6 @@ watch(activeTab, (tab) => {
 
   if (route.query.tab !== nextQuery.tab) {
     void router.replace({ query: nextQuery });
-  }
-
-  if (tab === "context" || tab === "usage") {
-    void loadMeta();
   }
 });
 
@@ -792,74 +419,6 @@ watch(
   },
 );
 
-const usageColumns: DataTableColumns<UsageBucket> = [
-  { title: "日期", key: "day", width: 96 },
-  {
-    title: "用途",
-    key: "purpose",
-    width: 176,
-    render: (row) => {
-      const meta = purposeMeta(row.purpose);
-
-      return h(
-        NTag,
-        {
-          size: "small",
-          type: meta.type,
-          style: "max-width: 100%;",
-        },
-        { default: () => meta.label },
-      );
-    },
-  },
-  {
-    title: "模型",
-    key: "model",
-    minWidth: 130,
-    ellipsis: { tooltip: true },
-    render: (row) => h("span", { class: "mono" }, row.model),
-  },
-  {
-    title: "次数",
-    key: "calls",
-    width: 64,
-    align: "right",
-    render: (row) => h("span", { class: "tabular" }, String(row.calls)),
-  },
-  {
-    title: "输入",
-    key: "inputTokens",
-    width: 92,
-    align: "right",
-    render: (row) =>
-      h("span", { class: "tabular" }, row.inputTokens.toLocaleString()),
-  },
-  {
-    title: "缓存命中",
-    key: "cachedInputTokens",
-    width: 92,
-    align: "right",
-    render: (row) =>
-      h("span", { class: "tabular" }, row.cachedInputTokens.toLocaleString()),
-  },
-  {
-    title: "输出",
-    key: "outputTokens",
-    width: 92,
-    align: "right",
-    render: (row) =>
-      h("span", { class: "tabular" }, row.outputTokens.toLocaleString()),
-  },
-  {
-    title: "均耗时",
-    key: "avgDurationMs",
-    width: 82,
-    align: "right",
-    render: (row) =>
-      h("span", { class: "tabular" }, formatDurationHuman(row.avgDurationMs)),
-  },
-];
-
 onMounted(() => {
   mediaQuery = window.matchMedia("(max-width: 960px)");
   handleViewportChange(mediaQuery);
@@ -883,9 +442,6 @@ onMounted(() => {
 
   void loadTraces();
   void loadJobStatus();
-  if (activeTab.value === "context" || activeTab.value === "usage") {
-    void loadMeta();
-  }
 });
 
 onUnmounted(() => {
@@ -920,11 +476,7 @@ onUnmounted(() => {
           </template>
           {{ streamPaused ? "恢复实时流" : "暂停实时流" }}
         </NButton>
-        <NButton
-          :loading="loadingTraces || loadingMeta"
-          size="small"
-          @click="refreshAll"
-        >
+        <NButton :loading="loadingTraces" size="small" @click="refreshAll">
           <template #icon>
             <RefreshCw :size="14" />
           </template>
@@ -1021,7 +573,6 @@ onUnmounted(() => {
         </div>
 
         <div class="trace-workbench">
-          <!-- Left master list -->
           <div v-show="!isMobile || !mobileShowDetail" class="trace-list-pane">
             <div
               v-if="loadingTraces && traces.length === 0"
@@ -1087,7 +638,6 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- Right inspector pane -->
           <div v-show="!isMobile || mobileShowDetail" class="trace-detail-pane">
             <div v-if="isMobile" class="trace-mobile-bar">
               <NButton
@@ -1109,333 +659,15 @@ onUnmounted(() => {
       </NTabPane>
 
       <NTabPane name="context" tab="全局上下文">
-        <NCard size="small">
-          <NSpace v-if="conversation" :size="12" vertical>
-            <div class="filter-bar space-between">
-              <NText class="mono sub-note" depth="3">
-                session: {{ conversation.sessionId }} · afterMessageId:
-                {{ conversation.afterMessageId }} · 更新于
-                {{ formatTime(conversation.updatedAt) }}
-              </NText>
-              <NPopconfirm @positive-click="handleResetConversation">
-                <template #trigger>
-                  <NButton
-                    :loading="resettingContext"
-                    size="small"
-                    type="warning"
-                  >
-                    <template #icon>
-                      <RotateCcw :size="14" />
-                    </template>
-                    追加重置检查点
-                  </NButton>
-                </template>
-                将在 Tape 尾部追加重置 Anchor（历史记录不删除，可在完整 Tape
-                中回放），长期记忆保留不变。确认继续？
-              </NPopconfirm>
-            </div>
-
-            <div v-if="conversation.handoff" class="handoff-box">
-              <div class="handoff-title">
-                结构化交接摘要（Anchor #{{
-                  conversation.anchorEntryId ?? "-"
-                }}）
-              </div>
-              <div class="pre-wrap">{{ conversation.handoff.summary }}</div>
-              <div
-                v-if="conversation.handoff.confirmedFacts.length > 0"
-                class="sub-note"
-              >
-                <strong>已确认事实：</strong>
-                {{ conversation.handoff.confirmedFacts.join("；") }}
-              </div>
-              <div
-                v-if="conversation.handoff.openTasks.length > 0"
-                class="sub-note"
-              >
-                <strong>未完成任务：</strong>
-                {{ conversation.handoff.openTasks.join("；") }}
-              </div>
-              <div
-                v-if="conversation.handoff.pendingFollowups.length > 0"
-                class="sub-note"
-              >
-                <strong>待跟进事项：</strong>
-                {{ conversation.handoff.pendingFollowups.join("；") }}
-              </div>
-            </div>
-
-            <div class="context-scroll-panel">
-              <div class="context-scroll-head">
-                <div class="context-scroll-title">
-                  <span>
-                    {{
-                      contextMode === "full"
-                        ? "完整 Tape 时间线"
-                        : "活跃对话轮次"
-                    }}
-                  </span>
-                  <NText class="tabular sub-note" depth="3">
-                    {{ contextItems.length }} 条
-                  </NText>
-                  <NSpin v-if="loadingTape" :size="12" />
-                </div>
-                <NRadioGroup
-                  size="small"
-                  :value="contextMode"
-                  @update:value="handleContextModeChange"
-                >
-                  <NRadioButton value="active">当前活跃视图</NRadioButton>
-                  <NRadioButton value="full">完整 Tape</NRadioButton>
-                </NRadioGroup>
-              </div>
-
-              <ChronoVirtualList
-                class="context-vlist"
-                :empty-text="
-                  loadingTape
-                    ? '正在加载完整 Tape...'
-                    : '全局上下文当前暂无短期轮次'
-                "
-                :item-size="54"
-                :items="contextItems"
-                key-field="key"
-              >
-                <template #default="{ item }">
-                  <div class="context-vlist-item">
-                    <div
-                      class="turn-box"
-                      :class="
-                        item.kind === 'anchor'
-                          ? item.anchorReason === 'reset'
-                            ? 'turn-box-anchor-reset'
-                            : 'turn-box-anchor-compact'
-                          : ''
-                      "
-                    >
-                      <div class="turn-head">
-                        <span class="mono turn-time">#{{ item.index }}</span>
-                        <NTag
-                          v-if="item.kind === 'anchor'"
-                          size="tiny"
-                          :type="
-                            item.anchorReason === 'reset'
-                              ? 'warning'
-                              : 'success'
-                          "
-                        >
-                          {{
-                            item.anchorReason === "reset"
-                              ? "anchor: reset"
-                              : "anchor: compact"
-                          }}
-                        </NTag>
-                        <NTag v-else size="tiny" :type="roleTagType(item.role)">
-                          {{ item.role }}
-                        </NTag>
-                        <NTag v-if="item.chatKey" size="tiny" type="default">
-                          {{ item.chatKey }}
-                        </NTag>
-                        <NTag
-                          v-for="(toolName, tIdx) in item.toolNames"
-                          :key="`${toolName}-${tIdx}`"
-                          size="tiny"
-                          type="info"
-                        >
-                          {{ toolName }}
-                        </NTag>
-                        <NButton
-                          v-if="item.sidecarId"
-                          secondary
-                          size="tiny"
-                          type="primary"
-                          @click="openSidecar(item.sidecarId)"
-                        >
-                          Sidecar {{ item.sidecarId }}
-                        </NButton>
-                        <NButton
-                          v-if="item.isLong"
-                          class="ml-auto"
-                          quaternary
-                          size="tiny"
-                          @click="toggleTurnExpand(item.key)"
-                        >
-                          {{
-                            expandedTurns[item.key]
-                              ? "收起"
-                              : `展开全文 (${item.body.length.toLocaleString()} 字)`
-                          }}
-                        </NButton>
-                      </div>
-                      <pre class="code-block mt-xs">{{
-                        expandedTurns[item.key] ? item.body : item.preview
-                      }}</pre>
-                    </div>
-                  </div>
-                </template>
-              </ChronoVirtualList>
-            </div>
-          </NSpace>
-        </NCard>
+        <GlobalContextPane ref="contextPaneRef" :paused="streamPaused" />
       </NTabPane>
 
       <NTabPane name="usage" tab="用量统计">
-        <NCard size="small">
-          <div class="filter-bar">
-            <NText class="tabular sub-note" depth="2">
-              近 30 日累计：调用
-              {{ usageTotals30d.calls.toLocaleString() }} 次，合计
-              {{ usageTotals30d.totalTokens.toLocaleString() }} Tokens（输入
-              {{ usageTotals30d.inputTokens.toLocaleString() }} / 缓存命中
-              {{ usageTotals30d.cachedInputTokens.toLocaleString() }}，{{
-                formatPercent(
-                  usageTotals30d.cachedInputTokens,
-                  usageTotals30d.inputTokens,
-                )
-              }}
-              / 输出 {{ usageTotals30d.outputTokens.toLocaleString() }}）
-            </NText>
-          </div>
-          <NDataTable
-            :columns="usageColumns"
-            :data="usageBuckets"
-            :loading="loadingMeta"
-            :pagination="{ pageSize: 15 }"
-            :scroll-x="860"
-            size="small"
-          />
-        </NCard>
+        <UsageStatsPane ref="usagePaneRef" :paused="streamPaused" />
       </NTabPane>
     </NTabs>
 
-    <NModal
-      v-model:show="dryRunOpen"
-      preset="card"
-      :style="{ width: '520px', maxWidth: '94vw' }"
-      title="小模型分流试跑"
-    >
-      <NForm label-placement="top" size="small">
-        <NFormItem label="模拟会话标识">
-          <NSelect
-            v-model:value="dryRunForm.chatKey"
-            filterable
-            :options="chatOptions"
-            placeholder="选择已有会话或输入 group:群号"
-            tag
-          />
-        </NFormItem>
-        <NFormItem
-          v-if="!dryRunForm.chatKey.startsWith('private:')"
-          label="群触发模式"
-        >
-          <NSelect
-            v-model:value="dryRunForm.triggerMode"
-            :options="[
-              { label: '智能观察（smart_observe）', value: 'smart_observe' },
-              { label: '仅提及（mention_only）', value: 'mention_only' },
-            ]"
-          />
-        </NFormItem>
-        <NFormItem label="发送者">
-          <NSpace class="w-full">
-            <NInput
-              v-model:value="dryRunForm.senderName"
-              class="w-190"
-              placeholder="昵称"
-            />
-            <NInput
-              v-model:value="dryRunForm.userId"
-              class="w-190"
-              placeholder="QQ 号"
-            />
-          </NSpace>
-        </NFormItem>
-        <NFormItem label="标记">
-          <NSpace :size="20">
-            <NSpace
-              v-if="!dryRunForm.chatKey.startsWith('private:')"
-              align="center"
-              :size="6"
-            >
-              <NSwitch v-model:value="dryRunForm.mentionedBot" size="small" />
-              <span>@ 树莓娘</span>
-            </NSpace>
-            <NSpace align="center" :size="6">
-              <NSwitch v-model:value="dryRunForm.quotedBot" size="small" />
-              <span>引用机器人消息</span>
-            </NSpace>
-          </NSpace>
-        </NFormItem>
-        <NFormItem label="模拟近期群聊上下文（每行一条）">
-          <NInput
-            v-model:value="dryRunForm.recentContextText"
-            :rows="3"
-            type="textarea"
-          />
-        </NFormItem>
-        <NFormItem label="待判定消息">
-          <NInput v-model:value="dryRunForm.text" :rows="3" type="textarea" />
-        </NFormItem>
-        <NButton
-          block
-          :loading="dryRunBusy"
-          type="primary"
-          @click="handleDryRun"
-        >
-          执行分类测试
-        </NButton>
-      </NForm>
-
-      <NCard v-if="dryRunResult" class="mt-lg" size="small" title="判定结果">
-        <NSpace :size="8" vertical>
-          <NSpace align="center" :size="8">
-            <NTag
-              size="small"
-              :type="dryRunActionMap[dryRunResult.result.action].type"
-            >
-              {{ dryRunActionMap[dryRunResult.result.action].text }}
-            </NTag>
-            <NText class="tabular">
-              置信度 {{ Math.round(dryRunResult.result.confidence * 100) }}%
-            </NText>
-            <NText class="mono sub-note" depth="3">
-              {{ dryRunResult.model }} / {{ dryRunResult.durationMs }} ms
-            </NText>
-          </NSpace>
-          <div>{{ dryRunResult.result.reason }}</div>
-        </NSpace>
-      </NCard>
-    </NModal>
-
-    <NModal
-      v-model:show="sidecarModalOpen"
-      preset="card"
-      :style="{ width: '680px', maxWidth: '94vw' }"
-      :title="`子代理轨迹 · ${sidecarIdActive ?? ''}`"
-    >
-      <div v-if="loadingSidecar" class="trace-list-state">
-        <NSpin size="small" />
-      </div>
-      <NSpace v-else class="sidecar-scroll" :size="10" vertical>
-        <div v-for="item in sidecarItems" :key="item.key" class="turn-box">
-          <div class="turn-head">
-            <span class="mono turn-time">#{{ item.index }}</span>
-            <NTag size="tiny" :type="roleTagType(item.role)">
-              {{ item.role }}
-            </NTag>
-            <NTag
-              v-for="(toolName, tIdx) in item.toolNames"
-              :key="`${toolName}-${tIdx}`"
-              size="tiny"
-              type="info"
-            >
-              {{ toolName }}
-            </NTag>
-          </div>
-          <pre class="code-block mt-xs">{{ item.body }}</pre>
-        </div>
-      </NSpace>
-    </NModal>
+    <GateDryRunModal v-model:show="dryRunOpen" @done="loadTraces" />
   </div>
 </template>
 
@@ -1457,11 +689,6 @@ onUnmounted(() => {
 
 .mb-sm {
   margin-bottom: 10px;
-}
-
-.sidecar-scroll {
-  max-height: 68vh;
-  overflow-y: auto;
 }
 
 .trace-workbench {
@@ -1604,98 +831,6 @@ onUnmounted(() => {
 .trace-mobile-bar {
   padding: 8px 12px;
   border-bottom: 1px solid var(--berry-border);
-}
-
-.handoff-box {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 12px 14px;
-  border-radius: 6px;
-  border: 1px solid var(--berry-border);
-  background: var(--berry-inset);
-}
-
-.handoff-title {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.context-scroll-panel {
-  border: 1px solid var(--berry-border);
-  border-radius: 6px;
-  background: var(--berry-surface);
-  overflow: hidden;
-}
-
-.context-scroll-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--berry-border);
-  background: var(--berry-inset);
-}
-
-.context-scroll-title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.context-vlist {
-  height: 520px;
-}
-
-.context-vlist-item {
-  padding: 6px 10px;
-}
-
-.turn-box {
-  padding: 8px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--berry-border);
-  background: var(--berry-inset);
-}
-
-.turn-box-anchor-compact {
-  border-color: rgba(22, 163, 74, 0.35);
-}
-
-.turn-box-anchor-reset {
-  border-color: rgba(245, 158, 11, 0.45);
-}
-
-.turn-head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.turn-time {
-  font-size: 11px;
-  color: var(--berry-muted);
-}
-
-.space-between {
-  justify-content: space-between;
-}
-
-.ml-auto {
-  margin-left: auto;
-}
-
-.mt-xs {
-  margin-top: 6px;
-}
-
-.pre-wrap {
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 @media (max-width: 960px) {

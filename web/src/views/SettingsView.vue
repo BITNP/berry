@@ -1,13 +1,10 @@
 <script setup lang="ts">
-import { ExternalLink, Plus, RefreshCw, Save, Trash2 } from "@lucide/vue";
-import type { DataTableColumns } from "naive-ui";
+import { ExternalLink, RefreshCw, Save } from "@lucide/vue";
 import {
-  NAlert,
   NButton,
   NCard,
   NCollapse,
   NCollapseItem,
-  NDataTable,
   NDescriptions,
   NDescriptionsItem,
   NDynamicTags,
@@ -15,8 +12,6 @@ import {
   NFormItem,
   NInput,
   NInputNumber,
-  NModal,
-  NPopconfirm,
   NSelect,
   NSpace,
   NSwitch,
@@ -26,11 +21,18 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, h, onMounted, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
-import { formatBytes } from "../utils/format.ts";
+import type {
+  McpServerFormRow,
+  McpStatusRow,
+  McpToolRow,
+} from "../components/settings/McpSettingsPane.vue";
+import McpSettingsPane from "../components/settings/McpSettingsPane.vue";
+import type { StorageSummary } from "../components/settings/StorageMaintenancePane.vue";
+import StorageMaintenancePane from "../components/settings/StorageMaintenancePane.vue";
 
 type ThinkingEffort = "none" | "low" | "medium" | "high";
 
@@ -44,17 +46,6 @@ interface WeeklySchedule {
   kind: "weekly";
   weekdays: string[];
   time: string;
-}
-
-interface McpServerFormRow {
-  name: string;
-  enabled: boolean;
-  transport: "stdio" | "http";
-  command?: string;
-  args?: string[];
-  url?: string;
-  headers?: Record<string, string>;
-  allowedTools?: string[];
 }
 
 interface RuntimeSettingsView {
@@ -169,51 +160,6 @@ interface BunkoFolderOption {
   isPrivate: boolean;
 }
 
-interface McpStatusRow {
-  name: string;
-  transport: string;
-  connected: boolean;
-  toolCount: number;
-  error?: string;
-}
-
-interface McpToolRow {
-  exposedName: string;
-  serverName: string;
-  toolName: string;
-  description: string;
-}
-
-interface StorageSummary {
-  dbBytes: number;
-  assetsFiles: number;
-  assetsBytes: number;
-  avatarsFiles: number;
-  avatarsBytes: number;
-  tables: {
-    messages: number;
-    gateDecisions: number;
-    conversations: number;
-    memories: number;
-    messageAssets: number;
-    jobs: number;
-    deliveries: number;
-    schedules: number;
-    guildAuditLogs: number;
-    llmUsage: number;
-  };
-}
-
-interface PurgeResult {
-  olderThanDays: number;
-  deletedMessages: number;
-  deletedDecisions: number;
-  deletedJobs: number;
-  deletedDeliveries: number;
-  deletedAssetRows: number;
-  freedBytes: number;
-}
-
 const VALID_TABS = new Set([
   "bot",
   "digest",
@@ -222,6 +168,7 @@ const VALID_TABS = new Set([
   "media",
   "models",
   "policy",
+  "social",
   "storage",
 ]);
 
@@ -243,36 +190,11 @@ const bunkoFolders = ref<BunkoFolderOption[]>([]);
 const mcpStatuses = ref<McpStatusRow[]>([]);
 const mcpTools = ref<McpToolRow[]>([]);
 const storage = ref<StorageSummary | null>(null);
-const purging = ref(false);
-const purgeDays = ref(30);
-const lastPurge = ref<PurgeResult | null>(null);
 const triggeringGuild = ref<"due" | "assignments" | "weekly" | null>(null);
 
 const customWeeklyEnabled = ref(false);
 const weeklyDays = ref<string[]>(["sun"]);
 const weeklyTime = ref("20:00");
-
-const mcpModalOpen = ref(false);
-const editingMcpIndex = ref<number | null>(null);
-const mcpForm = ref<{
-  name: string;
-  enabled: boolean;
-  transport: "stdio" | "http";
-  command: string;
-  args: string[];
-  url: string;
-  headersList: { key: string; value: string }[];
-  allowedTools: string[];
-}>({
-  name: "",
-  enabled: true,
-  transport: "stdio",
-  command: "",
-  args: [],
-  url: "",
-  headersList: [],
-  allowedTools: [],
-});
 
 const bunkoFolderSelectOptions = computed(() => [
   { label: "工作区根目录（默认）", value: "" },
@@ -435,27 +357,6 @@ async function triggerGuildTask(task: "due" | "assignments" | "weekly") {
   }
 }
 
-async function handlePurgeStorage() {
-  purging.value = true;
-
-  try {
-    const res = await apiFetch<PurgeResult>("/api/admin/storage/purge", {
-      method: "POST",
-      body: JSON.stringify({ olderThanDays: purgeDays.value }),
-    });
-
-    lastPurge.value = res;
-    message.success(
-      `清理完成：删除 ${res.deletedMessages} 条消息、释放 ${formatBytes(res.freedBytes)}`,
-    );
-    await loadSettings();
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "存储清理失败");
-  } finally {
-    purging.value = false;
-  }
-}
-
 watch(activeTab, (tab) => {
   if (route.query.tab !== tab) {
     void router.replace({ query: { ...route.query, tab } });
@@ -537,232 +438,6 @@ async function handleSave() {
     saving.value = false;
   }
 }
-
-function openCreateMcp() {
-  editingMcpIndex.value = null;
-  mcpForm.value = {
-    name: "",
-    enabled: true,
-    transport: "http",
-    command: "",
-    args: [],
-    url: "",
-    headersList: [],
-    allowedTools: [],
-  };
-  mcpModalOpen.value = true;
-}
-
-function openEditMcp(idx: number) {
-  const row = settings.value?.mcpServers[idx];
-
-  if (!row) {
-    return;
-  }
-
-  editingMcpIndex.value = idx;
-  mcpForm.value = {
-    name: row.name,
-    enabled: row.enabled,
-    transport: row.transport,
-    command: row.command ?? "",
-    args: [...(row.args ?? [])],
-    url: row.url ?? "",
-    headersList: Object.entries(row.headers ?? {}).map(([key, value]) => ({
-      key,
-      value,
-    })),
-    allowedTools: [...(row.allowedTools ?? [])],
-  };
-  mcpModalOpen.value = true;
-}
-
-function saveMcpModal() {
-  if (!settings.value) {
-    return;
-  }
-
-  const name = mcpForm.value.name.trim();
-
-  if (!/^[\w-]+$/.test(name)) {
-    message.warning("服务名称仅允许字母、数字、下划线或连字符");
-
-    return;
-  }
-
-  const entry: McpServerFormRow = {
-    name,
-    enabled: mcpForm.value.enabled,
-    transport: mcpForm.value.transport,
-  };
-
-  if (mcpForm.value.transport === "stdio") {
-    if (!mcpForm.value.command.trim()) {
-      message.warning("请填写 stdio 启动命令");
-
-      return;
-    }
-
-    entry.command = mcpForm.value.command.trim();
-
-    if (mcpForm.value.args.length > 0) {
-      entry.args = [...mcpForm.value.args];
-    }
-  } else {
-    if (!mcpForm.value.url.trim()) {
-      message.warning("请填写 HTTP 服务地址");
-
-      return;
-    }
-
-    entry.url = mcpForm.value.url.trim();
-    const headers: Record<string, string> = {};
-
-    for (const pair of mcpForm.value.headersList) {
-      if (pair.key.trim()) {
-        headers[pair.key.trim()] = pair.value;
-      }
-    }
-
-    if (Object.keys(headers).length > 0) {
-      entry.headers = headers;
-    }
-  }
-
-  if (mcpForm.value.allowedTools.length > 0) {
-    entry.allowedTools = [...mcpForm.value.allowedTools];
-  }
-
-  if (editingMcpIndex.value === null) {
-    settings.value.mcpServers.push(entry);
-  } else {
-    settings.value.mcpServers.splice(editingMcpIndex.value, 1, entry);
-  }
-
-  mcpModalOpen.value = false;
-  message.info("已更新列表，请点击右上角「保存全部设置」应用连接");
-}
-
-function removeMcp(idx: number) {
-  settings.value?.mcpServers.splice(idx, 1);
-}
-
-const findMcpStatus = (name: string): McpStatusRow | undefined =>
-  mcpStatuses.value.find((s) => s.name === name);
-
-const mcpColumns: DataTableColumns<McpServerFormRow> = [
-  {
-    title: "名称",
-    key: "name",
-    width: 140,
-    render: (row) => h("span", { class: "mono" }, row.name),
-  },
-  {
-    title: "传输",
-    key: "transport",
-    width: 85,
-    render: (row) =>
-      h(NTag, { size: "small" }, { default: () => row.transport }),
-  },
-  {
-    title: "端点 / 命令",
-    key: "endpoint",
-    minWidth: 220,
-    ellipsis: { tooltip: true },
-    render: (row) =>
-      row.transport === "http"
-        ? row.url || "—"
-        : `${row.command || ""} ${(row.args ?? []).join(" ")}`.trim() || "—",
-  },
-  {
-    title: "运行状态",
-    key: "status",
-    width: 150,
-    render: (row) => {
-      if (!row.enabled) {
-        return h(NTag, { size: "small" }, { default: () => "已禁用" });
-      }
-
-      const st = findMcpStatus(row.name);
-
-      if (!st) {
-        return h(
-          NTag,
-          { size: "small", type: "warning" },
-          { default: () => "待保存生效" },
-        );
-      }
-
-      if (st.connected) {
-        return h(
-          NTag,
-          { size: "small", type: "success" },
-          { default: () => `在线（${st.toolCount} 工具）` },
-        );
-      }
-
-      return h(
-        NTag,
-        { size: "small", type: "error" },
-        { default: () => st.error || "离线" },
-      );
-    },
-  },
-  {
-    title: "操作",
-    key: "actions",
-    width: 112,
-    render: (_row, index) =>
-      h("div", { class: "table-actions" }, [
-        h(
-          NButton,
-          { size: "tiny", quaternary: true, onClick: () => openEditMcp(index) },
-          { default: () => "编辑" },
-        ),
-        h(
-          NPopconfirm,
-          { onPositiveClick: () => removeMcp(index) },
-          {
-            trigger: () =>
-              h(
-                NButton,
-                {
-                  "size": "tiny",
-                  "quaternary": true,
-                  "type": "error",
-                  "aria-label": "移除",
-                  "title": "移除",
-                },
-                { icon: () => h(Trash2, { size: 13 }) },
-              ),
-            default: () => "从配置中移除该 MCP 服务？",
-          },
-        ),
-      ]),
-  },
-];
-
-const mcpToolColumns: DataTableColumns<McpToolRow> = [
-  {
-    title: "暴露名称",
-    key: "exposedName",
-    width: 220,
-    render: (row) => h("span", { class: "mono" }, row.exposedName),
-  },
-  { title: "来源服务", key: "serverName", width: 140 },
-  {
-    title: "原始工具名",
-    key: "toolName",
-    width: 160,
-    render: (row) => h("span", { class: "mono" }, row.toolName),
-  },
-  {
-    title: "说明",
-    key: "description",
-    minWidth: 220,
-    ellipsis: { tooltip: true },
-  },
-];
 
 onMounted(() => {
   void loadSettings();
@@ -1493,215 +1168,18 @@ onMounted(() => {
         </NTabPane>
 
         <NTabPane name="mcp" tab="MCP 服务">
-          <div class="filter-bar">
-            <NButton size="small" type="primary" @click="openCreateMcp">
-              <template #icon>
-                <Plus :size="14" />
-              </template>
-              新增 MCP 服务
-            </NButton>
-            <NText class="sub-note" depth="3">
-              修改服务后请点击右上角「保存全部设置」完成热重载。
-            </NText>
-          </div>
-
-          <NDataTable
-            class="mb-lg"
-            :columns="mcpColumns"
-            :data="settings.mcpServers"
-            :scroll-x="720"
-            size="small"
-          />
-
-          <div class="section-title">
-            已挂载工具目录（{{ mcpTools.length }}）
-          </div>
-          <NDataTable
-            :columns="mcpToolColumns"
-            :data="mcpTools"
-            :pagination="{ pageSize: 10 }"
-            :scroll-x="740"
-            size="small"
+          <McpSettingsPane
+            v-model:servers="settings.mcpServers"
+            :statuses="mcpStatuses"
+            :tools="mcpTools"
           />
         </NTabPane>
 
         <NTabPane name="storage" tab="存储维护">
-          <NSpace v-if="storage" :size="16" vertical>
-            <NDescriptions
-              bordered
-              :column="3"
-              label-placement="left"
-              size="small"
-            >
-              <NDescriptionsItem label="SQLite 库文件">
-                {{ formatBytes(storage.dbBytes) }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="媒体缓存">
-                {{ storage.assetsFiles }} 个文件 /
-                {{ formatBytes(storage.assetsBytes) }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="头像缓存">
-                {{ storage.avatarsFiles }} 个文件 /
-                {{ formatBytes(storage.avatarsBytes) }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="聊天消息">
-                {{ storage.tables.messages.toLocaleString() }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="分流记录">
-                {{ storage.tables.gateDecisions.toLocaleString() }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="结构化记忆">
-                {{ storage.tables.memories.toLocaleString() }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="媒体附件">
-                {{ storage.tables.messageAssets.toLocaleString() }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="后台任务">
-                {{ storage.tables.jobs.toLocaleString() }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="出站投递">
-                {{ storage.tables.deliveries.toLocaleString() }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="定时任务">
-                {{ storage.tables.schedules.toLocaleString() }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="公会审计">
-                {{ storage.tables.guildAuditLogs.toLocaleString() }}
-              </NDescriptionsItem>
-              <NDescriptionsItem label="AI 调用流水">
-                {{ storage.tables.llmUsage.toLocaleString() }}
-              </NDescriptionsItem>
-            </NDescriptions>
-
-            <div class="filter-bar">
-              <NText depth="2">保留最近天数：</NText>
-              <NInputNumber
-                v-model:value="purgeDays"
-                class="w-110"
-                :max="3650"
-                :min="1"
-                size="small"
-              />
-              <NPopconfirm @positive-click="handlePurgeStorage">
-                <template #trigger>
-                  <NButton :loading="purging" size="small" type="warning">
-                    <template #icon>
-                      <Trash2 :size="14" />
-                    </template>
-                    清理过期数据
-                  </NButton>
-                </template>
-                将删除超过 {{ purgeDays }}
-                天的未受保护历史消息、分流记录、已完成任务及孤立媒体文件；被长期记忆引用的消息会自动保留。确认继续？
-              </NPopconfirm>
-            </div>
-
-            <NAlert v-if="lastPurge" type="success">
-              本次清理范围：超过 {{ lastPurge.olderThanDays }} 天；共清理
-              {{ lastPurge.deletedMessages }} 条消息、{{
-                lastPurge.deletedDecisions
-              }}
-              条分流日志、{{ lastPurge.deletedJobs }} 条任务、{{
-                lastPurge.deletedDeliveries
-              }}
-              条投递、{{ lastPurge.deletedAssetRows }} 条媒体记录，释放磁盘
-              {{ formatBytes(lastPurge.freedBytes) }}。
-            </NAlert>
-          </NSpace>
+          <StorageMaintenancePane :storage @purged="loadSettings" />
         </NTabPane>
       </NTabs>
     </NCard>
-
-    <NModal
-      v-model:show="mcpModalOpen"
-      class="modal-md"
-      preset="card"
-      :title="editingMcpIndex !== null ? '编辑 MCP 服务' : '新增 MCP 服务'"
-    >
-      <NForm label-placement="top" size="small">
-        <div class="form-grid-2">
-          <NFormItem label="服务标识符（英文/数字/连字符）">
-            <NInput
-              v-model:value="mcpForm.name"
-              placeholder="例如 outline-docs"
-            />
-          </NFormItem>
-          <NFormItem label="传输方式">
-            <NSelect
-              v-model:value="mcpForm.transport"
-              :options="[
-                { label: 'HTTP (Streamable HTTP)', value: 'http' },
-                { label: 'stdio (子进程)', value: 'stdio' },
-              ]"
-            />
-          </NFormItem>
-        </div>
-
-        <NFormItem label="启用状态">
-          <NSwitch v-model:value="mcpForm.enabled" />
-        </NFormItem>
-
-        <template v-if="mcpForm.transport === 'stdio'">
-          <NFormItem label="启动命令">
-            <NInput v-model:value="mcpForm.command" placeholder="例如 npx" />
-          </NFormItem>
-          <NFormItem label="命令参数">
-            <NDynamicTags v-model:value="mcpForm.args" />
-          </NFormItem>
-        </template>
-
-        <template v-else>
-          <NFormItem label="服务端 URL">
-            <NInput
-              v-model:value="mcpForm.url"
-              placeholder="https://example.com/mcp"
-            />
-          </NFormItem>
-          <NFormItem label="请求头（Headers）">
-            <NSpace class="w-full" vertical>
-              <div
-                v-for="(pair, idx) in mcpForm.headersList"
-                :key="idx"
-                class="inline-pair-row"
-              >
-                <NInput v-model:value="pair.key" placeholder="Header 名" />
-                <NInput
-                  v-model:value="pair.value"
-                  placeholder="值"
-                  show-password-on="click"
-                  type="password"
-                />
-                <NButton
-                  quaternary
-                  size="small"
-                  type="error"
-                  @click="mcpForm.headersList.splice(idx, 1)"
-                >
-                  <template #icon>
-                    <Trash2 :size="13" />
-                  </template>
-                </NButton>
-              </div>
-              <NButton
-                size="tiny"
-                @click="mcpForm.headersList.push({ key: '', value: '' })"
-              >
-                添加 Header
-              </NButton>
-            </NSpace>
-          </NFormItem>
-        </template>
-
-        <NFormItem label="允许暴露的工具白名单（留空则全部放行）">
-          <NDynamicTags v-model:value="mcpForm.allowedTools" />
-        </NFormItem>
-
-        <NSpace justify="end">
-          <NButton @click="mcpModalOpen = false">取消</NButton>
-          <NButton type="primary" @click="saveMcpModal">确定</NButton>
-        </NSpace>
-      </NForm>
-    </NModal>
   </div>
 </template>
 
