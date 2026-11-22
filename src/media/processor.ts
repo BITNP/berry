@@ -277,6 +277,7 @@ export class MediaProcessor {
         bytes,
         detected.mime,
         record.chatKey,
+        record.messageId,
         settings,
       );
 
@@ -307,6 +308,7 @@ export class MediaProcessor {
         bytes,
         attachment.name || `audio.${detected?.ext ?? "mp3"}`,
         record.chatKey,
+        record.messageId,
         settings,
       );
 
@@ -375,25 +377,51 @@ export class MediaProcessor {
   }
 
   async #downloadBytes(url: string): Promise<Buffer> {
-    const res = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+    const delaysMs = [400, 1000];
+    let lastError: unknown;
 
-    if (!res.ok) {
-      throw new Error(`下载失败 HTTP ${res.status}`);
+    for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+
+        if (!res.ok) {
+          if (res.status >= 500 && attempt < delaysMs.length) {
+            throw new Error(`下载失败 HTTP ${res.status}`);
+          }
+
+          throw new Error(`下载失败 HTTP ${res.status}`);
+        }
+
+        const buf = Buffer.from(await res.arrayBuffer());
+
+        if (buf.byteLength === 0 || buf.byteLength > MAX_ASSET_BYTES) {
+          throw new Error("媒体体积超出允许范围（最大 8MB）");
+        }
+
+        return buf;
+      } catch (error) {
+        lastError = error;
+
+        if (
+          attempt >= delaysMs.length ||
+          (error instanceof Error &&
+            error.message.startsWith("媒体体积超出允许范围"))
+        ) {
+          throw error;
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, delaysMs[attempt]));
+      }
     }
 
-    const buf = Buffer.from(await res.arrayBuffer());
-
-    if (buf.byteLength === 0 || buf.byteLength > MAX_ASSET_BYTES) {
-      throw new Error("媒体体积超出允许范围（最大 8MB）");
-    }
-
-    return buf;
+    throw lastError instanceof Error ? lastError : new Error("媒体下载失败");
   }
 
   async #analyzeImage(
     bytes: Buffer,
     mimeType: string,
     chatKey: ChatKey,
+    messageId: number,
     settings: RuntimeSettings,
   ): Promise<string> {
     const apiKey = settings.media.visionApiKey || settings.mainModel.apiKey;
@@ -415,9 +443,10 @@ export class MediaProcessor {
       timeZone: settings.bot.timezone,
       purpose: "vision",
       chatKey,
+      messageIds: [messageId],
       params: {
         temperature: 0.2,
-        max_tokens: 400,
+        max_tokens: 2048,
         messages: [
           {
             role: "system",
@@ -432,13 +461,20 @@ export class MediaProcessor {
       },
     });
 
-    return completion.choices[0]?.message.content?.trim() || "无法识别图片内容";
+    const content = completion.choices[0]?.message.content?.trim();
+
+    if (!content) {
+      throw new Error("视觉模型返回空内容（输出上限可能被思考过程耗尽）");
+    }
+
+    return content;
   }
 
   async #transcribeAudio(
     bytes: Buffer,
     filename: string,
     chatKey: ChatKey,
+    messageId: number,
     settings: RuntimeSettings,
   ): Promise<string> {
     const apiKey = settings.media.audioApiKey || settings.mainModel.apiKey;
@@ -466,6 +502,7 @@ export class MediaProcessor {
       purpose: "audio",
       model,
       chatKey,
+      messageIds: [messageId],
       inputTokens: 0,
       cachedInputTokens: 0,
       outputTokens: res.text.length,

@@ -996,3 +996,216 @@ test("search_chat_messages supports regex OR, userRef filter, and contextLines; 
     1,
   );
 });
+
+test("Vision empty output fails asset instead of caching placeholder, and AI trace APIs link messages to multi-step calls", async (t) => {
+  const visionRequests: { maxTokens?: number }[] = [];
+  const tinyPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=",
+    "base64",
+  );
+
+  const stub = await startStubServer((req, res, bodyText) => {
+    if (req.url === "/img.png") {
+      res.setHeader("Content-Type", "image/png");
+      res.end(tinyPng);
+
+      return;
+    }
+
+    if (req.url === "/v1/chat/completions") {
+      const parsed = JSON.parse(bodyText) as { max_tokens?: number };
+
+      visionRequests.push({ maxTokens: parsed.max_tokens });
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          id: "chatcmpl-empty",
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: null,
+                reasoning_content: "thinking only...",
+              },
+              finish_reason: "length",
+            },
+          ],
+          usage: {
+            prompt_tokens: 120,
+            completion_tokens: 400,
+            total_tokens: 520,
+          },
+        }),
+      );
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      devAuthBypass: true,
+    },
+    {
+      media: {
+        autoAnalyzeImages: true,
+        visionBaseURL: `${stub.url}/v1`,
+        visionApiKey: "test-vision-key",
+        visionModel: "vision-test-model",
+      },
+    },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "8801",
+    title: "技术保障中心",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const { message: userMsg } = await app.store.messages.capture({
+    kind: "group",
+    chatId: "8801",
+    onebotMessageId: "ob-u-1",
+    userId: "12345",
+    senderName: "测试同学",
+    text: "[图片] 这张图写了啥",
+    segments: [],
+    replyToMessageId: null,
+    isBot: false,
+    mentionedBot: true,
+    sentAt: Date.now() - 2000,
+  });
+
+  // Enqueue image where vision model returns null content (e.g. exhausted reasoning tokens).
+  await app.media.enqueueMessageAssets(userMsg, [
+    { kind: "image", rawUrl: `${stub.url}/img.png`, name: "img.png" },
+  ]);
+  await app.media.waitForMessages([userMsg.id]);
+
+  assert.equal(visionRequests.length, 1);
+  assert.ok((visionRequests[0]?.maxTokens ?? 0) >= 2048);
+
+  const [updatedAsset] =
+    (await app.store.assets.listForMessages([userMsg.id])).get(userMsg.id) ??
+    [];
+
+  assert.equal(updatedAsset?.status, "failed");
+  assert.match(updatedAsset?.error ?? "", /空内容/);
+
+  // Record a gate decision + dialog call linked to the same message, plus bot reply.
+  await app.store.gate.record({
+    chatKey: "group:8801",
+    messageId: userMsg.id,
+    action: "reply",
+    stage: "l0_rule",
+    reason: "@提及了树莓娘",
+    confidence: 1,
+    model: "rule",
+    durationMs: 1,
+  });
+
+  await app.store.usage.record({
+    purpose: "dialog",
+    model: "test-main",
+    chatKey: "group:8801",
+    jobId: 42,
+    messageIds: [userMsg.id],
+    inputTokens: 1000,
+    outputTokens: 80,
+    cachedInputTokens: 512,
+    durationMs: 1200,
+    status: "ok",
+    error: null,
+    toolCalls: [],
+    requestPreview: null,
+    responseText: JSON.stringify({
+      units: [{ kind: "qq_reply", text: "图片刚下载失败了，再发一次试试" }],
+    }),
+  });
+
+  await app.store.messages.capture({
+    kind: "group",
+    chatId: "8801",
+    onebotMessageId: "ob-bot-1",
+    userId: "999999",
+    senderName: "树莓娘",
+    text: "图片刚下载失败了，再发一次试试",
+    segments: [],
+    replyToMessageId: "ob-u-1",
+    isBot: true,
+    mentionedBot: false,
+    sentAt: Date.now() - 500,
+  });
+
+  const { url } = await app.listen();
+
+  // 1) /api/admin/ai/traces groups vision + dialog under the same message with real chat title & reply.
+  const tracesRes = await fetch(`${url}/api/admin/ai/traces?limit=20`);
+
+  assert.equal(tracesRes.status, 200);
+  const tracesJson = (await tracesRes.json()) as {
+    items: {
+      chatTitle: string;
+      triggerMessages: { id: number; text: string }[];
+      replyMessages: { text: string }[];
+      gateDecisions: { action: string }[];
+      steps: { purpose: string }[];
+      outcome: { kind: string; label: string };
+    }[];
+  };
+
+  assert.equal(tracesJson.items.length, 1);
+  const trace = tracesJson.items[0]!;
+
+  assert.equal(trace.chatTitle, "技术保障中心");
+  assert.equal(trace.triggerMessages[0]?.id, userMsg.id);
+  assert.equal(trace.replyMessages[0]?.text, "图片刚下载失败了，再发一次试试");
+  assert.equal(trace.gateDecisions[0]?.action, "reply");
+  assert.deepEqual(trace.steps.map((s) => s.purpose).toSorted(), [
+    "dialog",
+    "vision",
+  ]);
+  assert.equal(trace.outcome.kind, "reply");
+
+  // 2) /api/admin/messages/:id/trace returns the same correlated trace.
+  const msgTraceRes = await fetch(
+    `${url}/api/admin/messages/${userMsg.id}/trace`,
+  );
+
+  assert.equal(msgTraceRes.status, 200);
+  const msgTraceJson = (await msgTraceRes.json()) as {
+    chatTitle: string;
+    steps: { purpose: string }[];
+  };
+
+  assert.equal(msgTraceJson.chatTitle, "技术保障中心");
+  assert.equal(msgTraceJson.steps.length, 2);
+
+  // 3) /api/admin/chats/:chatKey/messages attaches traceSummary to the user message.
+  const chatMsgsRes = await fetch(
+    `${url}/api/admin/chats/${encodeURIComponent("group:8801")}/messages`,
+  );
+
+  assert.equal(chatMsgsRes.status, 200);
+  const chatMsgsJson = (await chatMsgsRes.json()) as {
+    items: {
+      id: number;
+      traceSummary?: {
+        hasTrace: boolean;
+        gateAction: string | null;
+        aiCalls: number;
+      };
+    }[];
+  };
+  const fetchedUserMsg = chatMsgsJson.items.find((m) => m.id === userMsg.id);
+
+  assert.equal(fetchedUserMsg?.traceSummary?.hasTrace, true);
+  assert.equal(fetchedUserMsg?.traceSummary?.gateAction, "reply");
+  assert.equal(fetchedUserMsg?.traceSummary?.aiCalls, 2);
+});
