@@ -1723,4 +1723,98 @@ test("sticker library auto-collects group stickers, enforces review, searches vi
   assert.ok(imgSeg.data.file?.startsWith("base64://"));
   assert.equal(imgSeg.data.subType, 1);
   assert.equal((await app.store.stickers.get(collected.id))?.useCount, 1);
+
+  // 4) Admin manual upload endpoint validates image bytes and saves approved sticker.
+  const badUploadRes = await fetch(`${url}/api/admin/stickers/upload`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+    body: JSON.stringify({
+      dataUrl: `data:text/plain;base64,${Buffer.from("not an image").toString("base64")}`,
+      filename: "bad.txt",
+    }),
+  });
+
+  assert.equal(badUploadRes.status, 400);
+
+  const gifBytes = Buffer.from(
+    "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+    "base64",
+  );
+  const uploadRes = await fetch(`${url}/api/admin/stickers/upload`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+    body: JSON.stringify({
+      dataUrl: `data:image/gif;base64,${gifBytes.toString("base64")}`,
+      filename: "回应了你的消息.gif",
+      meaning: "回应了你的消息整活图",
+      tags: ["回应", "整活"],
+    }),
+  });
+
+  assert.equal(uploadRes.status, 200);
+  const uploaded = (await uploadRes.json()) as {
+    ok: boolean;
+    created: boolean;
+    item: { id: number; status: string; enabled: boolean; meaning: string };
+  };
+
+  assert.equal(uploaded.ok, true);
+  assert.equal(uploaded.created, true);
+  assert.equal(uploaded.item.status, "approved");
+  assert.equal(uploaded.item.enabled, true);
+  assert.equal(uploaded.item.meaning, "回应了你的消息整活图");
+
+  // 5) Admin save_sticker tool directly saves a cached chat image asset; non-admin is rejected.
+  const { ModelIds } = await import("../src/agent/model-ids.ts");
+  const { saveStickerToolProvider } = await import("../src/tools/stickers.ts");
+  const groupAssets = await app.store.assets.listForMessages([
+    eventRes.messageId,
+  ]);
+  const cachedAsset = groupAssets.get(eventRes.messageId)?.[0];
+
+  assert.ok(cachedAsset);
+
+  const memberTools = saveStickerToolProvider.resolve({
+    services: app.services,
+    actor: {
+      chatKey: "group:654321",
+      senderQQ: "30001",
+      actorSubject: null,
+      actorName: "普通群友",
+      role: "member",
+    },
+    ids: new ModelIds(),
+  });
+
+  assert.equal(memberTools.length, 0);
+
+  const adminTools = saveStickerToolProvider.resolve({
+    services: app.services,
+    actor: {
+      chatKey: "group:654321",
+      senderQQ: "10001",
+      actorSubject: null,
+      actorName: "管理员",
+      role: "admin",
+    },
+    ids: new ModelIds(),
+  });
+
+  assert.equal(adminTools.length, 1);
+  const savedViaTool = (await adminTools[0]!.execute({
+    assetId: cachedAsset.id,
+    meaning: "管理员钦定傲娇猫猫图",
+    tags: ["傲娇", "钦定"],
+  })) as { ok: boolean; stickerId: number; meaning: string; status: string };
+
+  assert.equal(savedViaTool.ok, true);
+  assert.equal(savedViaTool.stickerId, collected.id);
+  assert.equal(savedViaTool.meaning, "管理员钦定傲娇猫猫图");
+  assert.equal(savedViaTool.status, "approved");
 });

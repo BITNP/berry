@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, RefreshCw, Trash2 } from "@lucide/vue";
+import { Check, RefreshCw, Trash2, Upload } from "@lucide/vue";
 import type { DataTableColumns } from "naive-ui";
 import {
   NButton,
@@ -16,6 +16,7 @@ import {
   NSpace,
   NSwitch,
   NTag,
+  NText,
   useMessage,
 } from "naive-ui";
 import { h, onMounted, ref, watch } from "vue";
@@ -83,6 +84,96 @@ const form = ref({
   status: "approved",
   enabled: true,
 });
+
+const uploadModalOpen = ref(false);
+const uploading = ref(false);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+const uploadForm = ref({
+  dataUrl: "",
+  filename: "",
+  meaning: "",
+  tags: [] as string[],
+  status: "approved",
+  enabled: true,
+});
+
+function openUpload() {
+  uploadForm.value = {
+    dataUrl: "",
+    filename: "",
+    meaning: "",
+    tags: [],
+    status: "approved",
+    enabled: true,
+  };
+  if (fileInputRef.value) {
+    fileInputRef.value.value = "";
+  }
+
+  uploadModalOpen.value = true;
+}
+
+function readPickedFile(file: File | undefined) {
+  if (!file) {
+    return;
+  }
+
+  if (file.size > 8 * 1024 * 1024) {
+    message.warning("图片大小不能超过 8 MB");
+
+    return;
+  }
+
+  const reader = new FileReader();
+
+  reader.addEventListener("load", () => {
+    if (typeof reader.result === "string") {
+      uploadForm.value.dataUrl = reader.result;
+      uploadForm.value.filename = file.name;
+    }
+  });
+  reader.readAsDataURL(file);
+}
+
+function handleFileChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+
+  readPickedFile(input.files?.[0]);
+}
+
+function handleDrop(event: DragEvent) {
+  readPickedFile(event.dataTransfer?.files[0]);
+}
+
+async function handleUpload() {
+  if (!uploadForm.value.dataUrl) {
+    message.warning("请先选择一张图片");
+
+    return;
+  }
+
+  uploading.value = true;
+
+  try {
+    const res = await apiFetch<{ created: boolean }>(
+      "/api/admin/stickers/upload",
+      {
+        method: "POST",
+        body: JSON.stringify(uploadForm.value),
+      },
+    );
+
+    uploadModalOpen.value = false;
+    message.success(
+      res.created ? "已上传并上架表情包" : "表情包已存在，已更新信息",
+    );
+    await loadStickers();
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : "上传失败");
+  } finally {
+    uploading.value = false;
+  }
+}
 
 function openEdit(row: StickerRow) {
   editingId.value = row.id;
@@ -287,7 +378,7 @@ onMounted(() => {
     <div class="filter-bar">
       <NSelect
         v-model:value="filterStatus"
-        class="w-130"
+        class="w-135"
         clearable
         :options="[
           { label: '已通过', value: 'approved' },
@@ -304,6 +395,12 @@ onMounted(() => {
         size="small"
         @keyup.enter="loadStickers"
       />
+      <NButton size="small" type="primary" @click="openUpload">
+        <template #icon>
+          <Upload :size="14" />
+        </template>
+        上传表情包
+      </NButton>
       <NButton :loading size="small" @click="loadStickers">
         <template #icon>
           <RefreshCw :size="14" />
@@ -362,5 +459,127 @@ onMounted(() => {
         </NSpace>
       </NForm>
     </NModal>
+
+    <NModal
+      v-model:show="uploadModalOpen"
+      class="modal-md"
+      preset="card"
+      title="上传表情包"
+    >
+      <NForm label-placement="top" size="small">
+        <NFormItem label="图片文件（PNG / JPG / GIF / WebP，最大 8 MB）">
+          <div
+            class="upload-dropzone"
+            @click="fileInputRef?.click()"
+            @dragover.prevent
+            @drop.prevent="handleDrop"
+          >
+            <input
+              ref="fileInputRef"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+              class="hidden-file-input"
+              type="file"
+              @change="handleFileChange"
+            />
+            <img
+              v-if="uploadForm.dataUrl"
+              alt="表情包预览"
+              class="upload-preview"
+              :src="uploadForm.dataUrl"
+            />
+            <div class="upload-meta">
+              <NText strong>
+                {{ uploadForm.filename || "点击选择或拖拽图片到此处" }}
+              </NText>
+              <NText class="sub-note" depth="3">
+                {{
+                  uploadForm.dataUrl
+                    ? "点击可重新选择图片"
+                    : "上架后树莓娘可直接按含义和情绪标签检索发送"
+                }}
+              </NText>
+            </div>
+          </div>
+        </NFormItem>
+        <NFormItem label="含义描述">
+          <NInput
+            v-model:value="uploadForm.meaning"
+            maxlength="180"
+            placeholder="例如：「回应了你的消息」整活梗图，留空默认使用文件名"
+            :rows="2"
+            show-count
+            type="textarea"
+          />
+        </NFormItem>
+        <NFormItem label="情绪标签">
+          <NDynamicTags v-model:value="uploadForm.tags" />
+        </NFormItem>
+        <NSpace :size="20">
+          <NFormItem label="审核状态">
+            <NSelect
+              v-model:value="uploadForm.status"
+              class="w-135"
+              :options="[
+                { label: '已通过', value: 'approved' },
+                { label: '待审核', value: 'pending' },
+              ]"
+            />
+          </NFormItem>
+          <NFormItem label="立即启用">
+            <NSwitch v-model:value="uploadForm.enabled" />
+          </NFormItem>
+        </NSpace>
+        <NSpace justify="end">
+          <NButton @click="uploadModalOpen = false">取消</NButton>
+          <NButton
+            :disabled="!uploadForm.dataUrl"
+            :loading="uploading"
+            type="primary"
+            @click="handleUpload"
+          >
+            上传并上架
+          </NButton>
+        </NSpace>
+      </NForm>
+    </NModal>
   </div>
 </template>
+
+<style scoped>
+.upload-dropzone {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px dashed var(--berry-border);
+  border-radius: 8px;
+  background: var(--berry-inset);
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.upload-dropzone:hover {
+  border-color: var(--berry-accent, #e11d48);
+}
+
+.hidden-file-input {
+  display: none;
+}
+
+.upload-preview {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: var(--berry-surface);
+  flex-shrink: 0;
+}
+
+.upload-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+</style>

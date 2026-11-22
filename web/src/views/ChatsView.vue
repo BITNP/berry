@@ -639,6 +639,27 @@ async function openMessageTrace(msg: ChatMessageView) {
   }
 }
 
+const collectingAssetId = ref<number | null>(null);
+
+async function collectAssetAsSticker(assetId: number) {
+  collectingAssetId.value = assetId;
+
+  try {
+    const res = await apiFetch<{ created: boolean }>(
+      `/api/admin/stickers/from-asset/${assetId}`,
+      { method: "POST" },
+    );
+
+    message.success(
+      res.created ? "已收进表情包库并上架" : "该图片已在表情包库中",
+    );
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : "收录表情包失败");
+  } finally {
+    collectingAssetId.value = null;
+  }
+}
+
 function assetKindLabel(kind: MessageAssetView["kind"]): string {
   switch (kind) {
     case "image": {
@@ -983,6 +1004,19 @@ onUnmounted(() => {
                               :src="`/api/admin/assets/${asset.id}/raw`"
                             />
                           </a>
+                          <div
+                            v-if="asset.kind === 'image' && asset.filePath"
+                            class="asset-actions"
+                          >
+                            <NButton
+                              :loading="collectingAssetId === asset.id"
+                              quaternary
+                              size="tiny"
+                              @click="collectAssetAsSticker(asset.id)"
+                            >
+                              收进表情包库
+                            </NButton>
+                          </div>
                           <div
                             v-if="asset.transcript || asset.error"
                             class="asset-note"

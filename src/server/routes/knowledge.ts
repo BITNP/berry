@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
-import { resolve, sep } from "node:path";
+import { mkdir, stat, writeFile } from "node:fs/promises";
+import { basename, extname, join, resolve, sep } from "node:path";
 
+import { fileTypeFromBuffer } from "file-type";
 import type { Router } from "h3";
 import { createError, defineEventHandler, setHeader } from "h3";
 import { lookup } from "mrmime";
@@ -371,6 +373,98 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
       });
 
       return { ok: true, created, item: record };
+    }),
+  );
+
+  const ALLOWED_STICKER_MIMES = new Set([
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+  ]);
+  const MAX_STICKER_UPLOAD_BYTES = 8 * 1024 * 1024;
+
+  router.post(
+    "/api/admin/stickers/upload",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const body = await parseBody(
+        event,
+        Type.Object({
+          dataUrl: Type.String({ minLength: 16 }),
+          filename: Type.Optional(Type.String({ maxLength: 160 })),
+          meaning: Type.Optional(Type.String({ maxLength: 200 })),
+          tags: Type.Optional(Type.Array(Type.String())),
+          status: Type.Optional(reviewStatusSchema),
+          enabled: Type.Optional(Type.Boolean()),
+        }),
+        "请上传有效的图片文件",
+      );
+
+      const base64 = body.dataUrl.includes(",")
+        ? body.dataUrl.slice(body.dataUrl.indexOf(",") + 1)
+        : body.dataUrl;
+      const bytes = Buffer.from(base64, "base64");
+
+      if (bytes.length === 0 || bytes.length > MAX_STICKER_UPLOAD_BYTES) {
+        throw createError({
+          statusCode: 400,
+          message: "图片文件不能为空且不能超过 8 MB",
+        });
+      }
+
+      const detected = await fileTypeFromBuffer(bytes);
+
+      if (!detected || !ALLOWED_STICKER_MIMES.has(detected.mime)) {
+        throw createError({
+          statusCode: 400,
+          message: "仅支持 PNG、JPG、GIF 或 WebP 格式的图片",
+        });
+      }
+
+      const sha256 = createHash("sha256").update(bytes).digest("hex");
+      const stickerDir = join(berry.store.assetsDir, "stickers");
+
+      await mkdir(stickerDir, { recursive: true });
+      const filePath = join(stickerDir, `${sha256}.${detected.ext}`);
+
+      await writeFile(filePath, bytes);
+
+      const fallbackName = body.filename
+        ? basename(body.filename, extname(body.filename)).trim()
+        : "";
+      const meaning = (body.meaning?.trim() || fallbackName || "表情包").slice(
+        0,
+        180,
+      );
+      const tags = (body.tags ?? [])
+        .map((t) => t.trim())
+        .filter(Boolean)
+        .slice(0, 8);
+      const status = body.status ?? "approved";
+      const enabled = body.enabled ?? true;
+
+      const { record, created } = await berry.store.stickers.collectIfAbsent({
+        sha256,
+        filePath,
+        mimeType: detected.mime,
+        meaning,
+        tags: tags.length > 0 ? tags : ["表情包"],
+        sourceChatKey: "manual",
+        status,
+        enabled,
+      });
+
+      const item = created
+        ? record
+        : ((await berry.store.stickers.update(record.id, {
+            meaning,
+            tags: tags.length > 0 ? tags : record.tags,
+            status,
+            enabled,
+          })) ?? record);
+
+      return { ok: true, created, item };
     }),
   );
 }
