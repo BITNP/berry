@@ -295,7 +295,7 @@ onMounted(() => {
       <button
         class="metric-card"
         type="button"
-        @click="router.push('/logs?tab=jobs')"
+        @click="router.push('/ai?tab=jobs')"
       >
         <div class="metric-card-top">
           <span class="metric-label">任务队列</span>
@@ -315,7 +315,7 @@ onMounted(() => {
       <button
         class="metric-card"
         type="button"
-        @click="router.push('/logs?tab=deliveries')"
+        @click="router.push('/ai?tab=deliveries')"
       >
         <div class="metric-card-top">
           <span class="metric-label">出站投递</span>
@@ -465,11 +465,7 @@ onMounted(() => {
             </template>
             重试全部
           </NButton>
-          <NButton
-            quaternary
-            size="tiny"
-            @click="router.push('/logs?tab=jobs')"
-          >
+          <NButton quaternary size="tiny" @click="router.push('/ai?tab=jobs')">
             查看队列
           </NButton>
         </NSpace>
@@ -542,7 +538,7 @@ onMounted(() => {
           <NButton
             quaternary
             size="tiny"
-            @click="router.push('/logs?tab=deliveries')"
+            @click="router.push('/ai?tab=deliveries')"
           >
             查看全部
             <template #icon>

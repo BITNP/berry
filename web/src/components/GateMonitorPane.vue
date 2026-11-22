@@ -13,6 +13,7 @@ import {
   NInput,
   NSelect,
   NSpace,
+  NSpin,
   NSwitch,
   NTag,
   NText,
@@ -23,9 +24,10 @@ import { h, onMounted, ref, watch } from "vue";
 import { apiFetch } from "../api/client.ts";
 import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useLiveRefresh } from "../composables/useEventStream.ts";
-import type { LlmCallRow } from "../utils/ai.ts";
+import type { AiTraceView, LlmCallRow } from "../utils/ai.ts";
 import { formatTime } from "../utils/format.ts";
 import InlineAiCallsList from "./InlineAiCallsList.vue";
+import TraceInspector from "./TraceInspector.vue";
 
 interface GateDecisionRow {
   id: number;
@@ -65,7 +67,7 @@ const props = defineProps<{
 }>();
 
 const message = useMessage();
-const { chatOptions } = useChatOptions();
+const { chatOptions, chatTitle } = useChatOptions();
 
 const loading = ref(false);
 const items = ref<GateDecisionRow[]>([]);
@@ -77,6 +79,7 @@ const filterSearch = ref("");
 
 const selectedRow = ref<GateDecisionRow | null>(null);
 const detailOpen = ref(false);
+const selectedTrace = ref<AiTraceView | null>(null);
 const relatedCalls = ref<LlmCallRow[]>([]);
 const loadingRelatedCalls = ref(false);
 
@@ -204,10 +207,25 @@ async function loadRelatedCalls(
 
   if (!options.silent) {
     loadingRelatedCalls.value = true;
+    selectedTrace.value = null;
     relatedCalls.value = [];
   }
 
   try {
+    if (row.messageId !== null) {
+      const trace = await apiFetch<AiTraceView>(
+        `/api/admin/messages/${row.messageId}/trace`,
+      );
+
+      if (selectedRow.value?.id !== targetId) {
+        return;
+      }
+
+      selectedTrace.value = trace;
+
+      return;
+    }
+
     const qs = new URLSearchParams({
       chatKey: row.chatKey,
       limit: "20",
@@ -298,7 +316,7 @@ const columns: DataTableColumns<GateDecisionRow> = [
     key: "chatKey",
     width: 176,
     ellipsis: { tooltip: true },
-    render: (row) => h("span", { class: "mono" }, row.chatKey),
+    render: (row) => h("span", null, chatTitle(row.chatKey)),
   },
   {
     title: "发送者",
@@ -444,53 +462,67 @@ onMounted(() => {
       size="small"
     />
 
-    <NDrawer v-model:show="detailOpen" class="drawer-safe" :width="520">
-      <NDrawerContent v-if="selectedRow" closable title="判定详情">
-        <NDescriptions bordered :column="1" label-placement="left" size="small">
-          <NDescriptionsItem label="记录编号">
-            {{ selectedRow.id }}
-          </NDescriptionsItem>
-          <NDescriptionsItem label="判定时间">
-            {{ formatTime(selectedRow.createdAt) }}
-          </NDescriptionsItem>
-          <NDescriptionsItem label="会话">
-            <span class="mono">{{ selectedRow.chatKey }}</span>
-          </NDescriptionsItem>
-          <NDescriptionsItem label="发送者">
-            {{ selectedRow.senderName || "—" }}
-            {{ selectedRow.userId ? `(${selectedRow.userId})` : "" }}
-          </NDescriptionsItem>
-          <NDescriptionsItem label="动作">
-            <NTag size="small" :type="actionTagMap[selectedRow.action].type">
-              {{ actionTagMap[selectedRow.action].text }}
-            </NTag>
-          </NDescriptionsItem>
-          <NDescriptionsItem label="阶段">
-            {{ stageLabelMap[selectedRow.stage] }}
-          </NDescriptionsItem>
-          <NDescriptionsItem label="置信度">
-            {{ Math.round(selectedRow.confidence * 100) }}%
-          </NDescriptionsItem>
-          <NDescriptionsItem label="模型 / 耗时">
-            <span class="mono">{{ selectedRow.model || "rule" }}</span>
-            / {{ selectedRow.durationMs }} ms
-          </NDescriptionsItem>
-        </NDescriptions>
-
-        <div class="section-title">消息内容</div>
-        <pre class="code-block">{{ selectedRow.messageText || "—" }}</pre>
-
-        <div class="section-title">判断理由</div>
-        <pre class="code-block">{{ selectedRow.reason }}</pre>
-
-        <div class="section-title">
-          关联 AI 调用（{{ relatedCalls.length }}）
+    <NDrawer v-model:show="detailOpen" class="drawer-safe" :width="720">
+      <NDrawerContent v-if="selectedRow" closable title="分流判定与关联追踪">
+        <div
+          v-if="loadingRelatedCalls && selectedRow.messageId !== null"
+          class="flex justify-center py-lg"
+        >
+          <NSpin size="small" />
         </div>
-        <InlineAiCallsList
-          :calls="relatedCalls"
-          empty-text="该判定后未触发 AI 调用"
-          :loading="loadingRelatedCalls"
-        />
+        <TraceInspector v-else-if="selectedTrace" :trace="selectedTrace" />
+        <template v-else>
+          <NDescriptions
+            bordered
+            :column="1"
+            label-placement="left"
+            size="small"
+          >
+            <NDescriptionsItem label="记录编号">
+              {{ selectedRow.id }}
+            </NDescriptionsItem>
+            <NDescriptionsItem label="判定时间">
+              {{ formatTime(selectedRow.createdAt) }}
+            </NDescriptionsItem>
+            <NDescriptionsItem label="会话">
+              {{ chatTitle(selectedRow.chatKey) }}
+            </NDescriptionsItem>
+            <NDescriptionsItem label="发送者">
+              {{ selectedRow.senderName || "—" }}
+              {{ selectedRow.userId ? `(${selectedRow.userId})` : "" }}
+            </NDescriptionsItem>
+            <NDescriptionsItem label="动作">
+              <NTag size="small" :type="actionTagMap[selectedRow.action].type">
+                {{ actionTagMap[selectedRow.action].text }}
+              </NTag>
+            </NDescriptionsItem>
+            <NDescriptionsItem label="阶段">
+              {{ stageLabelMap[selectedRow.stage] }}
+            </NDescriptionsItem>
+            <NDescriptionsItem label="置信度">
+              {{ Math.round(selectedRow.confidence * 100) }}%
+            </NDescriptionsItem>
+            <NDescriptionsItem label="模型 / 耗时">
+              <span class="mono">{{ selectedRow.model || "rule" }}</span>
+              / {{ selectedRow.durationMs }} ms
+            </NDescriptionsItem>
+          </NDescriptions>
+
+          <div class="section-title">消息内容</div>
+          <pre class="code-block">{{ selectedRow.messageText || "—" }}</pre>
+
+          <div class="section-title">判断理由</div>
+          <pre class="code-block">{{ selectedRow.reason }}</pre>
+
+          <div class="section-title">
+            关联 AI 调用（{{ relatedCalls.length }}）
+          </div>
+          <InlineAiCallsList
+            :calls="relatedCalls"
+            empty-text="该判定后未触发 AI 调用"
+            :loading="loadingRelatedCalls"
+          />
+        </template>
 
         <NButton
           block
@@ -502,7 +534,7 @@ onMounted(() => {
             emit('inspectChatCalls', selectedRow.chatKey);
           "
         >
-          在调用明细中筛选该会话
+          在执行链路中筛选该会话
         </NButton>
       </NDrawerContent>
     </NDrawer>

@@ -22,10 +22,12 @@ export const router = createRouter({
       path: "/ai",
       component: () => import("./views/AiCallsView.vue"),
       meta: {
-        title: "AI 追踪",
+        title: "运行追踪",
         tabTitles: {
-          calls: "AI 追踪",
+          calls: "执行链路",
           gate: "消息分流",
+          jobs: "任务队列",
+          deliveries: "出站投递",
           context: "全局上下文",
           usage: "用量统计",
         },
@@ -56,13 +58,15 @@ export const router = createRouter({
     {
       path: "/logs",
       component: () => import("./views/LogsView.vue"),
+      beforeEnter: (to) => {
+        if (to.query.tab === "jobs" || to.query.tab === "deliveries") {
+          return { path: "/ai", query: to.query };
+        }
+
+        return true;
+      },
       meta: {
-        title: "运行监控",
-        tabTitles: {
-          jobs: "任务队列",
-          deliveries: "出站投递",
-          logs: "实时日志",
-        },
+        title: "系统日志",
       },
     },
     {

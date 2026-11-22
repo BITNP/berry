@@ -82,8 +82,8 @@ const menuOptions: MenuOption[] = [
     key: "grp-monitor",
     children: [
       { key: "/overview", label: "概览", icon: renderIcon(LayoutDashboard) },
-      { key: "/logs", label: "运行监控", icon: renderIcon(ScrollText) },
-      { key: "/ai", label: "AI 追踪", icon: renderIcon(Cpu) },
+      { key: "/ai", label: "运行追踪", icon: renderIcon(Cpu) },
+      { key: "/logs", label: "系统日志", icon: renderIcon(ScrollText) },
     ],
   },
   {
@@ -352,7 +352,7 @@ onUnmounted(() => {
             secondary
             size="tiny"
             type="info"
-            @click="router.push('/logs?tab=jobs&lane=background')"
+            @click="router.push('/ai?tab=jobs&lane=background')"
           >
             <span class="dot ok" />
             后台任务 {{ status.activeBackgroundJobs }}

@@ -34,7 +34,10 @@ import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import ChronoVirtualList from "../components/ChronoVirtualList.vue";
+import DeliveriesPane from "../components/DeliveriesPane.vue";
 import GateMonitorPane from "../components/GateMonitorPane.vue";
+import type { JobCounts } from "../components/RuntimeJobsPane.vue";
+import RuntimeJobsPane from "../components/RuntimeJobsPane.vue";
 import TraceInspector from "../components/TraceInspector.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useLiveRefresh } from "../composables/useEventStream.ts";
@@ -115,13 +118,19 @@ const router = useRouter();
 const message = useMessage();
 const { chatOptions } = useChatOptions();
 
-type AiTab = "calls" | "gate" | "context" | "usage";
+type AiTab = "calls" | "gate" | "jobs" | "deliveries" | "context" | "usage";
 type TraceScope = "active" | "all" | "error";
 
 function initialTab(): AiTab {
   const q = route.query.tab;
 
-  if (q === "gate" || q === "context" || q === "usage") {
+  if (
+    q === "gate" ||
+    q === "jobs" ||
+    q === "deliveries" ||
+    q === "context" ||
+    q === "usage"
+  ) {
     return q;
   }
 
@@ -135,7 +144,11 @@ const traces = ref<AiTraceView[]>([]);
 const totalTraces = ref(0);
 const selectedTraceId = ref<string | null>(null);
 const gateTotal = ref<number | null>(null);
+const jobsSummary = ref<{ total: number; counts: JobCounts } | null>(null);
+const deliveriesSummary = ref<{ total: number; failed: number } | null>(null);
 const gatePaneRef = ref<InstanceType<typeof GateMonitorPane> | null>(null);
+const jobsPaneRef = ref<InstanceType<typeof RuntimeJobsPane> | null>(null);
+const deliveriesPaneRef = ref<InstanceType<typeof DeliveriesPane> | null>(null);
 const usageBuckets = ref<UsageBucket[]>([]);
 const conversation = ref<ConversationView | null>(null);
 const contextMode = ref<"active" | "full">("active");
@@ -530,6 +543,18 @@ async function refreshAll() {
     return;
   }
 
+  if (activeTab.value === "jobs") {
+    await jobsPaneRef.value?.refresh();
+
+    return;
+  }
+
+  if (activeTab.value === "deliveries") {
+    await deliveriesPaneRef.value?.refresh();
+
+    return;
+  }
+
   await Promise.all([
     loadTraces(),
     activeTab.value === "context" || activeTab.value === "usage"
@@ -619,6 +644,8 @@ watch(
     if (
       q.tab === "calls" ||
       q.tab === "gate" ||
+      q.tab === "jobs" ||
+      q.tab === "deliveries" ||
       q.tab === "context" ||
       q.tab === "usage"
     ) {
@@ -722,7 +749,7 @@ onUnmounted(() => {
   <div class="ai-page">
     <div class="page-bar">
       <NSpace align="center" :size="10">
-        <h2 class="page-title">AI 追踪</h2>
+        <h2 class="page-title">运行追踪</h2>
         <NText v-if="activeTab === 'calls'" class="sub-note tabular" depth="3">
           {{ totalTraces }} 条链路
         </NText>
@@ -732,6 +759,26 @@ onUnmounted(() => {
           depth="3"
         >
           {{ gateTotal }} 条分流
+        </NText>
+        <NText
+          v-else-if="activeTab === 'jobs' && jobsSummary"
+          class="sub-note tabular"
+          depth="3"
+        >
+          {{ jobsSummary.total }} 个任务
+          <template v-if="jobsSummary.counts.failed > 0">
+            · {{ jobsSummary.counts.failed }} 失败
+          </template>
+        </NText>
+        <NText
+          v-else-if="activeTab === 'deliveries' && deliveriesSummary"
+          class="sub-note tabular"
+          depth="3"
+        >
+          {{ deliveriesSummary.total }} 条投递
+          <template v-if="deliveriesSummary.failed > 0">
+            · {{ deliveriesSummary.failed }} 失败
+          </template>
         </NText>
       </NSpace>
       <NSpace :size="8" wrap>
@@ -901,6 +948,42 @@ onUnmounted(() => {
             :paused="streamPaused"
             @inspect-chat-calls="inspectChatCalls"
             @update:total="(n: number) => (gateTotal = n)"
+          />
+        </NCard>
+      </NTabPane>
+
+      <NTabPane
+        name="jobs"
+        :tab="
+          jobsSummary && jobsSummary.counts.failed > 0
+            ? `任务队列 (${jobsSummary.counts.failed} 失败)`
+            : jobsSummary && jobsSummary.counts.running > 0
+              ? `任务队列 (${jobsSummary.counts.running} 运行中)`
+              : '任务队列'
+        "
+      >
+        <NCard size="small">
+          <RuntimeJobsPane
+            ref="jobsPaneRef"
+            :paused="streamPaused"
+            @update:summary="(s) => (jobsSummary = s)"
+          />
+        </NCard>
+      </NTabPane>
+
+      <NTabPane
+        name="deliveries"
+        :tab="
+          deliveriesSummary && deliveriesSummary.failed > 0
+            ? `出站投递 (${deliveriesSummary.failed} 失败)`
+            : '出站投递'
+        "
+      >
+        <NCard size="small">
+          <DeliveriesPane
+            ref="deliveriesPaneRef"
+            :paused="streamPaused"
+            @update:summary="(s) => (deliveriesSummary = s)"
           />
         </NCard>
       </NTabPane>

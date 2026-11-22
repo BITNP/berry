@@ -49,6 +49,21 @@ export function useChatOptions() {
     }
   }
 
+  const chatTitleMap = computed(() => {
+    const map = new Map<string, string>();
+
+    for (const chat of chats.value) {
+      if (chat.title) {
+        map.set(chat.chatKey, chat.title);
+      }
+    }
+
+    return map;
+  });
+
+  const chatTitle = (chatKey: string): string =>
+    chatTitleMap.value.get(chatKey) ?? chatKey;
+
   onMounted(() => {
     void loadChatOptions();
   });
@@ -58,5 +73,6 @@ export function useChatOptions() {
     users,
     chatOptions,
     userOptions,
+    chatTitle,
   };
 }

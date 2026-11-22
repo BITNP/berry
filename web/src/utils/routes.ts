@@ -1,6 +1,7 @@
 import type { RouteLocationRaw } from "vue-router";
 
-type AiCallsTab = "calls" | "gate" | "context";
+type AiCallsTab =
+  "calls" | "gate" | "jobs" | "deliveries" | "context" | "usage";
 
 export type JobLaneFilter = "all" | "background" | "realtime";
 
