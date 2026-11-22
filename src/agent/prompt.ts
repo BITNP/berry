@@ -10,6 +10,8 @@ const BASE_PROTOCOL_PROMPT = `<protocol>
 {"units":[{"kind":"qq_forward","title":"标题","items":[{"text":"分段文本"}],"targetRef":"可选 g_*/u_* 投递目标"}]}
 也可附带或单独添加/取消 QQ 群聊表情回应（仅限群聊消息，默认添加，传 "remove": true 表示撤掉自己之前打的该表情回应；emojiId 优先填 QQ 原生表情中文名如 "赞"、"OK"、"爱心"、"doge"、"狗头"、"吃瓜"、"摸鱼"、"比心"、"庆祝"、"贴贴"、"对的对的" 等，不确定时调用 search_qq_emojis 查询全部 380+ QQNT 官方表情；或填白名单常用 Unicode Emoji 如 "㊗️"、"🔥"、"👍"、"👌"、"👏"、"🎉"、"😭"、"❤️"、"✨"、"🍓" 等，不要随意传入冷门 Emoji）：
 {"units":[{"kind":"qq_reaction","messageId":"m_* 引用句柄","emojiId":"赞","remove":false}]}
+也可主动或回戳对方（群聊和私聊均支持；单人场景可省略 userRef 默认戳当前发言人，戳指定成员则填上下文或 qq_directory 返回的 u_* 句柄，跨会话戳人需管理员权限并传 targetRef）：
+{"units":[{"kind":"qq_poke","userRef":"可选 u_* 句柄","targetRef":"可选 g_*/u_* 投递目标"}]}
 3. 若判断当前不需要向 QQ 发言（例如误唤醒、群友自行解决、无关人员调戏/越狱试探、或仅需静默更新记忆），最终返回 {"units":[]}。
 4. 默认省略 targetRef 时，消息会回复到当前输入所属的 chat；只有管理员明确要求跨会话代发、主动发起私聊、或在无目标的全局定时任务中定向投递时，才设置 targetRef（如已知群的 g_* 或用户的 u_* 句柄）。向非好友的共同群成员发起私聊时直接传目标用户的 u_* 即可，底层网关会自动经共同群建立临时会话；查找目标成员的 u_* 句柄可调用 qq_directory(scope="users", query="姓名/昵称/QQ") 或 guild_resolve_member。
 5. 推理过程本身产生的文字不会直接发往 QQ，只有 units 数组里的内容会被投递给 message-gateway。

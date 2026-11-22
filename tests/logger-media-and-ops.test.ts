@@ -1209,3 +1209,191 @@ test("Vision empty output fails asset instead of caching placeholder, and AI tra
   assert.equal(fetchedUserMsg?.traceSummary?.gateAction, "reply");
   assert.equal(fetchedUserMsg?.traceSummary?.aiCalls, 2);
 });
+
+test("QQ poke notice ingests group/private pokes at bot, ignores others/self, and qq_poke dispatches send_poke", async (t) => {
+  const gatewayCalls: { action: string; body: Record<string, unknown> }[] = [];
+
+  const gwStub = await startStubServer((req, res, bodyText) => {
+    const action = req.url?.split("/").pop() ?? "";
+    const body = bodyText
+      ? (JSON.parse(bodyText) as Record<string, unknown>)
+      : {};
+
+    gatewayCalls.push({ action, body });
+    res.setHeader("Content-Type", "application/json");
+
+    if (action === "get_group_member_list") {
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          data: [{ user_id: 20_001, card: "小甲", nickname: "甲" }],
+        }),
+      );
+
+      return;
+    }
+
+    if (action === "get_stranger_info") {
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          data: { user_id: 20_002, nickname: "私聊乙" },
+        }),
+      );
+
+      return;
+    }
+
+    res.end(JSON.stringify({ status: "ok", data: {} }));
+  }, t);
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: string }[];
+    };
+    const userContent = reqJson.messages.at(-1)?.content ?? "";
+
+    res.setHeader("Content-Type", "application/json");
+
+    if (userContent.includes('"candidates"')) {
+      const parsed = JSON.parse(userContent) as {
+        candidates: { messageId: number }[];
+      };
+
+      res.end(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                role: "assistant",
+                content: JSON.stringify({
+                  decisions: parsed.candidates.map((c) => ({
+                    messageId: c.messageId,
+                    action: "reply",
+                    confidence: 0.95,
+                    reason: "戳了戳树莓娘",
+                  })),
+                }),
+              },
+            },
+          ],
+        }),
+      );
+
+      return;
+    }
+
+    // Main dialog pokes back (omitting userRef in single-speaker turn to test default resolution).
+    res.end(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: JSON.stringify({
+                units: [
+                  { kind: "qq_poke" },
+                  { kind: "qq_reply", text: "戳回去～" },
+                ],
+              }),
+            },
+          },
+        ],
+      }),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gwStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+      mainBaseUrl: `${llmStub.url}/v1`,
+      gateBaseUrl: `${llmStub.url}/v1`,
+      botQQ: "999999",
+    },
+    { policy: { groupDefaultMode: "mention_only", adminQQs: ["20001"] } },
+    t,
+  );
+
+  // 1) Poke targeting another human is ignored.
+  const ignoredOther = await app.gatewayEvents.handleEvent({
+    post_type: "notice",
+    notice_type: "notify",
+    sub_type: "poke",
+    group_id: 777,
+    user_id: 20_001,
+    target_id: 20_002,
+    self_id: 999_999,
+    time: 1_700_000_001,
+  });
+
+  assert.equal(ignoredOther.reason, "poke_other_target");
+
+  // 2) Self-poke echo from bot is ignored.
+  const ignoredSelf = await app.gatewayEvents.handleEvent({
+    post_type: "notice",
+    notice_type: "notify",
+    sub_type: "poke",
+    group_id: 777,
+    user_id: 999_999,
+    target_id: 20_001,
+    self_id: 999_999,
+    time: 1_700_000_002,
+  });
+
+  assert.equal(ignoredSelf.reason, "poke_ignored_self");
+
+  // 3) Group poke at bot is captured with mentionedBot=true and triggers qq_poke back.
+  const groupPoke = await app.gatewayEvents.handleEvent({
+    post_type: "notice",
+    notice_type: "notify",
+    sub_type: "poke",
+    group_id: 777,
+    user_id: 20_001,
+    target_id: 999_999,
+    self_id: 999_999,
+    time: 1_700_000_003,
+  });
+
+  assert.equal(groupPoke.reason, "poke");
+  assert.ok(groupPoke.messageId);
+
+  const capturedGroup = await app.store.messages.get(groupPoke.messageId);
+
+  assert.equal(capturedGroup?.text, "[戳了戳树莓娘]");
+  assert.equal(capturedGroup?.senderName, "小甲");
+  assert.equal(capturedGroup?.mentionedBot, true);
+
+  await app.worker.drainOnce();
+
+  const groupPokeCall = gatewayCalls.find((c) => c.action === "send_poke");
+
+  assert.deepEqual(groupPokeCall?.body, {
+    user_id: 20_001,
+    group_id: 777,
+  });
+
+  // 4) Private poke at bot is captured and direct qq_poke dispatch omits group_id.
+  const privatePoke = await app.gatewayEvents.handleEvent({
+    post_type: "notice",
+    notice_type: "notify",
+    sub_type: "poke",
+    user_id: 20_002,
+    target_id: 999_999,
+    self_id: 999_999,
+    time: 1_700_000_004,
+  });
+
+  assert.equal(privatePoke.reason, "poke");
+  const privDelivery = await app.gateway.dispatchUnit(
+    "private:20002",
+    { kind: "qq_poke", userId: "20002" },
+    "999999",
+  );
+
+  assert.equal(privDelivery.status, "sent");
+  const privPokeCall = gatewayCalls.filter((c) => c.action === "send_poke")[1];
+
+  assert.deepEqual(privPokeCall?.body, { user_id: 20_002 });
+});

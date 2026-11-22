@@ -96,6 +96,10 @@ function summarizePayload(
     return `${verb} #${String(payload.emojiId ?? "")} -> ${String(payload.messageId ?? "")}`;
   }
 
+  if (kind === "qq_poke") {
+    return `戳了戳 ${String(payload.userId ?? "")}`;
+  }
+
   return JSON.stringify(payload);
 }
 
@@ -103,6 +107,7 @@ const deliveryKindLabel: Record<string, string> = {
   qq_reply: "文本回复",
   qq_forward: "合并转发",
   qq_reaction: "表情回应",
+  qq_poke: "戳一戳",
 };
 
 const deliveryStatusLabel: Record<

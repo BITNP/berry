@@ -111,10 +111,11 @@ export interface MessageTraceSummary {
 }
 
 export interface ParsedDialogUnit {
-  kind: "qq_reply" | "qq_reaction" | "qq_forward";
+  kind: "qq_reply" | "qq_reaction" | "qq_forward" | "qq_poke";
   text?: string;
   title?: string;
   emojiId?: string;
+  userRef?: string;
   remove?: boolean;
   quoteMessageId?: string;
   targetRef?: string;
@@ -147,6 +148,7 @@ export function parseDialogUnits(
         text?: string;
         title?: string;
         emojiId?: string;
+        userRef?: string;
         remove?: boolean;
         quoteMessageId?: string;
         targetRef?: string;
@@ -163,13 +165,15 @@ export function parseDialogUnits(
         (u) =>
           u.kind === "qq_reply" ||
           u.kind === "qq_reaction" ||
-          u.kind === "qq_forward",
+          u.kind === "qq_forward" ||
+          u.kind === "qq_poke",
       )
       .map((u) => ({
         kind: u.kind as ParsedDialogUnit["kind"],
         text: u.text,
         title: u.title,
         emojiId: u.emojiId,
+        userRef: u.userRef,
         remove: u.remove,
         quoteMessageId: u.quoteMessageId,
         targetRef: u.targetRef,

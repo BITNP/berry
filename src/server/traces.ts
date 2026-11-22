@@ -366,6 +366,14 @@ function parseDialogOutcome(steps: LlmCallRecord[]): TraceOutcome | null {
           preview: `贴表情 ${firstReaction.emojiId ?? ""}`.trim(),
         };
       }
+
+      if (parsed.units.some((u) => u.kind === "qq_poke")) {
+        return {
+          kind: "reaction",
+          label: "戳一戳",
+          preview: "戳了戳对方",
+        };
+      }
     } catch {
       // Ignore malformed preview fragments.
     }

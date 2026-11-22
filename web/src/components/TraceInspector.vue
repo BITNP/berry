@@ -527,7 +527,11 @@ const isVisionEmpty = (step: LlmCallRow): boolean =>
                     <NTag
                       :bordered="false"
                       size="tiny"
-                      :type="unit.kind === 'qq_reaction' ? 'info' : 'primary'"
+                      :type="
+                        unit.kind === 'qq_reaction' || unit.kind === 'qq_poke'
+                          ? 'info'
+                          : 'primary'
+                      "
                     >
                       {{
                         unit.kind === "qq_reply"
@@ -536,14 +540,20 @@ const isVisionEmpty = (step: LlmCallRow): boolean =>
                             ? unit.remove
                               ? "取消表情"
                               : "贴表情"
-                            : `合并转发 (${unit.itemCount ?? 0})`
+                            : unit.kind === "qq_poke"
+                              ? "戳一戳"
+                              : `合并转发 (${unit.itemCount ?? 0})`
                       }}
                     </NTag>
                     <span class="ti-unit-text">
                       {{
                         unit.kind === "qq_reaction"
                           ? unit.emojiId
-                          : unit.text || unit.title
+                          : unit.kind === "qq_poke"
+                            ? unit.userRef
+                              ? `戳了戳 ${unit.userRef}`
+                              : "戳了戳对方"
+                            : unit.text || unit.title
                       }}
                     </span>
                   </div>

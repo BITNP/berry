@@ -1032,6 +1032,33 @@ export class MessageGatewayClient {
         );
       }
 
+      if (unit.kind === "qq_poke") {
+        const targetUserId = Number(unit.userId);
+
+        if (!Number.isFinite(targetUserId) || targetUserId <= 0) {
+          throw new Error(`无效的戳一戳目标用户: ${unit.userId}`);
+        }
+
+        await this.callAction("send_poke", {
+          user_id: targetUserId,
+          ...(kind === "group" ? { group_id: Number(chatId) } : {}),
+        });
+
+        const updated = await this.#store.deliveries.updateStatus(delivery.id, {
+          status: "sent",
+          onebotMessageId: `poke-${delivery.id}`,
+        });
+
+        await this.#store.conversations.pushOutputResult({
+          module: "qq_gateway",
+          status: "ok",
+          detail: "sent",
+          createdAt: Date.now(),
+        });
+
+        return updated ?? delivery;
+      }
+
       if (unit.kind === "qq_forward") {
         return await this.#dispatchForward(
           delivery,

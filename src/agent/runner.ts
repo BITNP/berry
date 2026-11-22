@@ -1,3 +1,4 @@
+import type { Static } from "typebox";
 import { Type } from "typebox";
 
 import type { RuntimeSettings } from "../config/settings.ts";
@@ -67,7 +68,17 @@ const outputUnitSchema = Type.Union([
     },
     { additionalProperties: false },
   ),
+  Type.Object(
+    {
+      kind: Type.Literal("qq_poke"),
+      userRef: Type.Optional(Type.String({ minLength: 1 })),
+      targetRef: Type.Optional(Type.String({ minLength: 1 })),
+    },
+    { additionalProperties: false },
+  ),
 ]);
+
+type RawOutputUnit = Static<typeof outputUnitSchema>;
 
 const agentOutputSchema = Type.Object(
   {
@@ -451,7 +462,7 @@ export class BerryAgent {
       },
     });
 
-    // Resolve opaque quote, reaction, and optional targetRef handles back to real OneBot IDs.
+    // Resolve opaque quote, reaction, poke, and optional targetRef handles back to real OneBot IDs.
     const { dispatches: plannedDispatches, errors: dispatchErrors } =
       this.#resolveDispatches(result.structured.units, {
         ids,
@@ -459,6 +470,7 @@ export class BerryAgent {
         requestMessages,
         speakerQQ,
         role,
+        botQQ: settings.bot.botQQ,
       });
 
     for (const detail of dispatchErrors) {
@@ -820,20 +832,21 @@ export class BerryAgent {
   }
 
   #resolveDispatches(
-    rawUnits: OutputUnit[],
+    rawUnits: RawOutputUnit[],
     ctx: {
       ids: ModelIds;
       input: UnifiedInput;
       requestMessages: MessageRecord[];
       speakerQQ: string | null;
       role: AccessRole;
+      botQQ: string;
     },
   ): {
     dispatches: { targetChatKey: ChatKey; unit: OutputUnit }[];
     errors: string[];
   } {
     const logger = this.#logger;
-    const { ids, input, requestMessages, speakerQQ, role } = ctx;
+    const { ids, input, requestMessages, speakerQQ, role, botQQ } = ctx;
 
     function isTargetAuthorized(targetChatKey: ChatKey): boolean {
       return targetChatKey === input.chatKey || role === "admin";
@@ -949,6 +962,56 @@ export class BerryAgent {
             errors.push(msg);
           }
         }
+
+        continue;
+      }
+
+      if (unit.kind === "qq_poke") {
+        const targetChatKey = resolveUnitTarget(unit.targetRef);
+
+        if (!targetChatKey) {
+          continue;
+        }
+
+        let resolvedUserId: string | null = null;
+
+        if (unit.userRef?.trim()) {
+          try {
+            resolvedUserId = ids.resolveUser(unit.userRef);
+          } catch {
+            logger.warn("Dropped qq_poke with unresolvable userRef", {
+              fromChatKey: input.chatKey,
+              userRef: unit.userRef,
+            });
+            errors.push(
+              `无法解析戳一戳目标句柄 ${unit.userRef}，请使用上下文或 qq_directory 返回的 u_* 句柄`,
+            );
+
+            continue;
+          }
+        } else if (targetChatKey.startsWith("private:")) {
+          resolvedUserId = targetChatKey.slice("private:".length);
+        } else if (speakerQQ) {
+          resolvedUserId = speakerQQ;
+        } else {
+          errors.push("群聊多人批次发送 qq_poke 时必须明确指定 userRef");
+
+          continue;
+        }
+
+        if (botQQ && resolvedUserId === botQQ) {
+          errors.push("不能对自己发送戳一戳，已忽略");
+
+          continue;
+        }
+
+        dispatches.push({
+          targetChatKey,
+          unit: {
+            kind: "qq_poke",
+            userId: resolvedUserId,
+          },
+        });
 
         continue;
       }

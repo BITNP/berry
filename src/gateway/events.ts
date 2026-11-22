@@ -28,6 +28,8 @@ export interface OneBotEvent {
   message_id?: string | number;
   group_id?: string | number;
   user_id?: string | number;
+  sender_id?: string | number;
+  target_id?: string | number;
   self_id?: string | number;
   time?: number;
   message?: unknown;
@@ -265,6 +267,92 @@ export class GatewayEventSubscriber {
       }
 
       return { accepted: true, reason: "emoji_like" };
+    }
+
+    if (
+      payload.post_type === "notice" &&
+      payload.notice_type === "notify" &&
+      payload.sub_type === "poke"
+    ) {
+      const settings = this.#getSettings();
+      const botQQ = settings.bot.botQQ || String(payload.self_id ?? "");
+      const pokerId = String(payload.user_id ?? payload.sender_id ?? "").trim();
+      const targetId = String(payload.target_id ?? "").trim();
+
+      if (!pokerId || (botQQ && pokerId === botQQ)) {
+        return { accepted: true, reason: "poke_ignored_self" };
+      }
+
+      if (targetId && botQQ && targetId !== botQQ) {
+        return { accepted: true, reason: "poke_other_target" };
+      }
+
+      const rawGroupId =
+        payload.group_id !== undefined && String(payload.group_id).trim()
+          ? String(payload.group_id).trim()
+          : "";
+      const kind: ChatKind = rawGroupId ? "group" : "private";
+      const chatId = kind === "group" ? rawGroupId : pokerId;
+      const rawTimeSec =
+        typeof payload.time === "number" && payload.time > 0
+          ? payload.time
+          : Math.floor(Date.now() / 1000);
+      const sentAt = rawTimeSec * 1000;
+      const resolvedName =
+        kind === "group"
+          ? await this.#gateway.getGroupMemberName(chatId, pokerId)
+          : await this.#gateway.getUserDisplayName(pokerId);
+      const senderName = await this.#gateway.resolveSenderName({
+        userId: pokerId,
+        isBot: false,
+        nickname: resolvedName ?? undefined,
+      });
+
+      await this.#gateway.ensureChatWithTitle(kind, chatId, {
+        titleHint:
+          kind === "private" && senderName !== pokerId ? senderName : undefined,
+        enabled:
+          kind === "group"
+            ? settings.policy.groupDefaultMode !== "off"
+            : settings.policy.privateDefaultEnabled,
+        triggerMode:
+          kind === "group" ? settings.policy.groupDefaultMode : "smart_observe",
+      });
+
+      const { message, created } = await this.#store.messages.capture({
+        kind,
+        chatId,
+        onebotMessageId: `poke:${kind}:${chatId}:${pokerId}:${rawTimeSec}`,
+        userId: pokerId,
+        senderName,
+        text: "[戳了戳树莓娘]",
+        segments: [
+          {
+            type: "poke",
+            data: { user_id: pokerId, target_id: botQQ || targetId },
+          },
+        ],
+        replyToMessageId: null,
+        isBot: false,
+        mentionedBot: true,
+        sentAt,
+      });
+
+      if (!created) {
+        return { accepted: true, reason: "duplicate", messageId: message.id };
+      }
+
+      if (!settings.bot.paused) {
+        await this.#gate.ingest(message);
+      }
+
+      this.#logger.debug("Captured OneBot poke notice", {
+        messageId: message.id,
+        chatKey: message.chatKey,
+        pokerId,
+      });
+
+      return { accepted: true, reason: "poke", messageId: message.id };
     }
 
     if (payload.post_type !== "message") {

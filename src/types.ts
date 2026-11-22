@@ -149,6 +149,11 @@ export type OutputUnit =
       messageId: string;
       emojiId: string;
       remove?: boolean;
+    }
+  | {
+      kind: "qq_poke";
+      userId: string;
+      targetRef?: string;
     };
 
 export interface UnifiedInput {
