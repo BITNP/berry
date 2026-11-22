@@ -252,19 +252,138 @@ test("three-tier access roles enforce boundaries across chats, MCP, memory, sche
     /仅管理员或网协管理层可查询/,
   );
 
-  // 2) Memory guards: guest/member are read-only; admin can write global, any chat, and any user.
+  // 2) Memory guards: guest is read-only; member can manage own user scope (capped at 5 items / 300 chars)
+  //    but cannot touch global, chat, other users, or multi-speaker turns; admin has full control.
+  const guestUserRef = ids.userRef("5001");
+  const adminUserRef = ids.userRef("7001");
+
   for (const scope of ["global", "chat", "user"] as const) {
+    await assert.rejects(
+      () =>
+        memoryManageTool.bind(makeCtx(services, ids, guestActor)).execute({
+          action: "upsert",
+          scope,
+          ...(scope === "user" ? { userRef: guestUserRef } : {}),
+          key: `guest-${scope}`,
+          content: "should-block",
+        }),
+      /仅管理员或已绑定通行证的网协成员/,
+    );
+  }
+
+  for (const scope of ["global", "chat"] as const) {
     await assert.rejects(
       () =>
         memoryManageTool.bind(makeCtx(services, ids, memberActor)).execute({
           action: "upsert",
           scope,
-          ...(scope === "user" ? { userRef: memberUserRef } : {}),
           key: `k-${scope}`,
           content: "should-block",
         }),
       /仅管理员或网协管理层/,
     );
+  }
+
+  await assert.rejects(
+    () =>
+      memoryManageTool.bind(makeCtx(services, ids, memberActor)).execute({
+        action: "upsert",
+        scope: "user",
+        userRef: adminUserRef,
+        key: "other-user",
+        content: "should-block",
+      }),
+    /仅可修改或删除本人的个人记忆/,
+  );
+
+  await assert.rejects(
+    () =>
+      memoryManageTool
+        .bind(makeCtx(services, ids, { ...memberActor, multiSpeaker: true }))
+        .execute({
+          action: "upsert",
+          scope: "user",
+          userRef: memberUserRef,
+          key: "multi-speaker",
+          content: "should-block",
+        }),
+    /仅可修改或删除本人的个人记忆/,
+  );
+
+  await assert.rejects(
+    () =>
+      memoryManageTool.bind(makeCtx(services, ids, memberActor)).execute({
+        action: "upsert",
+        scope: "user",
+        key: "too-long-content",
+        summary: "测试超长",
+        content: "a".repeat(301),
+      }),
+    /不能超过 300 字/,
+  );
+
+  for (let i = 1; i <= 5; i += 1) {
+    const saved = (await memoryManageTool
+      .bind(makeCtx(services, ids, memberActor))
+      .execute({
+        action: "upsert",
+        scope: "user",
+        key: `self-${i}`,
+        summary: i === 1 ? "s".repeat(120) : `偏好 ${i}`,
+        content: `我的个人偏好 ${i}`,
+      })) as { mutated: boolean; memory: { summary: string } };
+
+    assert.equal(saved.mutated, true);
+    if (i === 1) {
+      assert.equal(saved.memory.summary.length, 80);
+    }
+  }
+
+  // Overwriting an existing key still succeeds at the 5-item cap.
+  const overwritten = (await memoryManageTool
+    .bind(makeCtx(services, ids, memberActor))
+    .execute({
+      action: "upsert",
+      scope: "user",
+      key: "self-1",
+      summary: "新称呼",
+      content: "叫我小王",
+    })) as { mutated: boolean; memory: { content: string } };
+
+  assert.equal(overwritten.mutated, true);
+  assert.equal(overwritten.memory.content, "叫我小王");
+
+  // Creating a 6th distinct key is blocked until one is deleted.
+  await assert.rejects(
+    () =>
+      memoryManageTool.bind(makeCtx(services, ids, memberActor)).execute({
+        action: "upsert",
+        scope: "user",
+        key: "self-6",
+        summary: "第六条",
+        content: "超额",
+      }),
+    /最多保留 5 条/,
+  );
+
+  const deletedSelf = (await memoryManageTool
+    .bind(makeCtx(services, ids, memberActor))
+    .execute({
+      action: "delete",
+      scope: "user",
+      key: "self-5",
+    })) as { mutated: boolean; deleted: boolean };
+
+  assert.equal(deletedSelf.mutated, true);
+  assert.equal(deletedSelf.deleted, true);
+
+  // Clean up remaining member self-memories before admin tests below.
+  for (let i = 1; i <= 4; i += 1) {
+    await memoryManageTool.bind(makeCtx(services, ids, memberActor)).execute({
+      action: "delete",
+      scope: "user",
+      key: `self-${i}`,
+    });
   }
 
   const adminGlobal = (await memoryManageTool
