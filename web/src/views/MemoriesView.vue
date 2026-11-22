@@ -333,42 +333,42 @@ const columns: DataTableColumns<MemoryRow> = [
   {
     title: "操作",
     key: "actions",
-    width: 120,
+    width: 112,
     render: (row) =>
-      h(
-        NSpace,
-        { size: 6 },
-        {
-          default: () => [
-            h(
-              NButton,
-              {
-                size: "tiny",
-                secondary: true,
-                onClick: () => openEdit(row),
-              },
-              { default: () => "编辑" },
-            ),
-            h(
-              NPopconfirm,
-              {
-                onPositiveClick: () => {
-                  void handleDelete(row);
+      h("div", { class: "table-actions" }, [
+        h(
+          NButton,
+          {
+            size: "tiny",
+            quaternary: true,
+            onClick: () => openEdit(row),
+          },
+          { default: () => "编辑" },
+        ),
+        h(
+          NPopconfirm,
+          {
+            onPositiveClick: () => {
+              void handleDelete(row);
+            },
+          },
+          {
+            trigger: () =>
+              h(
+                NButton,
+                {
+                  "size": "tiny",
+                  "quaternary": true,
+                  "type": "error",
+                  "aria-label": "删除",
+                  "title": "删除",
                 },
-              },
-              {
-                trigger: () =>
-                  h(
-                    NButton,
-                    { size: "tiny", quaternary: true, type: "error" },
-                    { icon: () => h(Trash2, { size: 12 }) },
-                  ),
-                default: () => "确定删除这条记忆？",
-              },
-            ),
-          ],
-        },
-      ),
+                { icon: () => h(Trash2, { size: 13 }) },
+              ),
+            default: () => "确定删除这条记忆？",
+          },
+        ),
+      ]),
   },
 ];
 

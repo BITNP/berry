@@ -92,13 +92,17 @@ const dayOfMonthOptions = Array.from({ length: 31 }, (_, i) => ({
 }));
 
 const specKindOptions = [
-  { label: "单次执行（once）", value: "once" },
-  { label: "固定间隔（interval）", value: "interval" },
-  { label: "每天（daily）", value: "daily" },
-  { label: "每周（weekly）", value: "weekly" },
-  { label: "每月（monthly）", value: "monthly" },
-  { label: "每年（yearly）", value: "yearly" },
+  { label: "单次执行", value: "once" },
+  { label: "固定间隔", value: "interval" },
+  { label: "每天", value: "daily" },
+  { label: "每周", value: "weekly" },
+  { label: "每月", value: "monthly" },
+  { label: "每年", value: "yearly" },
 ];
+
+const chatTitleByKey = computed(
+  () => new Map(chats.value.map((c) => [c.chatKey, c.title || c.chatId])),
+);
 
 const chatSelectOptions = computed(() =>
   chats.value.map((c) => ({
@@ -393,12 +397,19 @@ const columns: DataTableColumns<ScheduleRow> = [
   {
     title: "目标会话",
     key: "chatKey",
-    width: 176,
+    width: 184,
     ellipsis: { tooltip: true },
-    render: (row) =>
-      row.chatKey
-        ? h("span", { class: "mono" }, row.chatKey)
-        : h(NTag, { size: "small" }, { default: () => "全局" }),
+    render: (row) => {
+      if (!row.chatKey) {
+        return h(NTag, { size: "small" }, { default: () => "全局" });
+      }
+
+      const title = chatTitleByKey.value.get(row.chatKey);
+
+      return title
+        ? h("span", { title: row.chatKey }, title)
+        : h("span", { class: "mono" }, row.chatKey);
+    },
   },
   {
     title: "周期规则",
@@ -434,53 +445,53 @@ const columns: DataTableColumns<ScheduleRow> = [
   {
     title: "操作",
     key: "actions",
-    width: 170,
+    width: 184,
     render: (row) =>
-      h(
-        NSpace,
-        { size: 6 },
-        {
-          default: () => [
-            h(
-              NButton,
-              {
-                size: "tiny",
-                secondary: true,
-                loading: runningId.value === row.id,
-                onClick: () => {
-                  void handleRunNow(row);
+      h("div", { class: "table-actions" }, [
+        h(
+          NButton,
+          {
+            size: "tiny",
+            secondary: true,
+            loading: runningId.value === row.id,
+            onClick: () => {
+              void handleRunNow(row);
+            },
+          },
+          {
+            icon: () => h(Play, { size: 12 }),
+            default: () => "执行",
+          },
+        ),
+        h(
+          NButton,
+          { size: "tiny", quaternary: true, onClick: () => openEdit(row) },
+          { default: () => "编辑" },
+        ),
+        h(
+          NPopconfirm,
+          {
+            onPositiveClick: () => {
+              void handleDelete(row);
+            },
+          },
+          {
+            trigger: () =>
+              h(
+                NButton,
+                {
+                  "size": "tiny",
+                  "quaternary": true,
+                  "type": "error",
+                  "aria-label": "删除",
+                  "title": "删除",
                 },
-              },
-              {
-                icon: () => h(Play, { size: 12 }),
-                default: () => "立即执行",
-              },
-            ),
-            h(
-              NButton,
-              { size: "tiny", onClick: () => openEdit(row) },
-              { default: () => "编辑" },
-            ),
-            h(
-              NPopconfirm,
-              {
-                onPositiveClick: () => {
-                  void handleDelete(row);
-                },
-              },
-              {
-                trigger: () =>
-                  h(
-                    NButton,
-                    { size: "tiny", quaternary: true, type: "error" },
-                    { icon: () => h(Trash2, { size: 12 }) },
-                  ),
-                default: () => "确定删除该定时任务？",
-              },
-            ),
-          ],
-        },
-      ),
+                { icon: () => h(Trash2, { size: 13 }) },
+              ),
+            default: () => "确定删除该定时任务？",
+          },
+        ),
+      ]),
   },
 ];
 
@@ -515,7 +526,7 @@ onMounted(() => {
         :data="items"
         :loading
         :pagination="{ pageSize: 20 }"
-        :scroll-x="800"
+        :scroll-x="880"
         size="small"
       />
     </NCard>
@@ -538,13 +549,14 @@ onMounted(() => {
           <NSelect
             v-model:value="selectedChatKey"
             clearable
+            filterable
             :options="chatSelectOptions"
             placeholder="可选，也可在下方手动填写类型和号码"
           />
         </NFormItem>
 
-        <NSpace :size="12">
-          <NFormItem class="w-150" label="目标类型">
+        <div class="schedule-target-grid">
+          <NFormItem label="目标类型">
             <NSelect
               v-model:value="form.kind"
               :options="[
@@ -554,22 +566,19 @@ onMounted(() => {
               ]"
             />
           </NFormItem>
-          <NFormItem class="w-220" label="群号 / QQ 号">
+          <NFormItem label="群号 / QQ 号">
             <NInput v-model:value="form.chatId" placeholder="例如 10248888" />
           </NFormItem>
           <NFormItem label="启用">
             <NSwitch v-model:value="form.enabled" />
           </NFormItem>
-        </NSpace>
+        </div>
 
         <NFormItem label="周期类型">
           <NSelect v-model:value="form.specKind" :options="specKindOptions" />
         </NFormItem>
 
-        <NFormItem
-          v-if="form.specKind === 'once'"
-          label="触发时间（ISO / 本地日期时间）"
-        >
+        <NFormItem v-if="form.specKind === 'once'" label="触发时间">
           <NInput
             v-model:value="form.onceAt"
             placeholder="例如 2026-11-20T20:00:00"
@@ -577,32 +586,44 @@ onMounted(() => {
         </NFormItem>
 
         <NFormItem v-if="form.specKind === 'interval'" label="间隔周期">
-          <NSpace :size="10" wrap>
-            <NInputNumber v-model:value="form.everyDays" class="w-110" :min="0">
-              <template #suffix>天</template>
+          <div class="interval-grid">
+            <NInputNumber
+              v-model:value="form.everyDays"
+              :min="0"
+              :show-button="false"
+            >
+              <template #suffix>
+                <span class="interval-unit">天</span>
+              </template>
             </NInputNumber>
             <NInputNumber
               v-model:value="form.everyHours"
-              class="w-115"
               :min="0"
+              :show-button="false"
             >
-              <template #suffix>小时</template>
+              <template #suffix>
+                <span class="interval-unit">小时</span>
+              </template>
             </NInputNumber>
             <NInputNumber
               v-model:value="form.everyMinutes"
-              class="w-115"
               :min="0"
+              :show-button="false"
             >
-              <template #suffix>分钟</template>
+              <template #suffix>
+                <span class="interval-unit">分钟</span>
+              </template>
             </NInputNumber>
             <NInputNumber
               v-model:value="form.everySeconds"
-              class="w-110"
               :min="0"
+              :show-button="false"
             >
-              <template #suffix>秒</template>
+              <template #suffix>
+                <span class="interval-unit">秒</span>
+              </template>
             </NInputNumber>
-          </NSpace>
+          </div>
         </NFormItem>
 
         <NFormItem v-if="form.specKind === 'weekly'" label="每周几触发">
@@ -621,35 +642,48 @@ onMounted(() => {
           />
         </NFormItem>
 
-        <NSpace v-if="form.specKind === 'yearly'" :size="12">
+        <div v-if="form.specKind === 'yearly'" class="schedule-yearly-grid">
           <NFormItem label="月份">
             <NInputNumber
               v-model:value="form.month"
-              class="w-120"
               :max="12"
               :min="1"
-            />
+              :show-button="false"
+            >
+              <template #suffix>
+                <span class="interval-unit">月</span>
+              </template>
+            </NInputNumber>
           </NFormItem>
           <NFormItem label="日期">
             <NInputNumber
               v-model:value="form.day"
-              class="w-120"
               :max="31"
               :min="1"
-            />
+              :show-button="false"
+            >
+              <template #suffix>
+                <span class="interval-unit">日</span>
+              </template>
+            </NInputNumber>
           </NFormItem>
-        </NSpace>
+          <NFormItem label="触发时刻">
+            <NInput v-model:value="form.time" placeholder="09:30" />
+          </NFormItem>
+        </div>
 
         <NFormItem
-          v-if="
-            ['daily', 'weekly', 'monthly', 'yearly'].includes(form.specKind)
-          "
+          v-if="['daily', 'weekly', 'monthly'].includes(form.specKind)"
           label="触发时刻（HH:mm）"
         >
-          <NInput v-model:value="form.time" class="w-140" placeholder="09:30" />
+          <NInput
+            v-model:value="form.time"
+            class="schedule-time-input"
+            placeholder="09:30"
+          />
         </NFormItem>
 
-        <NFormItem label="触发指令（交给主 Agent 执行的提示）">
+        <NFormItem label="触发指令">
           <NInput
             v-model:value="form.content"
             placeholder="例如：提醒大家今晚 19:30 巡检服务器负载并汇报异常"
@@ -668,3 +702,52 @@ onMounted(() => {
     </NModal>
   </div>
 </template>
+
+<style scoped>
+.schedule-target-grid {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.interval-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.interval-unit {
+  font-size: 12px;
+  color: var(--berry-muted);
+  user-select: none;
+}
+
+.schedule-yearly-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.schedule-time-input {
+  width: 160px;
+  max-width: 100%;
+}
+
+@media (max-width: 520px) {
+  .schedule-target-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .interval-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .schedule-yearly-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+}
+</style>

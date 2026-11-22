@@ -321,6 +321,14 @@ body {
   align-items: center;
 }
 
+.table-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+
 .turn-box {
   padding: 10px;
   border: 1px solid var(--berry-border);

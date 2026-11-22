@@ -691,34 +691,34 @@ const mcpColumns: DataTableColumns<McpServerFormRow> = [
   {
     title: "操作",
     key: "actions",
-    width: 130,
+    width: 112,
     render: (_row, index) =>
-      h(
-        NSpace,
-        { size: 6 },
-        {
-          default: () => [
-            h(
-              NButton,
-              { size: "tiny", onClick: () => openEditMcp(index) },
-              { default: () => "编辑" },
-            ),
-            h(
-              NPopconfirm,
-              { onPositiveClick: () => removeMcp(index) },
-              {
-                trigger: () =>
-                  h(
-                    NButton,
-                    { size: "tiny", quaternary: true, type: "error" },
-                    { icon: () => h(Trash2, { size: 12 }) },
-                  ),
-                default: () => "从配置中移除该 MCP 服务？",
-              },
-            ),
-          ],
-        },
-      ),
+      h("div", { class: "table-actions" }, [
+        h(
+          NButton,
+          { size: "tiny", quaternary: true, onClick: () => openEditMcp(index) },
+          { default: () => "编辑" },
+        ),
+        h(
+          NPopconfirm,
+          { onPositiveClick: () => removeMcp(index) },
+          {
+            trigger: () =>
+              h(
+                NButton,
+                {
+                  "size": "tiny",
+                  "quaternary": true,
+                  "type": "error",
+                  "aria-label": "移除",
+                  "title": "移除",
+                },
+                { icon: () => h(Trash2, { size: 13 }) },
+              ),
+            default: () => "从配置中移除该 MCP 服务？",
+          },
+        ),
+      ]),
   },
 ];
 
