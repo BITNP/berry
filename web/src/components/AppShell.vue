@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  BookOpen,
   Brain,
   Clock,
   Cpu,
@@ -12,7 +13,9 @@ import {
   Play,
   ScrollText,
   SlidersHorizontal,
+  Smile,
   Sun,
+  UserCheck,
 } from "@lucide/vue";
 import type { MenuOption } from "naive-ui";
 import {
@@ -88,13 +91,27 @@ const menuOptions: MenuOption[] = [
   },
   {
     type: "group",
-    label: "协作",
-    key: "grp-collab",
+    label: "内容",
+    key: "grp-content",
     children: [
       { key: "/chats", label: "会话", icon: renderIcon(MessagesSquare) },
-      { key: "/memories", label: "记忆", icon: renderIcon(Brain) },
-      { key: "/schedules", label: "定时", icon: renderIcon(Clock) },
-      { key: "/settings", label: "设置", icon: renderIcon(SlidersHorizontal) },
+      { key: "/memories", label: "长期记忆", icon: renderIcon(Brain) },
+      { key: "/jargon", label: "群内黑话", icon: renderIcon(BookOpen) },
+      { key: "/impressions", label: "成员印象", icon: renderIcon(UserCheck) },
+      { key: "/stickers", label: "表情包库", icon: renderIcon(Smile) },
+    ],
+  },
+  {
+    type: "group",
+    label: "系统",
+    key: "grp-system",
+    children: [
+      { key: "/schedules", label: "定时任务", icon: renderIcon(Clock) },
+      {
+        key: "/settings",
+        label: "系统设置",
+        icon: renderIcon(SlidersHorizontal),
+      },
     ],
   },
 ];

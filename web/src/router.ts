@@ -45,7 +45,37 @@ export const router = createRouter({
     {
       path: "/memories",
       component: () => import("./views/MemoriesView.vue"),
+      beforeEnter: (to) => {
+        if (to.query.tab === "jargon") {
+          return { path: "/jargon" };
+        }
+
+        if (to.query.tab === "impressions") {
+          return { path: "/impressions" };
+        }
+
+        if (to.query.tab === "stickers") {
+          return { path: "/stickers" };
+        }
+
+        return true;
+      },
       meta: { title: "长期记忆" },
+    },
+    {
+      path: "/jargon",
+      component: () => import("./views/JargonView.vue"),
+      meta: { title: "群内黑话" },
+    },
+    {
+      path: "/impressions",
+      component: () => import("./views/ImpressionsView.vue"),
+      meta: { title: "成员印象" },
+    },
+    {
+      path: "/stickers",
+      component: () => import("./views/StickersView.vue"),
+      meta: { title: "表情包库" },
     },
     {
       path: "/schedules",

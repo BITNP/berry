@@ -20,6 +20,7 @@ import {
   useMessage,
 } from "naive-ui";
 import { h, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import { formatTime } from "../utils/format.ts";
@@ -41,13 +42,20 @@ interface StickerRow {
   updatedAt: number;
 }
 
+const route = useRoute();
+const router = useRouter();
 const message = useMessage();
+
+const parseStatus = (raw: unknown): StickerStatus | null =>
+  raw === "approved" || raw === "pending" ? raw : null;
 
 const loading = ref(false);
 const saving = ref(false);
 const items = ref<StickerRow[]>([]);
-const filterStatus = ref<StickerStatus | null>(null);
-const filterSearch = ref("");
+const filterStatus = ref<StickerStatus | null>(parseStatus(route.query.status));
+const filterSearch = ref(
+  typeof route.query.q === "string" ? route.query.q : "",
+);
 
 async function loadStickers() {
   loading.value = true;
@@ -364,9 +372,46 @@ const columns: DataTableColumns<StickerRow> = [
   },
 ];
 
+function syncQuery() {
+  const nextQuery: Record<string, string> = {};
+
+  if (filterStatus.value) {
+    nextQuery.status = filterStatus.value;
+  }
+
+  if (filterSearch.value.trim()) {
+    nextQuery.q = filterSearch.value.trim();
+  }
+
+  void router.replace({ query: nextQuery });
+}
+
+function handleSearch() {
+  syncQuery();
+  void loadStickers();
+}
+
 watch(filterStatus, () => {
+  syncQuery();
   void loadStickers();
 });
+
+watch(
+  () => route.query,
+  (q) => {
+    const nextStatus = parseStatus(q.status);
+    const nextSearch = typeof q.q === "string" ? q.q : "";
+
+    if (nextStatus !== filterStatus.value) {
+      filterStatus.value = nextStatus;
+    }
+
+    if (nextSearch !== filterSearch.value) {
+      filterSearch.value = nextSearch;
+      void loadStickers();
+    }
+  },
+);
 
 onMounted(() => {
   void loadStickers();
@@ -375,6 +420,19 @@ onMounted(() => {
 
 <template>
   <div>
+    <div class="page-bar">
+      <NSpace align="center" :size="10">
+        <h1 class="page-title">表情包库</h1>
+        <NText class="sub-note tabular" depth="3">{{ items.length }} 张</NText>
+      </NSpace>
+      <NButton size="small" type="primary" @click="openUpload">
+        <template #icon>
+          <Upload :size="14" />
+        </template>
+        上传表情包
+      </NButton>
+    </div>
+
     <div class="filter-bar">
       <NSelect
         v-model:value="filterStatus"
@@ -393,15 +451,10 @@ onMounted(() => {
         clearable
         placeholder="搜含义或情绪标签"
         size="small"
-        @keyup.enter="loadStickers"
+        @clear="handleSearch"
+        @keyup.enter="handleSearch"
       />
-      <NButton size="small" type="primary" @click="openUpload">
-        <template #icon>
-          <Upload :size="14" />
-        </template>
-        上传表情包
-      </NButton>
-      <NButton :loading size="small" @click="loadStickers">
+      <NButton :loading size="small" @click="handleSearch">
         <template #icon>
           <RefreshCw :size="14" />
         </template>

@@ -13,18 +13,14 @@ import {
   NPopconfirm,
   NSelect,
   NSpace,
-  NTabPane,
-  NTabs,
   NTag,
   NText,
   useMessage,
 } from "naive-ui";
 import { computed, h, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
-import ImpressionsPane from "../components/ImpressionsPane.vue";
-import JargonPane from "../components/JargonPane.vue";
-import StickersPane from "../components/StickersPane.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useLiveRefresh } from "../composables/useEventStream.ts";
 import { formatTime } from "../utils/format.ts";
@@ -52,16 +48,26 @@ const SCOPE_META: Record<
   user: { label: "成员", tagType: "default" },
 };
 
+const route = useRoute();
+const router = useRouter();
 const message = useMessage();
 const { chats, users, chatOptions, userOptions } = useChatOptions();
 
-const activeTab = ref("memories");
+const parseScope = (raw: unknown): MemoryScope | null =>
+  raw === "global" || raw === "chat" || raw === "user" ? raw : null;
+
 const loading = ref(false);
 const saving = ref(false);
 const items = ref<MemoryRow[]>([]);
-const filterScope = ref<MemoryScope | null>(null);
-const filterOwnerId = ref<string | null>(null);
-const filterSearch = ref("");
+const filterScope = ref<MemoryScope | null>(parseScope(route.query.scope));
+const filterOwnerId = ref<string | null>(
+  typeof route.query.ownerId === "string" && route.query.ownerId
+    ? route.query.ownerId
+    : null,
+);
+const filterSearch = ref(
+  typeof route.query.q === "string" ? route.query.q : "",
+);
 
 const chatTitleByKey = computed(
   () => new Map(chats.value.map((c) => [c.chatKey, c.title])),
@@ -378,9 +384,54 @@ const columns: DataTableColumns<MemoryRow> = [
   },
 ];
 
+function syncQuery() {
+  const nextQuery: Record<string, string> = {};
+
+  if (filterScope.value) {
+    nextQuery.scope = filterScope.value;
+  }
+
+  if (filterOwnerId.value) {
+    nextQuery.ownerId = filterOwnerId.value;
+  }
+
+  if (filterSearch.value.trim()) {
+    nextQuery.q = filterSearch.value.trim();
+  }
+
+  void router.replace({ query: nextQuery });
+}
+
 watch([filterScope, filterOwnerId], () => {
+  syncQuery();
   void loadMemories();
 });
+
+watch(filterSearch, () => {
+  syncQuery();
+});
+
+watch(
+  () => route.query,
+  (q) => {
+    const nextScope = parseScope(q.scope);
+    const nextOwner =
+      typeof q.ownerId === "string" && q.ownerId ? q.ownerId : null;
+    const nextSearch = typeof q.q === "string" ? q.q : "";
+
+    if (nextScope !== filterScope.value) {
+      filterScope.value = nextScope;
+    }
+
+    if (nextOwner !== filterOwnerId.value) {
+      filterOwnerId.value = nextOwner;
+    }
+
+    if (nextSearch !== filterSearch.value) {
+      filterSearch.value = nextSearch;
+    }
+  },
+);
 
 onMounted(() => {
   void loadMemories();
@@ -391,17 +442,12 @@ onMounted(() => {
   <div>
     <div class="page-bar">
       <NSpace align="center" :size="10">
-        <h1 class="page-title">记忆与词典</h1>
-        <NText v-if="activeTab === 'memories'" class="sub-note" depth="3">
+        <h1 class="page-title">长期记忆</h1>
+        <NText class="sub-note tabular" depth="3">
           {{ visibleItems.length }} 条
         </NText>
       </NSpace>
-      <NButton
-        v-if="activeTab === 'memories'"
-        size="small"
-        type="primary"
-        @click="openCreate"
-      >
+      <NButton size="small" type="primary" @click="openCreate">
         <template #icon>
           <Plus :size="14" />
         </template>
@@ -409,70 +455,54 @@ onMounted(() => {
       </NButton>
     </div>
 
-    <NTabs v-model:value="activeTab" class="mb-md" type="line">
-      <NTabPane name="memories" tab="长期记忆">
-        <div class="filter-bar">
-          <NSelect
-            v-model:value="filterScope"
-            class="w-165"
-            clearable
-            :options="[
-              { label: '全局记忆（global）', value: 'global' },
-              { label: '群聊记忆（chat）', value: 'chat' },
-              { label: '成员记忆（user）', value: 'user' },
-            ]"
-            placeholder="全部范围"
-            size="small"
-          />
-          <NSelect
-            v-model:value="filterOwnerId"
-            class="w-240"
-            clearable
-            filterable
-            :options="ownerFilterOptions"
-            placeholder="选择或输入归属（支持群名/QQ）"
-            size="small"
-            tag
-          />
-          <NInput
-            v-model:value="filterSearch"
-            class="w-190"
-            clearable
-            placeholder="关键词筛选"
-            size="small"
-          />
-          <NButton :loading size="small" @click="loadMemories">
-            <template #icon>
-              <RefreshCw :size="14" />
-            </template>
-            查询
-          </NButton>
-        </div>
+    <div class="filter-bar">
+      <NSelect
+        v-model:value="filterScope"
+        class="w-165"
+        clearable
+        :options="[
+          { label: '全局记忆（global）', value: 'global' },
+          { label: '群聊记忆（chat）', value: 'chat' },
+          { label: '成员记忆（user）', value: 'user' },
+        ]"
+        placeholder="全部范围"
+        size="small"
+      />
+      <NSelect
+        v-model:value="filterOwnerId"
+        class="w-240"
+        clearable
+        filterable
+        :options="ownerFilterOptions"
+        placeholder="选择或输入归属（支持群名/QQ）"
+        size="small"
+        tag
+      />
+      <NInput
+        v-model:value="filterSearch"
+        class="w-190"
+        clearable
+        placeholder="关键词筛选"
+        size="small"
+      />
+      <NButton :loading size="small" @click="loadMemories">
+        <template #icon>
+          <RefreshCw :size="14" />
+        </template>
+        查询
+      </NButton>
+    </div>
 
-        <NCard size="small">
-          <NDataTable
-            :columns
-            :data="visibleItems"
-            :loading
-            :pagination="{ pageSize: 20 }"
-            :scroll-x="900"
-            size="small"
-          />
-        </NCard>
-      </NTabPane>
-
-      <NTabPane name="jargon" tab="群内黑话">
-        <JargonPane />
-      </NTabPane>
-
-      <NTabPane name="impressions" tab="成员印象">
-        <ImpressionsPane />
-      </NTabPane>
-
-      <NTabPane name="stickers" tab="表情包库">
-        <StickersPane />
-      </NTabPane>
-    </NTabs>
+    <NCard size="small">
+      <NDataTable
+        :columns
+        :data="visibleItems"
+        :loading
+        :pagination="{ pageSize: 20 }"
+        :scroll-x="900"
+        size="small"
+      />
+    </NCard>
 
     <NModal
       v-model:show="modalOpen"

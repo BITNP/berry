@@ -14,9 +14,11 @@ import {
   NSelect,
   NSpace,
   NTag,
+  NText,
   useMessage,
 } from "naive-ui";
 import { computed, h, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import { useChatOptions } from "../composables/useChatOptions.ts";
@@ -36,16 +38,27 @@ interface JargonRow {
   updatedAt: number;
 }
 
+const route = useRoute();
+const router = useRouter();
 const message = useMessage();
 const { chats, chatOptions } = useChatOptions();
+
+const parseStatus = (raw: unknown): JargonStatus | null =>
+  raw === "approved" || raw === "pending" ? raw : null;
 
 const loading = ref(false);
 const saving = ref(false);
 const distilling = ref(false);
 const items = ref<JargonRow[]>([]);
-const filterChatKey = ref<string | null>(null);
-const filterStatus = ref<JargonStatus | null>(null);
-const filterSearch = ref("");
+const filterChatKey = ref<string | null>(
+  typeof route.query.chatKey === "string" && route.query.chatKey
+    ? route.query.chatKey
+    : null,
+);
+const filterStatus = ref<JargonStatus | null>(parseStatus(route.query.status));
+const filterSearch = ref(
+  typeof route.query.q === "string" ? route.query.q : "",
+);
 const distillChatKey = ref<string | null>(null);
 
 const chatTitleByKey = computed(
@@ -330,9 +343,56 @@ const columns: DataTableColumns<JargonRow> = [
   },
 ];
 
+function syncQuery() {
+  const nextQuery: Record<string, string> = {};
+
+  if (filterChatKey.value) {
+    nextQuery.chatKey = filterChatKey.value;
+  }
+
+  if (filterStatus.value) {
+    nextQuery.status = filterStatus.value;
+  }
+
+  if (filterSearch.value.trim()) {
+    nextQuery.q = filterSearch.value.trim();
+  }
+
+  void router.replace({ query: nextQuery });
+}
+
+function handleSearch() {
+  syncQuery();
+  void loadJargon();
+}
+
 watch([filterChatKey, filterStatus], () => {
+  syncQuery();
   void loadJargon();
 });
+
+watch(
+  () => route.query,
+  (q) => {
+    const nextChat =
+      typeof q.chatKey === "string" && q.chatKey ? q.chatKey : null;
+    const nextStatus = parseStatus(q.status);
+    const nextSearch = typeof q.q === "string" ? q.q : "";
+
+    if (nextChat !== filterChatKey.value) {
+      filterChatKey.value = nextChat;
+    }
+
+    if (nextStatus !== filterStatus.value) {
+      filterStatus.value = nextStatus;
+    }
+
+    if (nextSearch !== filterSearch.value) {
+      filterSearch.value = nextSearch;
+      void loadJargon();
+    }
+  },
+);
 
 onMounted(() => {
   void loadJargon();
@@ -341,6 +401,19 @@ onMounted(() => {
 
 <template>
   <div>
+    <div class="page-bar">
+      <NSpace align="center" :size="10">
+        <h1 class="page-title">群内黑话</h1>
+        <NText class="sub-note tabular" depth="3">{{ items.length }} 条</NText>
+      </NSpace>
+      <NButton size="small" type="primary" @click="openCreate">
+        <template #icon>
+          <Plus :size="14" />
+        </template>
+        新增词条
+      </NButton>
+    </div>
+
     <div class="filter-bar">
       <NSelect
         v-model:value="filterChatKey"
@@ -364,13 +437,14 @@ onMounted(() => {
       />
       <NInput
         v-model:value="filterSearch"
-        class="w-180"
+        class="w-190"
         clearable
         placeholder="搜词条/别名/释义"
         size="small"
-        @keyup.enter="loadJargon"
+        @clear="handleSearch"
+        @keyup.enter="handleSearch"
       />
-      <NButton :loading size="small" @click="loadJargon">
+      <NButton :loading size="small" @click="handleSearch">
         <template #icon>
           <RefreshCw :size="14" />
         </template>
@@ -395,12 +469,6 @@ onMounted(() => {
           <Sparkles :size="13" />
         </template>
         提炼黑话
-      </NButton>
-      <NButton size="small" type="primary" @click="openCreate">
-        <template #icon>
-          <Plus :size="14" />
-        </template>
-        新增词条
       </NButton>
     </div>
 

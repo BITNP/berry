@@ -14,9 +14,11 @@ import {
   NSpace,
   NSwitch,
   NTag,
+  NText,
   useMessage,
 } from "naive-ui";
-import { computed, h, onMounted, ref } from "vue";
+import { computed, h, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import { useChatOptions } from "../composables/useChatOptions.ts";
@@ -31,6 +33,8 @@ interface ImpressionRow {
   updatedAt: number;
 }
 
+const route = useRoute();
+const router = useRouter();
 const message = useMessage();
 const { users, userOptions } = useChatOptions();
 
@@ -38,7 +42,9 @@ const loading = ref(false);
 const saving = ref(false);
 const refreshingId = ref<string | null>(null);
 const items = ref<ImpressionRow[]>([]);
-const filterSearch = ref("");
+const filterSearch = ref(
+  typeof route.query.q === "string" ? route.query.q : "",
+);
 const pickRefreshUserId = ref<string | null>(null);
 
 const userNameById = computed(
@@ -258,6 +264,25 @@ const columns: DataTableColumns<ImpressionRow> = [
   },
 ];
 
+function handleSearch() {
+  const q = filterSearch.value.trim();
+
+  void router.replace({ query: q ? { q } : {} });
+  void loadImpressions();
+}
+
+watch(
+  () => route.query.q,
+  (q) => {
+    const next = typeof q === "string" ? q : "";
+
+    if (next !== filterSearch.value) {
+      filterSearch.value = next;
+      void loadImpressions();
+    }
+  },
+);
+
 onMounted(() => {
   void loadImpressions();
 });
@@ -265,6 +290,19 @@ onMounted(() => {
 
 <template>
   <div>
+    <div class="page-bar">
+      <NSpace align="center" :size="10">
+        <h1 class="page-title">成员印象</h1>
+        <NText class="sub-note tabular" depth="3">{{ items.length }} 人</NText>
+      </NSpace>
+      <NButton size="small" type="primary" @click="openCreate">
+        <template #icon>
+          <Plus :size="14" />
+        </template>
+        新增印象
+      </NButton>
+    </div>
+
     <div class="filter-bar">
       <NInput
         v-model:value="filterSearch"
@@ -272,9 +310,10 @@ onMounted(() => {
         clearable
         placeholder="搜 QQ 号 / 昵称 / 印象"
         size="small"
-        @keyup.enter="loadImpressions"
+        @clear="handleSearch"
+        @keyup.enter="handleSearch"
       />
-      <NButton :loading size="small" @click="loadImpressions">
+      <NButton :loading size="small" @click="handleSearch">
         <template #icon>
           <RefreshCw :size="14" />
         </template>
@@ -303,12 +342,6 @@ onMounted(() => {
           <Sparkles :size="13" />
         </template>
         提炼印象
-      </NButton>
-      <NButton size="small" type="primary" @click="openCreate">
-        <template #icon>
-          <Plus :size="14" />
-        </template>
-        新增印象
       </NButton>
     </div>
 

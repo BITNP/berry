@@ -1,9 +1,6 @@
 import type { RouteLocationRaw } from "vue-router";
 
-type AiCallsTab =
-  "calls" | "gate" | "jobs" | "deliveries" | "context" | "usage";
-
-export type JobLaneFilter = "all" | "background" | "realtime";
+type AiCallsTab = "calls" | "context" | "usage";
 
 type SettingsTab =
   | "bot"
@@ -12,6 +9,7 @@ type SettingsTab =
   | "policy"
   | "digest"
   | "guild"
+  | "social"
   | "mcp"
   | "storage";
 
@@ -37,15 +35,18 @@ export const routes = {
   aiCalls: (
     query: {
       tab?: AiCallsTab;
+      scope?: "active" | "all" | "error";
       chatKey?: string;
       purpose?: string;
-      status?: "error";
     } = {},
   ): RouteLocationRaw => ({
     path: "/ai",
     query: cleanQuery(query),
   }),
   memories: (): RouteLocationRaw => ({ path: "/memories" }),
+  jargon: (): RouteLocationRaw => ({ path: "/jargon" }),
+  impressions: (): RouteLocationRaw => ({ path: "/impressions" }),
+  stickers: (): RouteLocationRaw => ({ path: "/stickers" }),
   settings: (tab?: SettingsTab): RouteLocationRaw => ({
     path: "/settings",
     query: cleanQuery({ tab }),
