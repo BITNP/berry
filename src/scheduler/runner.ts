@@ -14,6 +14,7 @@ export class ScheduleRunner {
   #timer: ReturnType<typeof setInterval> | null = null;
   #ticking = false;
   #lastDigestCheck = 0;
+  #lastStyleCheck = 0;
   #lastMemoryPurge = 0;
 
   constructor(
@@ -71,6 +72,14 @@ export class ScheduleRunner {
       ) {
         this.#lastDigestCheck = now;
         await this.#checkDigests(now);
+      }
+
+      if (
+        settings.social.styleDistillEnabled &&
+        now - this.#lastStyleCheck >= 60_000
+      ) {
+        this.#lastStyleCheck = now;
+        await this.#checkStyleDistill(now);
       }
 
       if (now - this.#lastMemoryPurge >= 600_000) {
@@ -243,6 +252,49 @@ export class ScheduleRunner {
           prompt: settings.groupDigest.prompt,
           folderId: settings.groupDigest.folderId,
         },
+        now,
+      );
+      await store.cursors.set(cursorKey, String(now));
+      this.#wake();
+    }
+  }
+
+  async #checkStyleDistill(now: number): Promise<void> {
+    const { store } = this.#services;
+    const settings = this.#services.getSettings();
+    const intervalMs = settings.social.styleDistillIntervalHours * 3_600_000;
+    const minMessages = settings.social.styleDistillMinMessages;
+    const chats = await store.chats.list();
+
+    for (const chat of chats) {
+      if (chat.kind !== "group" || !chat.enabled) {
+        continue;
+      }
+
+      const cursorKey = `style_distill:${chat.chatKey}`;
+      const saved = await store.cursors.get(cursorKey);
+      const lastRunAt = saved ? Number(saved) : 0;
+
+      if (lastRunAt > 0 && now - lastRunAt < intervalMs) {
+        continue;
+      }
+
+      const recent = await store.messages.search(chat.chatKey, {
+        startTimeMs: lastRunAt > 0 ? lastRunAt : now - intervalMs,
+        endTimeMs: now,
+        limit: minMessages + 20,
+      });
+      const userCount = recent.filter((m) => !m.isBot && m.text.trim()).length;
+
+      if (userCount < minMessages) {
+        continue;
+      }
+
+      await store.jobs.enqueue(
+        "style_distill",
+        `style-distill:${chat.chatKey}:${Math.floor(now / intervalMs)}`,
+        chat.chatKey,
+        { chatKey: chat.chatKey },
         now,
       );
       await store.cursors.set(cursorKey, String(now));

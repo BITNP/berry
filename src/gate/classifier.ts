@@ -303,6 +303,7 @@ export class SmallModelClassifier {
       title: "演练模拟群",
       enabled: true,
       triggerMode: input.triggerMode,
+      stylePrompt: "",
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };

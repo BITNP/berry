@@ -17,6 +17,7 @@ const decodeChat = (row: Selectable<BerryTables["chats"]>): ChatConfig => ({
   title: row.title,
   enabled: Boolean(row.enabled),
   triggerMode: row.trigger_mode as GroupTriggerMode,
+  stylePrompt: row.style_prompt ?? "",
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -50,6 +51,7 @@ export class ChatsStore {
           title: defaults.title ?? "",
           enabled: Number(defaults.enabled),
           trigger_mode: defaults.triggerMode,
+          style_prompt: "",
           internal: 0,
           created_at: now,
           updated_at: now,
@@ -96,6 +98,7 @@ export class ChatsStore {
     title?: string;
     enabled: boolean;
     triggerMode: GroupTriggerMode;
+    stylePrompt?: string;
   }): Promise<ChatConfig> {
     const chatKey = makeChatKey(input.kind, input.chatId);
     const now = Date.now();
@@ -110,6 +113,7 @@ export class ChatsStore {
           title: input.title ?? "",
           enabled: Number(input.enabled),
           trigger_mode: input.triggerMode,
+          style_prompt: input.stylePrompt ?? "",
           internal: 0,
           created_at: now,
           updated_at: now,
@@ -119,6 +123,9 @@ export class ChatsStore {
             ...(input.title === undefined ? {} : { title: input.title }),
             enabled: Number(input.enabled),
             trigger_mode: input.triggerMode,
+            ...(input.stylePrompt === undefined
+              ? {}
+              : { style_prompt: input.stylePrompt }),
             updated_at: now,
           }),
         )
@@ -134,6 +141,7 @@ export class ChatsStore {
       title?: string;
       enabled?: boolean;
       triggerMode?: GroupTriggerMode;
+      stylePrompt?: string;
     },
   ): Promise<ChatConfig> {
     const existing = await this.get(chatKey);
@@ -147,6 +155,7 @@ export class ChatsStore {
         title: patch.title ?? "",
         enabled: patch.enabled ?? true,
         triggerMode: patch.triggerMode ?? "mention_only",
+        stylePrompt: patch.stylePrompt ?? "",
       });
     }
 
@@ -163,6 +172,9 @@ export class ChatsStore {
           ...(patch.triggerMode === undefined
             ? {}
             : { trigger_mode: patch.triggerMode }),
+          ...(patch.stylePrompt === undefined
+            ? {}
+            : { style_prompt: patch.stylePrompt.trim().slice(0, 600) }),
           updated_at: now,
         })
         .where("chat_key", "=", chatKey)

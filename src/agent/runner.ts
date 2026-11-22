@@ -17,6 +17,7 @@ import {
 } from "../tools/index.ts";
 import type { AgentServices, ToolContext } from "../tools/types.ts";
 import type {
+  ChatConfig,
   ChatKey,
   JobPayloads,
   MessageRecord,
@@ -27,6 +28,7 @@ import type {
 import { Logger } from "../utils/logger.ts";
 import { errorMessage, formatDateTime } from "../utils/time.ts";
 import { DialogCacheGuard, makeCacheSessionKey } from "./cache-guard.ts";
+import { completeChat } from "./llm.ts";
 import { runChatToolLoop } from "./loop.ts";
 import { ModelIds } from "./model-ids.ts";
 import { buildStaticSystemPrompt, resultsAsText } from "./prompt.ts";
@@ -474,6 +476,12 @@ export class BerryAgent {
     // Transient water-chat context + memory index + structured handoff hint are sent in this invocation only.
     const fullTurnPayload = {
       ...coreEnvelope,
+      chat: {
+        ...coreEnvelope.chat,
+        ...(chat?.stylePrompt.trim()
+          ? { styleHint: chat.stylePrompt.trim() }
+          : {}),
+      },
       ...(conversation.handoff
         ? {
             conversationHandoff: {
@@ -728,6 +736,95 @@ export class BerryAgent {
       content: `后台子代理 ${payload.kind} 已执行完毕，请结合以下结果直接回复原发言人（不要重复派发同一任务）：\n${JSON.stringify(resultEnvelope)}`,
     });
     this.#services.wakeWorker?.();
+  }
+
+  public async distillChatStyle(
+    chatKey: ChatKey,
+    options?: { sampleLimit?: number; jobId?: number | null },
+  ): Promise<ChatConfig> {
+    const { store } = this.#services;
+    const settings = this.#services.getSettings();
+    const chat = await store.chats.get(chatKey);
+
+    if (!chat) {
+      throw new Error(`未找到会话：${chatKey}`);
+    }
+
+    const recent = await store.messages.recent(
+      chatKey,
+      Math.max(40, Math.min(200, options?.sampleLimit ?? 80)),
+    );
+    const samples = recent.filter((m) => !m.isBot && m.text.trim().length > 0);
+
+    if (samples.length < 10) {
+      throw new Error(
+        `近期有效群聊样本不足（当前 ${samples.length} 条，至少需要 10 条非机器人消息）`,
+      );
+    }
+
+    const cfg = settings.mainModel;
+    const modelName = cfg.model;
+    const apiKey = cfg.apiKey;
+    const baseURL = cfg.baseURL;
+
+    if (!apiKey || !modelName) {
+      throw new Error("主模型未配置，无法提炼群聊表达风格");
+    }
+
+    const transcript = samples
+      .slice(-80)
+      .map(
+        (m) => `${m.senderName}: ${m.text.replace(/\s+/g, " ").slice(0, 140)}`,
+      )
+      .join("\n");
+    const thinkingEffort = resolveThinkingEffort(settings, "style_distill");
+    const response = await completeChat({
+      apiKey,
+      baseURL,
+      model: modelName,
+      timeoutMs: cfg.timeoutMs,
+      maxRetries: 1,
+      store,
+      timeZone: settings.bot.timezone,
+      purpose: "style_distill",
+      chatKey,
+      jobId: options?.jobId ?? null,
+      params: {
+        temperature: 0.2,
+        max_tokens: 400,
+        ...(thinkingEffort === "none"
+          ? {}
+          : { reasoning_effort: thinkingEffort }),
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是 QQ 群聊风格提炼助手。请根据近期群聊抽样，用 2～4 句精炼中文（总长不超过 260 字）总结该群的聊天氛围、说话节奏、常用口头禅或表达习惯，以及树莓娘在此群发言应注意的分寸。只输出可直接作为风格提示的纯文本，不要加标题、编号或 Markdown 围栏，不要照抄具体隐私信息。",
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              chatTitle: chat.title || chat.chatKey,
+              existingStyle: chat.stylePrompt || null,
+              sampleCount: samples.length,
+              transcript,
+            }),
+          },
+        ],
+      },
+    });
+
+    const distilled = (response.choices[0]?.message?.content ?? "")
+      .trim()
+      .replace(/^```[\s\S]*?\n|```$/g, "")
+      .trim()
+      .slice(0, 600);
+
+    if (!distilled) {
+      throw new Error("模型未返回有效的群风格摘要");
+    }
+
+    return store.chats.update(chatKey, { stylePrompt: distilled });
   }
 
   public async updateMemoryFromMessage(

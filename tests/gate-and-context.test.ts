@@ -932,3 +932,131 @@ test("gate proactive cooldown passes recent botActivity and raises non-mention r
   assert.match(decisions.get(nonAt.message.id)?.[0]?.reason ?? "", /冷却节流/);
   assert.equal(decisions.get(directAt.message.id)?.[0]?.action, "reply");
 });
+
+test("group style distillation persists stylePrompt and injects chat.styleHint transiently per turn", async (t) => {
+  let capturedDialogSystem = "";
+  let capturedDialogUser = "";
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const sys = reqJson.messages[0]?.content ?? "";
+
+    res.setHeader("Content-Type", "application/json");
+    if (sys.includes("风格提炼助手")) {
+      res.end(
+        JSON.stringify({
+          id: "style-1",
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: "gpt-test-main",
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              message: {
+                role: "assistant",
+                content: "本群偏轻松技术吹水，回复短句直给，偶尔接梗不端着。",
+              },
+            },
+          ],
+          usage: {
+            prompt_tokens: 80,
+            completion_tokens: 24,
+            total_tokens: 104,
+          },
+        }),
+      );
+
+      return;
+    }
+
+    capturedDialogSystem = sys;
+    capturedDialogUser = reqJson.messages.at(-1)?.content ?? "";
+    res.end(JSON.stringify(chatReply({ units: [] })));
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      devAuthBypass: true,
+      mainBaseUrl: `${llmStub.url}/v1`,
+    },
+    {},
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "7777",
+    title: "技术吹水群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  for (let i = 1; i <= 12; i += 1) {
+    await captureText(app, {
+      kind: "group",
+      chatId: "7777",
+      id: `style-sample-${i}`,
+      userId: String(3000 + (i % 3)),
+      senderName: `群友${i % 3}`,
+      text: `今天折腾 NixOS 和 Rust 第 ${i} 步，挺好玩的`,
+    });
+  }
+
+  const { url } = await app.listen();
+  const meRes = await fetch(`${url}/api/auth/status`);
+  const { csrfToken } = (await meRes.json()) as { csrfToken: string };
+  const genRes = (await (
+    await fetch(`${url}/api/admin/chats/group%3A7777/style/generate`, {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrfToken },
+    })
+  ).json()) as { ok: boolean; chat: { stylePrompt: string } };
+
+  assert.equal(genRes.ok, true);
+  assert.match(genRes.chat.stylePrompt, /轻松技术吹水/);
+
+  // Manual tweak via PATCH persists cleanly.
+  const patched = (await (
+    await fetch(`${url}/api/admin/chats/group%3A7777`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({
+        stylePrompt: "本群偏技术吹水，回复短句直给，少发长段。",
+      }),
+    })
+  ).json()) as { stylePrompt: string };
+
+  assert.equal(patched.stylePrompt, "本群偏技术吹水，回复短句直给，少发长段。");
+
+  const trigger = await captureText(app, {
+    kind: "group",
+    chatId: "7777",
+    id: "style-trigger-1",
+    userId: "3001",
+    senderName: "群友1",
+    text: "@树莓娘 怎么样",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:7777",
+    kind: "group",
+    chatId: "7777",
+    triggerMessageIds: [trigger.message.id],
+    senderId: "3001",
+    senderName: "群友1",
+  });
+
+  assert.doesNotMatch(capturedDialogSystem, /少发长段/);
+  assert.match(
+    capturedDialogUser,
+    /"styleHint":"本群偏技术吹水，回复短句直给，少发长段。"/,
+  );
+});

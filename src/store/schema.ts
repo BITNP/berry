@@ -16,6 +16,7 @@ export interface BerryTables {
     title: string;
     enabled: number;
     trigger_mode: string;
+    style_prompt: string;
     internal: number;
     created_at: number;
     updated_at: number;
@@ -732,6 +733,21 @@ const migrations: Record<string, Migration> = {
         create index if not exists idx_llm_usage_job_id
         on llm_usage (job_id)
       `.execute(db);
+    },
+  },
+  "008_chats_style_prompt": {
+    async up(db) {
+      const existing = await sql<{ name: string }>`
+        pragma table_info(chats)
+      `.execute(db);
+      const colSet = new Set(existing.rows.map((r) => r.name));
+
+      if (!colSet.has("style_prompt")) {
+        await db.schema
+          .alterTable("chats")
+          .addColumn("style_prompt", "text", (c) => c.notNull().defaultTo(""))
+          .execute();
+      }
     },
   },
 };

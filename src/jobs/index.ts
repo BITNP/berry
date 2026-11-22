@@ -135,4 +135,15 @@ export const createDefaultJobRegistry = (deps: {
         payload.triggerMessageId ? [payload.triggerMessageId] : [],
       summarize: (job) =>
         `${job.payload.kind}: ${job.payload.task.slice(0, 80)}`,
+    })
+    .register({
+      kind: "style_distill",
+      label: "群风提炼",
+      lane: "background",
+      execute: async (job) => {
+        await deps.agent.distillChatStyle(job.payload.chatKey, {
+          jobId: job.id,
+        });
+      },
+      summarize: (job) => `提炼 ${job.payload.chatKey} 群表达风格`,
     });

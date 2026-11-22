@@ -20,6 +20,7 @@ export interface RuntimeSettingsPatch {
   bunko?: Partial<RuntimeSettings["bunko"]>;
   groupDigest?: Partial<RuntimeSettings["groupDigest"]>;
   media?: Partial<RuntimeSettings["media"]>;
+  social?: Partial<RuntimeSettings["social"]>;
 }
 
 export interface StubServer {
@@ -137,6 +138,7 @@ export async function createTestBerryApp(
       ...settingsPatch.groupDigest,
     },
     media: { ...app.settings.media, ...settingsPatch.media },
+    social: { ...app.settings.social, ...settingsPatch.social },
   });
 
   return { app, cleanup };

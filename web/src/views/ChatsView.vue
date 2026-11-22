@@ -51,6 +51,7 @@ interface ChatRow {
   title: string;
   enabled: boolean;
   triggerMode: TriggerMode;
+  stylePrompt?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -301,6 +302,7 @@ async function patchChat(
     enabled: boolean;
     triggerMode: TriggerMode;
     title: string;
+    stylePrompt: string;
   }>,
 ) {
   try {
@@ -365,6 +367,54 @@ async function handleDigest(row: ChatRow) {
     message.error(err instanceof Error ? err.message : "提交摘要任务失败");
   } finally {
     busyDigest.value = null;
+  }
+}
+
+const styleModalOpen = ref(false);
+const styleDraft = ref("");
+const savingStyle = ref(false);
+const generatingStyle = ref(false);
+
+function openStyleModal(row: ChatRow) {
+  styleDraft.value = row.stylePrompt ?? "";
+  styleModalOpen.value = true;
+}
+
+async function handleGenerateStyle() {
+  if (!activeChat.value) {
+    return;
+  }
+
+  generatingStyle.value = true;
+
+  try {
+    const res = await apiFetch<{ ok: boolean; chat: ChatRow }>(
+      `/api/admin/chats/${encodeURIComponent(activeChat.value.chatKey)}/style/generate`,
+      { method: "POST" },
+    );
+
+    Object.assign(activeChat.value, res.chat);
+    styleDraft.value = res.chat.stylePrompt ?? "";
+    message.success("已从近期聊天提炼并保存群风格");
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : "提炼群风格失败");
+  } finally {
+    generatingStyle.value = false;
+  }
+}
+
+async function handleSaveStyle() {
+  if (!activeChat.value) {
+    return;
+  }
+
+  savingStyle.value = true;
+
+  try {
+    await patchChat(activeChat.value, { stylePrompt: styleDraft.value });
+    styleModalOpen.value = false;
+  } finally {
+    savingStyle.value = false;
   }
 }
 
@@ -835,6 +885,17 @@ onUnmounted(() => {
                 </template>
                 生成摘要
               </NButton>
+              <NButton
+                v-if="activeChat.kind === 'group'"
+                secondary
+                size="small"
+                @click="openStyleModal(activeChat)"
+              >
+                <template #icon>
+                  <Sparkles :size="13" />
+                </template>
+                群风格
+              </NButton>
             </div>
           </div>
 
@@ -1076,6 +1137,50 @@ onUnmounted(() => {
           <NButton :loading="creating" type="primary" @click="handleCreateChat">
             保存
           </NButton>
+        </NSpace>
+      </NForm>
+    </NModal>
+
+    <NModal
+      v-model:show="styleModalOpen"
+      preset="card"
+      :style="{ width: '560px', maxWidth: '94vw' }"
+      title="分群表达风格"
+    >
+      <NForm label-placement="top" size="small">
+        <NFormItem label="风格提示（按当前群动态注入，留空沿用默认）">
+          <NInput
+            v-model:value="styleDraft"
+            maxlength="600"
+            placeholder="例如：本群技术讨论为主，回复直给简洁；偶尔接一两句轻量梗即可"
+            :rows="5"
+            show-count
+            type="textarea"
+          />
+        </NFormItem>
+        <NSpace justify="space-between">
+          <NButton
+            :loading="generatingStyle"
+            secondary
+            size="small"
+            @click="handleGenerateStyle"
+          >
+            <template #icon>
+              <Sparkles :size="13" />
+            </template>
+            从近期聊天提炼
+          </NButton>
+          <NSpace :size="8">
+            <NButton size="small" @click="styleDraft = ''">清空</NButton>
+            <NButton
+              :loading="savingStyle"
+              size="small"
+              type="primary"
+              @click="handleSaveStyle"
+            >
+              保存风格
+            </NButton>
+          </NSpace>
         </NSpace>
       </NForm>
     </NModal>

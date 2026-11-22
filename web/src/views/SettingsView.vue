@@ -132,6 +132,11 @@ interface RuntimeSettingsView {
     audioModel: string;
     expandForwards: boolean;
   };
+  social: {
+    styleDistillEnabled: boolean;
+    styleDistillIntervalHours: number;
+    styleDistillMinMessages: number;
+  };
 }
 
 interface EnvSummaryView {
@@ -1370,6 +1375,36 @@ onMounted(() => {
                 <NInput v-model:value="weeklyTime" placeholder="20:00" />
               </NFormItem>
             </div>
+          </NForm>
+        </NTabPane>
+
+        <NTabPane name="social" tab="拟人互动">
+          <NForm class="form-narrow" label-placement="top" size="small">
+            <NCard class="mb-md" size="small" title="分群表达风格提炼">
+              <div class="form-grid-2">
+                <NFormItem label="后台定时提炼群聊风格">
+                  <NSwitch
+                    v-model:value="settings.social.styleDistillEnabled"
+                  />
+                </NFormItem>
+                <NFormItem label="提炼周期（小时）">
+                  <NInputNumber
+                    v-model:value="settings.social.styleDistillIntervalHours"
+                    class="w-full"
+                    :max="168"
+                    :min="1"
+                  />
+                </NFormItem>
+                <NFormItem label="周期内最少新增消息数">
+                  <NInputNumber
+                    v-model:value="settings.social.styleDistillMinMessages"
+                    class="w-full"
+                    :max="500"
+                    :min="10"
+                  />
+                </NFormItem>
+              </div>
+            </NCard>
           </NForm>
         </NTabPane>
 

@@ -18,6 +18,7 @@ export interface ChatConfig {
   title: string;
   enabled: boolean;
   triggerMode: GroupTriggerMode;
+  stylePrompt: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -202,6 +203,9 @@ export interface JobPayloads {
   };
   guild_task: {
     task: GuildTaskKind;
+  };
+  style_distill: {
+    chatKey: ChatKey;
   };
 }
 

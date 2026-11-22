@@ -209,6 +209,7 @@ const patchChatBodySchema = Type.Object({
   title: Type.Optional(Type.String()),
   enabled: Type.Optional(Type.Boolean()),
   triggerMode: Type.Optional(triggerModeSchema),
+  stylePrompt: Type.Optional(Type.String({ maxLength: 600 })),
 });
 
 const backfillBodySchema = Type.Object({
@@ -650,6 +651,17 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
       const body = await parseBody(event, patchChatBodySchema);
 
       return berry.store.chats.update(chatKey, body);
+    }),
+  );
+
+  router.post(
+    "/api/admin/chats/:chatKey/style/generate",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const { chatKey } = await parseChatKeyParam(event);
+      const chat = await berry.agent.distillChatStyle(chatKey);
+
+      return { ok: true, chat };
     }),
   );
 

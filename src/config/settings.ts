@@ -225,6 +225,22 @@ export const runtimeSettingsSchema = Type.Object(
       },
       { default: {}, additionalProperties: false },
     ),
+    social: Type.Object(
+      {
+        styleDistillEnabled: Type.Boolean({ default: false }),
+        styleDistillIntervalHours: Type.Integer({
+          minimum: 1,
+          maximum: 168,
+          default: 24,
+        }),
+        styleDistillMinMessages: Type.Integer({
+          minimum: 10,
+          maximum: 500,
+          default: 30,
+        }),
+      },
+      { default: {}, additionalProperties: false },
+    ),
   },
   { additionalProperties: false },
 );
@@ -317,7 +333,11 @@ export function resolveThinkingEffort(
 
   const base = settings.mainModel.thinkingEffort;
 
-  if (purpose === "memory_update" || purpose === "compaction") {
+  if (
+    purpose === "memory_update" ||
+    purpose === "compaction" ||
+    purpose === "style_distill"
+  ) {
     return "none";
   }
 
