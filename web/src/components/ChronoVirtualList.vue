@@ -331,7 +331,7 @@ onBeforeUnmount(() => {
       :key-field
       :on-scroll="handleScroll"
       :on-wheel="handleWheel"
-      :padding-bottom="8"
+      :padding-bottom="44"
     >
       <template #default="{ item, index }">
         <slot :index :item="item as unknown as T" />

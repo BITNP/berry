@@ -606,11 +606,18 @@ onUnmounted(() => {
   .shell-header {
     padding: 0 8px;
     gap: 6px;
+    overflow: hidden;
+  }
+
+  .header-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .header-right {
-    gap: 6px;
+    gap: 5px;
     min-width: 0;
+    flex-shrink: 0;
   }
 
   .bot-chip {
@@ -620,6 +627,16 @@ onUnmounted(() => {
 
   .content-container {
     padding: 14px 12px 24px;
+  }
+}
+
+@media (max-width: 480px) {
+  .header-title {
+    max-width: 92px;
+  }
+
+  .bot-chip :deep(.n-avatar) {
+    display: none;
   }
 }
 </style>

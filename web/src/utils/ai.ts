@@ -23,7 +23,226 @@ export interface LlmCallRow {
   toolCalls: LlmToolCallItem[];
   error: string | null;
   cacheWarning: string | null;
+  jobId?: number | null;
+  messageIds?: number[];
   createdAt: number;
+}
+
+export interface TraceAssetView {
+  id: number;
+  messageId: number;
+  kind: "image" | "audio" | "forward" | "file";
+  rawUrl: string;
+  filePath: string | null;
+  mimeType: string;
+  transcript: string | null;
+  status: "pending" | "ready" | "failed";
+  error: string | null;
+}
+
+export interface TraceMessageSnippet {
+  id: number;
+  onebotMessageId: string;
+  senderName: string;
+  userId: string;
+  isBot: boolean;
+  text: string;
+  sentAt: number;
+  replyToMessageId: string | null;
+  assets: TraceAssetView[];
+}
+
+export interface TraceGateDecision {
+  id: number;
+  chatKey: string;
+  messageId: number | null;
+  action: "reply" | "memory" | "ignore";
+  stage: string;
+  confidence: number;
+  reason: string;
+  model: string;
+  durationMs: number;
+  createdAt: number;
+}
+
+export interface TraceOutcome {
+  kind:
+    | "reply"
+    | "reaction"
+    | "silent"
+    | "ignore"
+    | "memory"
+    | "vision"
+    | "error"
+    | "other";
+  label: string;
+  preview: string;
+}
+
+export interface AiTraceView {
+  id: string;
+  kind: "message" | "job" | "standalone";
+  chatKey: string | null;
+  chatTitle: string;
+  chatKind: "group" | "private" | null;
+  triggerMessages: TraceMessageSnippet[];
+  quotedMessages: TraceMessageSnippet[];
+  replyMessages: TraceMessageSnippet[];
+  instruction: string | null;
+  gateDecisions: TraceGateDecision[];
+  steps: LlmCallRow[];
+  status: "ok" | "error";
+  outcome: TraceOutcome;
+  totalDurationMs: number;
+  totalInputTokens: number;
+  totalCachedTokens: number;
+  totalOutputTokens: number;
+  hasCacheWarning: boolean;
+  startedAt: number;
+  endedAt: number;
+}
+
+export interface MessageTraceSummary {
+  gateAction: "reply" | "memory" | "ignore" | null;
+  gateReason: string | null;
+  aiCalls: number;
+  aiErrors: number;
+  hasTrace: boolean;
+}
+
+export interface ParsedDialogUnit {
+  kind: "qq_reply" | "qq_reaction" | "qq_forward";
+  text?: string;
+  title?: string;
+  emojiId?: string;
+  remove?: boolean;
+  quoteMessageId?: string;
+  targetRef?: string;
+  itemCount?: number;
+}
+
+export function formatDurationHuman(ms: number): string {
+  if (ms >= 60_000) {
+    return `${(ms / 60_000).toFixed(1)}m`;
+  }
+
+  if (ms >= 1000) {
+    return `${(ms / 1000).toFixed(ms >= 10_000 ? 1 : 2)}s`;
+  }
+
+  return `${Math.round(ms)}ms`;
+}
+
+export function parseDialogUnits(
+  raw: string | null | undefined,
+): ParsedDialogUnit[] | null {
+  if (!raw?.trim().startsWith("{")) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      units?: {
+        kind?: string;
+        text?: string;
+        title?: string;
+        emojiId?: string;
+        remove?: boolean;
+        quoteMessageId?: string;
+        targetRef?: string;
+        items?: unknown[];
+      }[];
+    };
+
+    if (!Array.isArray(parsed.units)) {
+      return null;
+    }
+
+    return parsed.units
+      .filter(
+        (u) =>
+          u.kind === "qq_reply" ||
+          u.kind === "qq_reaction" ||
+          u.kind === "qq_forward",
+      )
+      .map((u) => ({
+        kind: u.kind as ParsedDialogUnit["kind"],
+        text: u.text,
+        title: u.title,
+        emojiId: u.emojiId,
+        remove: u.remove,
+        quoteMessageId: u.quoteMessageId,
+        targetRef: u.targetRef,
+        itemCount: Array.isArray(u.items) ? u.items.length : undefined,
+      }));
+  } catch {
+    return null;
+  }
+}
+
+export function parseGateDecisionsFromResponse(raw: string | null | undefined):
+  | {
+      messageId?: number;
+      action: string;
+      confidence?: number;
+      reason?: string;
+    }[]
+  | null {
+  if (!raw?.trim().startsWith("{")) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      decisions?: {
+        messageId?: number;
+        action?: string;
+        confidence?: number;
+        reason?: string;
+      }[];
+    };
+
+    if (!Array.isArray(parsed.decisions)) {
+      return null;
+    }
+
+    return parsed.decisions.map((d) => ({
+      messageId: d.messageId,
+      action: d.action ?? "ignore",
+      confidence: d.confidence,
+      reason: d.reason,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+export function parseSubagentOutput(
+  raw: string | null | undefined,
+): { brief: string; references: string[] } | null {
+  if (!raw?.trim().startsWith("{")) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as {
+      brief?: unknown;
+      references?: unknown;
+    };
+
+    if (typeof parsed.brief !== "string" || !parsed.brief.trim()) {
+      return null;
+    }
+
+    return {
+      brief: parsed.brief.trim(),
+      references: Array.isArray(parsed.references)
+        ? parsed.references.filter((r): r is string => typeof r === "string")
+        : [],
+    };
+  } catch {
+    return null;
+  }
 }
 
 const PURPOSE_META: Record<

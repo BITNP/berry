@@ -1,24 +1,21 @@
 <script setup lang="ts">
 import {
-  Copy,
+  ChevronLeft,
   FlaskConical,
   Pause,
   Play,
   RefreshCw,
   RotateCcw,
+  Search,
 } from "@lucide/vue";
 import type { DataTableColumns } from "naive-ui";
 import {
-  NAlert,
   NButton,
   NCard,
-  NCollapse,
-  NCollapseItem,
   NDataTable,
-  NDescriptions,
-  NDescriptionsItem,
   NDrawer,
   NDrawerContent,
+  NEmpty,
   NInput,
   NPopconfirm,
   NRadioButton,
@@ -30,24 +27,21 @@ import {
   NTabs,
   NTag,
   NText,
-  NTooltip,
   useMessage,
 } from "naive-ui";
-import { computed, h, onMounted, ref, watch } from "vue";
+import { computed, h, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import ChronoVirtualList from "../components/ChronoVirtualList.vue";
 import GateMonitorPane from "../components/GateMonitorPane.vue";
+import TraceInspector from "../components/TraceInspector.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
-import {
-  useEventStream,
-  useLiveRefresh,
-} from "../composables/useEventStream.ts";
-import type { LlmCallRow } from "../utils/ai.ts";
+import { useLiveRefresh } from "../composables/useEventStream.ts";
+import type { AiTraceView, TraceOutcome } from "../utils/ai.ts";
 import {
   PURPOSE_FILTER_OPTIONS,
-  formatToolArguments,
+  formatDurationHuman,
   prettyMaybeJson,
   purposeMeta,
 } from "../utils/ai.ts";
@@ -108,15 +102,6 @@ interface ConversationView {
   afterMessageId: number;
   updatedAt: number;
   entries: TapeEntryView[];
-  messages: {
-    role: string;
-    content: string | null;
-    tool_call_id?: string;
-    tool_calls?: {
-      id: string;
-      function: { name: string; arguments: string };
-    }[];
-  }[];
   pendingResults: {
     module: string;
     status: string;
@@ -131,7 +116,7 @@ const message = useMessage();
 const { chatOptions } = useChatOptions();
 
 type AiTab = "calls" | "gate" | "context" | "usage";
-type CallScope = "core" | "all" | "error";
+type TraceScope = "active" | "all" | "error";
 
 function initialTab(): AiTab {
   const q = route.query.tab;
@@ -144,10 +129,11 @@ function initialTab(): AiTab {
 }
 
 const activeTab = ref<AiTab>(initialTab());
-const loadingCalls = ref(false);
+const loadingTraces = ref(false);
 const loadingMeta = ref(false);
-const calls = ref<LlmCallRow[]>([]);
-const totalCalls = ref(0);
+const traces = ref<AiTraceView[]>([]);
+const totalTraces = ref(0);
+const selectedTraceId = ref<string | null>(null);
 const gateTotal = ref<number | null>(null);
 const gatePaneRef = ref<InstanceType<typeof GateMonitorPane> | null>(null);
 const usageBuckets = ref<UsageBucket[]>([]);
@@ -166,12 +152,12 @@ const filterPurpose = ref<string | null>(
     ? route.query.purpose
     : null,
 );
-const callScope = ref<CallScope>(
+const traceScope = ref<TraceScope>(
   route.query.status === "error"
     ? "error"
     : filterPurpose.value === "gate"
       ? "all"
-      : "core",
+      : "active",
 );
 const filterChatKey = ref<string | null>(
   typeof route.query.chatKey === "string" && route.query.chatKey
@@ -180,10 +166,121 @@ const filterChatKey = ref<string | null>(
 );
 const filterSearch = ref("");
 
-const selectedCall = ref<LlmCallRow | null>(null);
-const detailOpen = ref(false);
-const expandedTurns = ref<Record<string, boolean>>({});
+const isMobile = ref(false);
+const mobileShowDetail = ref(false);
+let mediaQuery: MediaQueryList | null = null;
 
+function handleViewportChange(event: MediaQueryListEvent | MediaQueryList) {
+  isMobile.value = event.matches;
+  if (!event.matches) {
+    mobileShowDetail.value = false;
+  }
+}
+
+const selectedTrace = computed(
+  () => traces.value.find((t) => t.id === selectedTraceId.value) ?? null,
+);
+
+function selectTrace(trace: AiTraceView) {
+  selectedTraceId.value = trace.id;
+  if (isMobile.value) {
+    mobileShowDetail.value = true;
+  }
+}
+
+function traceHeadline(trace: AiTraceView): string {
+  const firstMsg = trace.triggerMessages[0];
+
+  if (firstMsg) {
+    const text = firstMsg.text.replaceAll(/\s+/g, " ").trim();
+
+    if (text) {
+      return text;
+    }
+
+    if (firstMsg.assets.length > 0) {
+      return `[附件 ×${firstMsg.assets.length}]`;
+    }
+  }
+
+  if (trace.instruction) {
+    return trace.instruction.replaceAll(/\s+/g, " ").trim();
+  }
+
+  return trace.outcome.preview || "后台模型调用";
+}
+
+function traceSender(trace: AiTraceView): string {
+  const names = [
+    ...new Set(trace.triggerMessages.map((m) => m.senderName).filter(Boolean)),
+  ];
+
+  if (names.length > 0) {
+    return names.join("、");
+  }
+
+  return trace.instruction ? "系统指令" : "";
+}
+
+function summarizeStepBadges(trace: AiTraceView): {
+  label: string;
+  type: "default" | "info" | "success" | "warning" | "primary";
+}[] {
+  const counts = new Map<
+    string,
+    {
+      label: string;
+      type: "default" | "info" | "success" | "warning" | "primary";
+      count: number;
+    }
+  >();
+
+  for (const step of trace.steps) {
+    const meta = purposeMeta(step.purpose);
+    const shortLabel = meta.label.replace(/^子代理：/, "");
+    const existing = counts.get(shortLabel);
+
+    if (existing) {
+      existing.count++;
+    } else {
+      counts.set(shortLabel, { label: shortLabel, type: meta.type, count: 1 });
+    }
+  }
+
+  return [...counts.values()].map((item) => ({
+    label: item.count > 1 ? `${item.label} ×${item.count}` : item.label,
+    type: item.type,
+  }));
+}
+
+function outcomeTagType(
+  kind: TraceOutcome["kind"],
+): "success" | "info" | "warning" | "error" | "default" | "primary" {
+  switch (kind) {
+    case "reply": {
+      return "primary";
+    }
+
+    case "reaction":
+    case "vision": {
+      return "info";
+    }
+
+    case "memory": {
+      return "success";
+    }
+
+    case "error": {
+      return "error";
+    }
+
+    default: {
+      return "default";
+    }
+  }
+}
+
+const expandedTurns = ref<Record<string, boolean>>({});
 const TURN_PREVIEW_LIMIT = 900;
 
 interface ContextTurnItem {
@@ -309,50 +406,85 @@ const usageTotals30d = computed(() => {
   };
 });
 
-async function loadCalls() {
-  loadingCalls.value = true;
+function roleTagType(role: string): "info" | "primary" | "warning" | "default" {
+  if (role === "user") {
+    return "info";
+  }
+
+  if (role === "assistant") {
+    return "primary";
+  }
+
+  if (role === "tool") {
+    return "warning";
+  }
+
+  return "default";
+}
+
+async function loadTraces() {
+  loadingTraces.value = true;
 
   try {
-    const qs = new URLSearchParams({ limit: "100" });
+    const params = new URLSearchParams({
+      limit: "80",
+      scope: traceScope.value,
+    });
 
     if (filterPurpose.value) {
-      qs.set("purpose", filterPurpose.value);
-    } else if (callScope.value === "core") {
-      qs.set("excludePurpose", "gate");
+      params.set("purpose", filterPurpose.value);
     }
 
-    if (callScope.value === "error") {
-      qs.set("status", "error");
-    }
-
-    if (filterChatKey.value?.trim()) {
-      qs.set("chatKey", filterChatKey.value.trim());
+    if (filterChatKey.value) {
+      params.set("chatKey", filterChatKey.value);
     }
 
     if (filterSearch.value.trim()) {
-      qs.set("search", filterSearch.value.trim());
+      params.set("search", filterSearch.value.trim());
     }
 
-    const res = await apiFetch<{ items: LlmCallRow[]; total: number }>(
-      `/api/admin/llm-calls?${qs.toString()}`,
+    const res = await apiFetch<{ items: AiTraceView[]; total: number }>(
+      `/api/admin/ai/traces?${params.toString()}`,
     );
 
-    calls.value = res.items;
-    totalCalls.value = res.total;
+    traces.value = res.items;
+    totalTraces.value = res.total;
 
-    if (selectedCall.value) {
-      const fresh = res.items.find(
-        (item) => item.id === selectedCall.value?.id,
-      );
-
-      if (fresh) {
-        selectedCall.value = fresh;
-      }
+    if (
+      res.items.length > 0 &&
+      (!selectedTraceId.value ||
+        !res.items.some((item) => item.id === selectedTraceId.value))
+    ) {
+      selectedTraceId.value = res.items[0].id;
+    } else if (res.items.length === 0) {
+      selectedTraceId.value = null;
     }
   } catch (err) {
-    message.error(err instanceof Error ? err.message : "加载 AI 调用记录失败");
+    message.error(err instanceof Error ? err.message : "加载追踪链路失败");
   } finally {
-    loadingCalls.value = false;
+    loadingTraces.value = false;
+  }
+}
+
+async function loadMeta() {
+  loadingMeta.value = true;
+
+  try {
+    const [usageRes, convRes] = await Promise.all([
+      apiFetch<{ items: UsageBucket[] }>("/api/admin/usage?days=30"),
+      apiFetch<ConversationView>("/api/admin/conversation"),
+    ]);
+
+    usageBuckets.value = usageRes.items;
+    conversation.value = convRes;
+
+    if (contextMode.value === "full") {
+      await loadFullTape();
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : "加载上下文与用量失败");
+  } finally {
+    loadingMeta.value = false;
   }
 }
 
@@ -361,7 +493,7 @@ async function loadFullTape() {
 
   try {
     const res = await apiFetch<{ entries: TapeEntryView[] }>(
-      "/api/admin/tape?tapeId=global&limit=200",
+      "/api/admin/tape?tapeId=global&limit=300",
     );
 
     fullTapeEntries.value = res.entries;
@@ -380,47 +512,44 @@ async function openSidecar(sidecarId: string) {
 
   try {
     const res = await apiFetch<{ entries: TapeEntryView[] }>(
-      `/api/admin/tape?tapeId=${encodeURIComponent(`sidecar:${sidecarId}`)}&limit=100`,
+      `/api/admin/tape?tapeId=${encodeURIComponent(`sidecar:${sidecarId}`)}&limit=200`,
     );
 
     sidecarEntries.value = res.entries;
   } catch (err) {
-    message.error(
-      err instanceof Error ? err.message : "加载子代理 Sidecar 失败",
-    );
+    message.error(err instanceof Error ? err.message : "加载子代理轨迹失败");
   } finally {
     loadingSidecar.value = false;
   }
 }
 
-async function loadMeta() {
-  loadingMeta.value = true;
+async function refreshAll() {
+  if (activeTab.value === "gate") {
+    await gatePaneRef.value?.loadDecisions();
 
-  try {
-    const [ov, conv] = await Promise.all([
-      apiFetch<{ usageBuckets: UsageBucket[] }>("/api/admin/overview"),
-      apiFetch<ConversationView>("/api/admin/conversation"),
-    ]);
-
-    usageBuckets.value = ov.usageBuckets;
-    conversation.value = conv;
-
-    if (contextMode.value === "full") {
-      await loadFullTape();
-    }
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "加载上下文失败");
-  } finally {
-    loadingMeta.value = false;
+    return;
   }
+
+  await Promise.all([
+    loadTraces(),
+    activeTab.value === "context" || activeTab.value === "usage"
+      ? loadMeta()
+      : Promise.resolve(),
+  ]);
 }
 
-async function refreshAll() {
-  await Promise.all([
-    loadCalls(),
-    loadMeta(),
-    gatePaneRef.value?.loadDecisions(),
-  ]);
+async function handleResetConversation() {
+  resettingContext.value = true;
+
+  try {
+    await apiFetch("/api/admin/conversation/reset", { method: "POST" });
+    message.success("已追加全局上下文重置检查点");
+    await loadMeta();
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : "重置上下文失败");
+  } finally {
+    resettingContext.value = false;
+  }
 }
 
 function inspectChatCalls(chatKey: string) {
@@ -428,67 +557,40 @@ function inspectChatCalls(chatKey: string) {
   activeTab.value = "calls";
 }
 
-function openDetail(row: LlmCallRow) {
-  selectedCall.value = row;
-  detailOpen.value = true;
+const streamPaused = ref(false);
+
+function togglePause() {
+  streamPaused.value = !streamPaused.value;
 }
-
-async function copyText(text: string) {
-  try {
-    await navigator.clipboard.writeText(text);
-    message.success("已复制到剪贴板");
-  } catch {
-    message.error("复制失败");
-  }
-}
-
-async function handleResetConversation() {
-  resettingContext.value = true;
-
-  try {
-    conversation.value = await apiFetch<ConversationView>(
-      "/api/admin/conversation/reset",
-      { method: "POST" },
-    );
-    if (contextMode.value === "full") {
-      await loadFullTape();
-    }
-
-    message.success("已追加重置检查点，历史轨迹仍保留在完整 Tape 中");
-  } catch (err) {
-    message.error(err instanceof Error ? err.message : "重置全局上下文失败");
-  } finally {
-    resettingContext.value = false;
-  }
-}
-
-const { paused: streamPaused, togglePause } = useEventStream(() => undefined);
 
 useLiveRefresh({
-  events: ["llm_call"],
-  debounceMs: 250,
+  events: ["llm_call", "gate_decision"],
   paused: streamPaused,
-  refresh: () => loadCalls(),
+  debounceMs: 600,
+  refresh: () => {
+    if (activeTab.value === "calls") {
+      void loadTraces();
+    } else if (activeTab.value === "usage") {
+      void loadMeta();
+    }
+  },
 });
 
 useLiveRefresh({
-  events: ["conversation_update", "llm_call"],
-  debounceMs: 350,
+  events: ["conversation_update"],
   paused: streamPaused,
-  enabled: () => activeTab.value === "context" || activeTab.value === "usage",
-  refresh: () => loadMeta(),
+  debounceMs: 600,
+  refresh: () => {
+    if (activeTab.value === "context") {
+      void loadMeta();
+    }
+  },
 });
 
 let filterTimer: ReturnType<typeof setTimeout> | null = null;
 
-watch(filterPurpose, (purpose) => {
-  if (purpose === "gate" && callScope.value === "core") {
-    callScope.value = "all";
-  }
-});
-
-watch([callScope, filterPurpose, filterChatKey], () => {
-  void loadCalls();
+watch([traceScope, filterPurpose, filterChatKey], () => {
+  void loadTraces();
 });
 
 watch(filterSearch, () => {
@@ -497,7 +599,7 @@ watch(filterSearch, () => {
   }
 
   filterTimer = setTimeout(() => {
-    void loadCalls();
+    void loadTraces();
   }, 240);
 });
 
@@ -532,176 +634,6 @@ watch(
     }
   },
 );
-
-const callColumns: DataTableColumns<LlmCallRow> = [
-  {
-    title: "时间",
-    key: "createdAt",
-    width: 124,
-    render: (row) => h("span", { class: "tabular" }, formatTime(row.createdAt)),
-  },
-  {
-    title: "用途",
-    key: "purpose",
-    width: 176,
-    render: (row) => {
-      const meta = purposeMeta(row.purpose);
-
-      return h(
-        NTag,
-        {
-          size: "small",
-          type: meta.type,
-          style: "max-width: 100%;",
-        },
-        { default: () => meta.label },
-      );
-    },
-  },
-  {
-    title: "状态",
-    key: "status",
-    width: 68,
-    render: (row) =>
-      h(
-        NTag,
-        {
-          size: "small",
-          type: row.status === "error" ? "error" : "success",
-        },
-        { default: () => (row.status === "error" ? "失败" : "成功") },
-      ),
-  },
-  {
-    title: "模型",
-    key: "model",
-    width: 176,
-    ellipsis: { tooltip: true },
-    render: (row) => h("span", { class: "mono" }, row.model),
-  },
-  {
-    title: "工具调用 / 输出摘要",
-    key: "summary",
-    minWidth: 190,
-    render: (row) => {
-      if (row.error) {
-        return h(
-          NText,
-          { type: "error", class: "sub-note" },
-          { default: () => row.error },
-        );
-      }
-
-      if (row.toolCalls.length > 0) {
-        const visible = row.toolCalls.slice(0, 4);
-        const hiddenCount = row.toolCalls.length - visible.length;
-
-        return h(
-          NSpace,
-          { size: 4, wrap: true },
-          {
-            default: () => [
-              ...visible.map((call, index) =>
-                h(
-                  NTag,
-                  {
-                    key: `${call.name}-${index}`,
-                    size: "tiny",
-                    type: call.ok === false ? "error" : "info",
-                  },
-                  { default: () => call.name },
-                ),
-              ),
-              ...(hiddenCount > 0
-                ? [
-                    h(
-                      NTag,
-                      { key: "more", size: "tiny", bordered: false },
-                      { default: () => `+${hiddenCount}` },
-                    ),
-                  ]
-                : []),
-            ],
-          },
-        );
-      }
-
-      const text = (row.responseText ?? "").replaceAll(/\s+/g, " ").trim();
-
-      return h(
-        "span",
-        {
-          style:
-            "display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:280px;",
-        },
-        text || "—",
-      );
-    },
-  },
-  {
-    title: "会话",
-    key: "chatKey",
-    width: 176,
-    ellipsis: { tooltip: true },
-    render: (row) => h("span", { class: "mono" }, row.chatKey || "全局"),
-  },
-  {
-    title: "Tokens",
-    key: "tokens",
-    width: 176,
-    align: "right",
-    render: (row) => {
-      const value = h(
-        "span",
-        { class: "tabular sub-note", style: "white-space: nowrap;" },
-        `${row.inputTokens.toLocaleString()} / ${row.outputTokens.toLocaleString()}`,
-      );
-
-      if (!row.cacheWarning) {
-        return value;
-      }
-
-      const tagLabel = row.cacheWarning.startsWith("前缀未变")
-        ? "缓存偏低"
-        : "前缀失效";
-
-      const tag = h(
-        NTooltip,
-        { placement: "top" },
-        {
-          trigger: () =>
-            h(
-              NTag,
-              {
-                size: "tiny",
-                type: "warning",
-                bordered: false,
-                style: "flex-shrink: 0;",
-              },
-              { default: () => tagLabel },
-            ),
-          default: () => row.cacheWarning,
-        },
-      );
-
-      return h(
-        "span",
-        {
-          style:
-            "display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; white-space: nowrap;",
-        },
-        [tag, value],
-      );
-    },
-  },
-  {
-    title: "耗时",
-    key: "durationMs",
-    width: 96,
-    align: "right",
-    render: (row) => h("span", { class: "tabular" }, `${row.durationMs} ms`),
-  },
-];
 
 const usageColumns: DataTableColumns<UsageBucket> = [
   { title: "日期", key: "day", width: 96 },
@@ -762,49 +694,44 @@ const usageColumns: DataTableColumns<UsageBucket> = [
       h("span", { class: "tabular" }, row.outputTokens.toLocaleString()),
   },
   {
-    title: "平均耗时",
+    title: "均耗时",
     key: "avgDurationMs",
-    width: 86,
+    width: 82,
     align: "right",
-    render: (row) => h("span", { class: "tabular" }, `${row.avgDurationMs} ms`),
+    render: (row) =>
+      h("span", { class: "tabular" }, formatDurationHuman(row.avgDurationMs)),
   },
 ];
 
-function roleTagType(role: string): "default" | "info" | "success" | "warning" {
-  if (role === "assistant") {
-    return "success";
-  }
-
-  if (role === "tool") {
-    return "warning";
-  }
-
-  if (role === "user") {
-    return "info";
-  }
-
-  return "default";
-}
-
 onMounted(() => {
-  void refreshAll();
+  mediaQuery = window.matchMedia("(max-width: 960px)");
+  handleViewportChange(mediaQuery);
+  mediaQuery.addEventListener("change", handleViewportChange);
+  void loadTraces();
+  if (activeTab.value === "context" || activeTab.value === "usage") {
+    void loadMeta();
+  }
+});
+
+onUnmounted(() => {
+  mediaQuery?.removeEventListener("change", handleViewportChange);
 });
 </script>
 
 <template>
-  <div>
+  <div class="ai-page">
     <div class="page-bar">
       <NSpace align="center" :size="10">
-        <h1 class="page-title">AI 追踪</h1>
-        <NText v-if="activeTab === 'calls'" class="sub-note" depth="3">
-          共 {{ totalCalls }} 条调用
+        <h2 class="page-title">AI 追踪</h2>
+        <NText v-if="activeTab === 'calls'" class="sub-note tabular" depth="3">
+          {{ totalTraces }} 条链路
         </NText>
         <NText
           v-else-if="activeTab === 'gate' && gateTotal !== null"
-          class="sub-note"
+          class="sub-note tabular"
           depth="3"
         >
-          共 {{ gateTotal }} 条分流
+          {{ gateTotal }} 条分流
         </NText>
       </NSpace>
       <NSpace :size="8" wrap>
@@ -827,7 +754,7 @@ onMounted(() => {
           {{ streamPaused ? "恢复实时流" : "暂停实时流" }}
         </NButton>
         <NButton
-          :loading="loadingCalls || loadingMeta"
+          :loading="loadingTraces || loadingMeta"
           size="small"
           @click="refreshAll"
         >
@@ -839,59 +766,135 @@ onMounted(() => {
       </NSpace>
     </div>
 
-    <NCard size="small">
-      <NTabs v-model:value="activeTab" type="line">
-        <NTabPane name="calls" tab="调用明细">
-          <div class="filter-bar">
-            <NRadioGroup v-model:value="callScope" size="small">
-              <NRadioButton value="core">核心调用</NRadioButton>
-              <NRadioButton value="all">全部</NRadioButton>
-              <NRadioButton value="error">仅失败</NRadioButton>
-            </NRadioGroup>
-            <NSelect
-              v-model:value="filterPurpose"
-              class="w-175"
-              clearable
-              :options="PURPOSE_FILTER_OPTIONS"
-              placeholder="全部用途"
-              size="small"
-            />
-            <NSelect
-              v-model:value="filterChatKey"
-              class="w-240"
-              clearable
-              filterable
-              :options="chatOptions"
-              placeholder="选择或输入会话（支持名称/群号）"
-              size="small"
-              tag
-            />
-            <NInput
-              v-model:value="filterSearch"
-              class="w-220"
-              clearable
-              placeholder="搜索工具名、模型、输入或输出"
-              size="small"
-            />
-          </div>
-
-          <NDataTable
-            class="clickable-table"
-            :columns="callColumns"
-            :data="calls"
-            :loading="loadingCalls"
-            :pagination="{ pageSize: 20 }"
-            :row-props="
-              (row: LlmCallRow) => ({
-                onClick: () => openDetail(row),
-              })
-            "
-            :scroll-x="1168"
+    <NTabs v-model:value="activeTab" class="ai-tabs" type="line">
+      <NTabPane name="calls" tab="执行链路">
+        <div v-show="!isMobile || !mobileShowDetail" class="filter-bar">
+          <NRadioGroup v-model:value="traceScope" size="small">
+            <NRadioButton value="active">有效交互</NRadioButton>
+            <NRadioButton value="all">全部</NRadioButton>
+            <NRadioButton value="error">仅异常</NRadioButton>
+          </NRadioGroup>
+          <NSelect
+            v-model:value="filterPurpose"
+            class="w-175"
+            clearable
+            :options="PURPOSE_FILTER_OPTIONS"
+            placeholder="全部环节"
             size="small"
           />
-        </NTabPane>
+          <NSelect
+            v-model:value="filterChatKey"
+            class="w-240"
+            clearable
+            filterable
+            :options="chatOptions"
+            placeholder="筛选会话（名称/群号）"
+            size="small"
+            tag
+          />
+          <NInput
+            v-model:value="filterSearch"
+            class="w-240"
+            clearable
+            placeholder="搜索消息、发送者或工具"
+            size="small"
+          >
+            <template #prefix>
+              <Search :size="13" />
+            </template>
+          </NInput>
+        </div>
 
-        <NTabPane name="gate" tab="消息分流">
+        <div class="trace-workbench">
+          <!-- Left master list -->
+          <div v-show="!isMobile || !mobileShowDetail" class="trace-list-pane">
+            <div
+              v-if="loadingTraces && traces.length === 0"
+              class="trace-list-state"
+            >
+              <NSpin size="small" />
+            </div>
+            <NEmpty
+              v-else-if="traces.length === 0"
+              class="trace-list-state"
+              description="暂无匹配的追踪链路"
+            />
+            <div v-else class="trace-list-scroll">
+              <button
+                v-for="trace in traces"
+                :key="trace.id"
+                class="trace-row"
+                :class="{
+                  active: trace.id === selectedTraceId,
+                  error: trace.status === 'error',
+                }"
+                type="button"
+                @click="selectTrace(trace)"
+              >
+                <div class="trace-row-top">
+                  <span class="trace-row-chat">{{ trace.chatTitle }}</span>
+                  <span v-if="traceSender(trace)" class="trace-row-sender">
+                    {{ traceSender(trace) }}
+                  </span>
+                  <span class="trace-row-time tabular">
+                    {{ formatTime(trace.endedAt) }}
+                  </span>
+                </div>
+
+                <div class="trace-row-headline">
+                  {{ traceHeadline(trace) }}
+                </div>
+
+                <div class="trace-row-bottom">
+                  <div class="trace-row-pills">
+                    <NTag
+                      :bordered="false"
+                      size="tiny"
+                      :type="outcomeTagType(trace.outcome.kind)"
+                    >
+                      {{ trace.outcome.label }}
+                    </NTag>
+                    <NTag
+                      v-for="badge in summarizeStepBadges(trace).slice(0, 3)"
+                      :key="badge.label"
+                      :bordered="false"
+                      size="tiny"
+                      :type="badge.type"
+                    >
+                      {{ badge.label }}
+                    </NTag>
+                  </div>
+                  <span class="trace-row-dur tabular">
+                    {{ formatDurationHuman(trace.totalDurationMs) }}
+                  </span>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <!-- Right inspector pane -->
+          <div v-show="!isMobile || mobileShowDetail" class="trace-detail-pane">
+            <div v-if="isMobile" class="trace-mobile-bar">
+              <NButton
+                quaternary
+                size="small"
+                @click="mobileShowDetail = false"
+              >
+                <template #icon>
+                  <ChevronLeft :size="15" />
+                </template>
+                返回链路列表
+              </NButton>
+            </div>
+            <div class="trace-detail-scroll">
+              <TraceInspector :trace="selectedTrace" />
+            </div>
+          </div>
+        </div>
+      </NTabPane>
+
+      <NTabPane name="gate" tab="消息分流">
+        <NCard size="small">
           <GateMonitorPane
             ref="gatePaneRef"
             :chat-key="filterChatKey"
@@ -899,9 +902,11 @@ onMounted(() => {
             @inspect-chat-calls="inspectChatCalls"
             @update:total="(n: number) => (gateTotal = n)"
           />
-        </NTabPane>
+        </NCard>
+      </NTabPane>
 
-        <NTabPane name="context" tab="全局上下文">
+      <NTabPane name="context" tab="全局上下文">
+        <NCard size="small">
           <NSpace v-if="conversation" :size="12" vertical>
             <div class="filter-bar space-between">
               <NText class="mono sub-note" depth="3">
@@ -927,57 +932,35 @@ onMounted(() => {
               </NPopconfirm>
             </div>
 
-            <NCard
-              v-if="conversation.handoff"
-              size="small"
-              :title="`结构化交接摘要（Anchor #${conversation.anchorEntryId ?? '-'}）`"
-            >
-              <NSpace :size="8" vertical>
-                <div class="pre-wrap">{{ conversation.handoff.summary }}</div>
-                <div
-                  v-if="conversation.handoff.confirmedFacts.length > 0"
-                  class="sub-note"
-                >
-                  <strong>已确认事实：</strong>
-                  {{ conversation.handoff.confirmedFacts.join("；") }}
-                </div>
-                <div
-                  v-if="conversation.handoff.openTasks.length > 0"
-                  class="sub-note"
-                >
-                  <strong>未完成任务：</strong>
-                  {{ conversation.handoff.openTasks.join("；") }}
-                </div>
-                <div
-                  v-if="conversation.handoff.pendingFollowups.length > 0"
-                  class="sub-note"
-                >
-                  <strong>待跟进事项：</strong>
-                  {{ conversation.handoff.pendingFollowups.join("；") }}
-                </div>
-                <NText
-                  v-if="conversation.handoff.sourceEntryIds.length > 0"
-                  class="mono sub-note"
-                  depth="3"
-                >
-                  溯源条目：#{{ conversation.handoff.sourceEntryIds[0] }} ~ #{{
-                    conversation.handoff.sourceEntryIds[
-                      conversation.handoff.sourceEntryIds.length - 1
-                    ]
-                  }}（共 {{ conversation.handoff.sourceEntryIds.length }} 条）
-                </NText>
-              </NSpace>
-            </NCard>
-
-            <NCard
-              v-if="conversation.pendingResults.length > 0"
-              size="small"
-              title="待消费投递回执"
-            >
-              <pre class="code-block pending-results-block">{{
-                JSON.stringify(conversation.pendingResults, null, 2)
-              }}</pre>
-            </NCard>
+            <div v-if="conversation.handoff" class="handoff-box">
+              <div class="handoff-title">
+                结构化交接摘要（Anchor #{{
+                  conversation.anchorEntryId ?? "-"
+                }}）
+              </div>
+              <div class="pre-wrap">{{ conversation.handoff.summary }}</div>
+              <div
+                v-if="conversation.handoff.confirmedFacts.length > 0"
+                class="sub-note"
+              >
+                <strong>已确认事实：</strong>
+                {{ conversation.handoff.confirmedFacts.join("；") }}
+              </div>
+              <div
+                v-if="conversation.handoff.openTasks.length > 0"
+                class="sub-note"
+              >
+                <strong>未完成任务：</strong>
+                {{ conversation.handoff.openTasks.join("；") }}
+              </div>
+              <div
+                v-if="conversation.handoff.pendingFollowups.length > 0"
+                class="sub-note"
+              >
+                <strong>待跟进事项：</strong>
+                {{ conversation.handoff.pendingFollowups.join("；") }}
+              </div>
+            </div>
 
             <div class="context-scroll-panel">
               <div class="context-scroll-head">
@@ -1067,9 +1050,6 @@ onMounted(() => {
                         >
                           Sidecar {{ item.sidecarId }}
                         </NButton>
-                        <span v-if="item.toolCallId" class="mono turn-time">
-                          {{ item.toolCallId }}
-                        </span>
                         <NButton
                           v-if="item.isLong"
                           class="ml-auto"
@@ -1093,14 +1073,16 @@ onMounted(() => {
               </ChronoVirtualList>
             </div>
           </NSpace>
-        </NTabPane>
+        </NCard>
+      </NTabPane>
 
-        <NTabPane name="usage" tab="用量统计">
+      <NTabPane name="usage" tab="用量统计">
+        <NCard size="small">
           <div class="filter-bar">
             <NText class="tabular sub-note" depth="2">
               近 30 日累计：调用
               {{ usageTotals30d.calls.toLocaleString() }} 次，合计
-              {{ usageTotals30d.totalTokens.toLocaleString() }} Tokens（ 输入
+              {{ usageTotals30d.totalTokens.toLocaleString() }} Tokens（输入
               {{ usageTotals30d.inputTokens.toLocaleString() }} / 缓存命中
               {{ usageTotals30d.cachedInputTokens.toLocaleString() }}，{{
                 formatPercent(
@@ -1119,185 +1101,16 @@ onMounted(() => {
             :scroll-x="860"
             size="small"
           />
-        </NTabPane>
-      </NTabs>
-    </NCard>
-
-    <NDrawer v-model:show="detailOpen" class="drawer-safe" :width="580">
-      <NDrawerContent v-if="selectedCall" closable title="AI 调用详情">
-        <NSpace :size="12" vertical>
-          <NAlert v-if="selectedCall.error" title="调用失败" type="error">
-            {{ selectedCall.error }}
-          </NAlert>
-          <NAlert
-            v-if="selectedCall.cacheWarning"
-            title="缓存前缀告警"
-            type="warning"
-          >
-            {{ selectedCall.cacheWarning }}
-          </NAlert>
-
-          <NDescriptions
-            bordered
-            :column="2"
-            label-placement="left"
-            size="small"
-          >
-            <NDescriptionsItem label="时间">
-              <span class="tabular">
-                {{ formatTime(selectedCall.createdAt) }}
-              </span>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="用途">
-              <NTag size="small" :type="purposeMeta(selectedCall.purpose).type">
-                {{ purposeMeta(selectedCall.purpose).label }}
-              </NTag>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="模型">
-              <span class="mono">{{ selectedCall.model }}</span>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="耗时">
-              <span class="tabular">{{ selectedCall.durationMs }} ms</span>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="会话">
-              <span class="mono">{{ selectedCall.chatKey || "全局" }}</span>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="Tokens">
-              <span class="tabular">
-                入 {{ selectedCall.inputTokens.toLocaleString() }}（缓
-                {{
-                  formatPercent(
-                    selectedCall.cachedInputTokens,
-                    selectedCall.inputTokens,
-                  )
-                }}） / 出 {{ selectedCall.outputTokens.toLocaleString() }}
-              </span>
-            </NDescriptionsItem>
-          </NDescriptions>
-
-          <div v-if="selectedCall.toolCalls.length > 0">
-            <div class="section-title">
-              发起的工具调用（{{ selectedCall.toolCalls.length }}）
-            </div>
-            <NSpace :size="8" vertical>
-              <div
-                v-for="(call, idx) in selectedCall.toolCalls"
-                :key="`${call.name}-${idx}`"
-                class="turn-box"
-              >
-                <div class="turn-head">
-                  <NTag size="small" type="info">{{ call.name }}</NTag>
-                  <NTag
-                    v-if="call.ok !== undefined"
-                    :bordered="false"
-                    size="tiny"
-                    :type="call.ok ? 'success' : 'error'"
-                  >
-                    {{ call.ok ? "成功" : "失败" }}
-                  </NTag>
-                  <span
-                    v-if="call.durationMs !== undefined"
-                    class="mono turn-time tabular"
-                  >
-                    {{ call.durationMs }} ms
-                  </span>
-                </div>
-                <div class="tool-io-section">
-                  <div class="tool-io-label">
-                    <span>入参</span>
-                    <NButton
-                      quaternary
-                      size="tiny"
-                      @click="copyText(formatToolArguments(call))"
-                    >
-                      <template #icon>
-                        <Copy :size="12" />
-                      </template>
-                      复制
-                    </NButton>
-                  </div>
-                  <pre class="code-block tool-io-block">{{
-                    formatToolArguments(call)
-                  }}</pre>
-                </div>
-                <div v-if="call.result !== undefined" class="tool-io-section">
-                  <div class="tool-io-label">
-                    <span>返回值</span>
-                    <NButton
-                      quaternary
-                      size="tiny"
-                      @click="copyText(prettyMaybeJson(call.result))"
-                    >
-                      <template #icon>
-                        <Copy :size="12" />
-                      </template>
-                      复制
-                    </NButton>
-                  </div>
-                  <pre class="code-block tool-io-block">{{
-                    prettyMaybeJson(call.result)
-                  }}</pre>
-                </div>
-                <NText v-else class="sub-note" depth="3">
-                  该记录产生于工具返回值采集前，无返回值快照。
-                </NText>
-              </div>
-            </NSpace>
-          </div>
-
-          <div v-if="selectedCall.responseText">
-            <div class="filter-bar space-between mt-md">
-              <span class="section-title-inline">模型输出</span>
-              <NButton
-                quaternary
-                size="tiny"
-                @click="copyText(selectedCall.responseText)"
-              >
-                <template #icon>
-                  <Copy :size="12" />
-                </template>
-                复制
-              </NButton>
-            </div>
-            <pre class="code-block mt-xs">{{
-              prettyMaybeJson(selectedCall.responseText)
-            }}</pre>
-          </div>
-
-          <NCollapse
-            v-if="selectedCall.requestPreview"
-            default-expanded-names="req"
-          >
-            <NCollapseItem name="req" title="请求上下文预览">
-              <pre class="code-block">{{ selectedCall.requestPreview }}</pre>
-            </NCollapseItem>
-          </NCollapse>
-
-          <NText
-            v-if="
-              !selectedCall.requestPreview &&
-              !selectedCall.responseText &&
-              selectedCall.toolCalls.length === 0 &&
-              !selectedCall.error
-            "
-            depth="3"
-          >
-            该记录产生于追踪升级之前，仅包含用量统计。
-          </NText>
-        </NSpace>
-      </NDrawerContent>
-    </NDrawer>
+        </NCard>
+      </NTabPane>
+    </NTabs>
 
     <NDrawer v-model:show="sidecarDrawerOpen" class="drawer-safe" :width="620">
-      <NDrawerContent
-        closable
-        :title="`子代理 Sidecar Tape (${sidecarIdActive ?? ''})`"
-      >
-        <NSpace :size="10" vertical>
-          <NText v-if="loadingSidecar" depth="3">正在加载 Sidecar 轨迹…</NText>
-          <NText v-else-if="sidecarItems.length === 0" depth="3">
-            暂无轨迹记录。
-          </NText>
+      <NDrawerContent closable :title="`子代理轨迹 · ${sidecarIdActive ?? ''}`">
+        <div v-if="loadingSidecar" class="trace-list-state">
+          <NSpin size="small" />
+        </div>
+        <NSpace v-else :size="10" vertical>
           <div v-for="item in sidecarItems" :key="item.key" class="turn-box">
             <div class="turn-head">
               <span class="mono turn-time">#{{ item.index }}</span>
@@ -1312,26 +1125,264 @@ onMounted(() => {
               >
                 {{ toolName }}
               </NTag>
-              <NButton
-                v-if="item.isLong"
-                class="ml-auto"
-                quaternary
-                size="tiny"
-                @click="toggleTurnExpand(item.key)"
-              >
-                {{
-                  expandedTurns[item.key]
-                    ? "收起"
-                    : `展开全文 (${item.body.length.toLocaleString()} 字)`
-                }}
-              </NButton>
             </div>
-            <pre class="code-block mt-xs">{{
-              expandedTurns[item.key] ? item.body : item.preview
-            }}</pre>
+            <pre class="code-block mt-xs">{{ item.body }}</pre>
           </div>
         </NSpace>
       </NDrawerContent>
     </NDrawer>
   </div>
 </template>
+
+<style scoped>
+.ai-page {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 88px);
+}
+
+.trace-workbench {
+  display: grid;
+  grid-template-columns: 370px minmax(0, 1fr);
+  height: calc(100vh - 236px);
+  min-height: 440px;
+  border: 1px solid var(--berry-border);
+  border-radius: 8px;
+  background: var(--berry-surface);
+  overflow: hidden;
+}
+
+.trace-list-pane {
+  border-right: 1px solid var(--berry-border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--berry-inset);
+}
+
+.trace-list-scroll {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.trace-list-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+}
+
+.trace-row {
+  appearance: none;
+  border: none;
+  border-bottom: 1px solid var(--berry-border);
+  border-left: 3px solid transparent;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.trace-row:hover {
+  background: var(--berry-surface);
+}
+
+.trace-row.active {
+  background: var(--berry-surface);
+  border-left-color: #e11d48;
+}
+
+.trace-row.error:not(.active) {
+  border-left-color: rgba(239, 68, 68, 0.55);
+}
+
+.trace-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.trace-row-chat {
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-row-sender {
+  font-size: 11px;
+  color: var(--berry-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-row-time {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--berry-muted);
+}
+
+.trace-row-headline {
+  font-size: 13px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.trace-row-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.trace-row-pills {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.trace-row-dur {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--berry-muted);
+}
+
+.trace-detail-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--berry-surface);
+}
+
+.trace-detail-scroll {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.trace-mobile-bar {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--berry-border);
+}
+
+.handoff-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--berry-border);
+  background: var(--berry-inset);
+}
+
+.handoff-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.context-scroll-panel {
+  border: 1px solid var(--berry-border);
+  border-radius: 6px;
+  background: var(--berry-surface);
+  overflow: hidden;
+}
+
+.context-scroll-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--berry-border);
+  background: var(--berry-inset);
+}
+
+.context-scroll-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.context-vlist {
+  height: 520px;
+}
+
+.context-vlist-item {
+  padding: 6px 10px;
+}
+
+.turn-box {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--berry-border);
+  background: var(--berry-inset);
+}
+
+.turn-box-anchor-compact {
+  border-color: rgba(22, 163, 74, 0.35);
+}
+
+.turn-box-anchor-reset {
+  border-color: rgba(245, 158, 11, 0.45);
+}
+
+.turn-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.turn-time {
+  font-size: 11px;
+  color: var(--berry-muted);
+}
+
+.space-between {
+  justify-content: space-between;
+}
+
+.ml-auto {
+  margin-left: auto;
+}
+
+.mt-xs {
+  margin-top: 6px;
+}
+
+.pre-wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 960px) {
+  .trace-workbench {
+    grid-template-columns: minmax(0, 1fr);
+    height: calc(100vh - 230px);
+  }
+
+  .trace-list-pane {
+    border-right: none;
+  }
+}
+</style>

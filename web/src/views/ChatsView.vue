@@ -7,11 +7,15 @@ import {
   RefreshCw,
   Search,
   Send,
+  Sparkles,
 } from "@lucide/vue";
 import {
+  NAlert,
   NAvatar,
   NButton,
   NCard,
+  NDrawer,
+  NDrawerContent,
   NEmpty,
   NForm,
   NFormItem,
@@ -21,6 +25,7 @@ import {
   NRadioGroup,
   NSelect,
   NSpace,
+  NSpin,
   NSwitch,
   NTag,
   NText,
@@ -31,7 +36,9 @@ import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import ChronoVirtualList from "../components/ChronoVirtualList.vue";
+import TraceInspector from "../components/TraceInspector.vue";
 import { useLiveRefresh } from "../composables/useEventStream.ts";
+import type { AiTraceView, MessageTraceSummary } from "../utils/ai.ts";
 import { formatTime } from "../utils/format.ts";
 
 type ChatKind = "group" | "private";
@@ -79,6 +86,7 @@ interface ChatMessageView {
   sentAt: number;
   assets: MessageAssetView[];
   reactions: ReactionAggregateView[];
+  traceSummary?: MessageTraceSummary;
 }
 
 const MESSAGE_PAGE_SIZE = 80;
@@ -122,6 +130,13 @@ const hasOlderMessages = ref(false);
 const messages = ref<ChatMessageView[]>([]);
 const injectContent = ref("");
 const injecting = ref(false);
+
+const traceDrawerOpen = ref(false);
+const traceLoading = ref(false);
+const traceError = ref<string | null>(null);
+const activeTraceMessage = ref<ChatMessageView | null>(null);
+const activeMessageTrace = ref<AiTraceView | null>(null);
+let traceRequestSeq = 0;
 
 const triggerOptions = [
   { label: "智能观察", value: "smart_observe" },
@@ -523,6 +538,57 @@ function handleComposerKeydown(e: KeyboardEvent) {
   }
 }
 
+function gateActionMeta(
+  action: MessageTraceSummary["gateAction"],
+): { label: string; type: "primary" | "success" | "default" } | null {
+  if (action === "reply") {
+    return { label: "分流 · 回复", type: "primary" };
+  }
+
+  if (action === "memory") {
+    return { label: "分流 · 记忆", type: "success" };
+  }
+
+  if (action === "ignore") {
+    return { label: "分流 · 忽略", type: "default" };
+  }
+
+  return null;
+}
+
+async function openMessageTrace(msg: ChatMessageView) {
+  const reqId = ++traceRequestSeq;
+
+  activeTraceMessage.value = msg;
+  activeMessageTrace.value = null;
+  traceError.value = null;
+  traceDrawerOpen.value = true;
+  traceLoading.value = true;
+
+  try {
+    const trace = await apiFetch<AiTraceView>(
+      `/api/admin/messages/${msg.id}/trace`,
+    );
+
+    if (reqId !== traceRequestSeq) {
+      return;
+    }
+
+    activeMessageTrace.value = trace;
+  } catch (err) {
+    if (reqId !== traceRequestSeq) {
+      return;
+    }
+
+    traceError.value =
+      err instanceof Error ? err.message : "加载消息 AI 追踪失败";
+  } finally {
+    if (reqId === traceRequestSeq) {
+      traceLoading.value = false;
+    }
+  }
+}
+
 function assetKindLabel(kind: MessageAssetView["kind"]): string {
   switch (kind) {
     case "image": {
@@ -883,6 +949,50 @@ onUnmounted(() => {
                           {{ reaction.emojiName }} × {{ reaction.count }}
                         </NTag>
                       </div>
+
+                      <div v-if="msg.traceSummary?.hasTrace" class="trace-bar">
+                        <NTag
+                          v-if="gateActionMeta(msg.traceSummary.gateAction)"
+                          size="tiny"
+                          :title="msg.traceSummary.gateReason || undefined"
+                          :type="
+                            gateActionMeta(msg.traceSummary.gateAction)?.type
+                          "
+                        >
+                          {{
+                            gateActionMeta(msg.traceSummary.gateAction)?.label
+                          }}
+                        </NTag>
+                        <NTag
+                          v-if="msg.traceSummary.aiErrors > 0"
+                          size="tiny"
+                          type="error"
+                        >
+                          AI 异常 · {{ msg.traceSummary.aiErrors }}/{{
+                            msg.traceSummary.aiCalls
+                          }}
+                        </NTag>
+                        <span
+                          v-else-if="msg.traceSummary.aiCalls > 0"
+                          class="trace-bar-meta tabular"
+                        >
+                          AI {{ msg.traceSummary.aiCalls }} 步
+                        </span>
+                        <span
+                          v-if="msg.traceSummary.gateReason"
+                          class="trace-bar-reason"
+                        >
+                          {{ msg.traceSummary.gateReason }}
+                        </span>
+                        <button
+                          class="trace-bar-btn"
+                          type="button"
+                          @click="openMessageTrace(msg)"
+                        >
+                          <Sparkles :size="12" />
+                          <span>查看追踪</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -969,6 +1079,36 @@ onUnmounted(() => {
         </NSpace>
       </NForm>
     </NModal>
+
+    <NDrawer
+      v-model:show="traceDrawerOpen"
+      placement="right"
+      :width="isMobile ? '94vw' : 760"
+    >
+      <NDrawerContent
+        closable
+        :title="
+          activeTraceMessage
+            ? `消息追踪 · ${activeTraceMessage.senderName || activeTraceMessage.userId}`
+            : '消息 AI 追踪'
+        "
+      >
+        <div v-if="traceLoading" class="trace-drawer-state">
+          <NSpin size="medium" />
+        </div>
+        <NAlert v-else-if="traceError" type="error">
+          {{ traceError }}
+        </NAlert>
+        <TraceInspector
+          v-else-if="activeMessageTrace"
+          hide-jump-to-chat
+          :trace="activeMessageTrace"
+        />
+        <div v-else class="trace-drawer-state">
+          <NEmpty description="该消息暂无关联 AI 追踪" />
+        </div>
+      </NDrawerContent>
+    </NDrawer>
   </div>
 </template>
 
@@ -1289,6 +1429,64 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
+}
+
+.trace-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--berry-border);
+  font-size: 11px;
+}
+
+.trace-bar-meta {
+  color: var(--berry-muted);
+}
+
+.trace-bar-reason {
+  color: var(--berry-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 340px;
+}
+
+.trace-bar-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--berry-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--berry-accent);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background-color 0.14s ease,
+    border-color 0.14s ease;
+}
+
+.trace-bar-btn:hover {
+  background: var(--berry-inset);
+  border-color: var(--berry-accent);
+}
+
+.trace-bar-btn:focus-visible {
+  outline: 2px solid var(--berry-accent);
+  outline-offset: 1px;
+}
+
+.trace-drawer-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
 }
 
 @media (max-width: 859px) {
