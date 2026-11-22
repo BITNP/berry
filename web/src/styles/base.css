@@ -1,24 +1,58 @@
 :root {
+  color-scheme: light;
   --berry-surface: #ffffff;
   --berry-inset: #fafafa;
   --berry-well: #f4f4f5;
   --berry-border: #e4e4e7;
   --berry-muted: #71717a;
+  --berry-accent: #e11d48;
+  --berry-scroll-thumb: rgba(113, 113, 122, 0.28);
+  --berry-scroll-thumb-hover: rgba(113, 113, 122, 0.5);
+  --berry-scroll-track: transparent;
   --berry-mono:
     "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo,
     Consolas, monospace;
 }
 
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --berry-surface: #18181b;
   --berry-inset: #1f1f23;
   --berry-well: #111114;
   --berry-border: #27272a;
   --berry-muted: #a1a1aa;
+  --berry-accent: #fb7185;
+  --berry-scroll-thumb: rgba(161, 161, 170, 0.24);
+  --berry-scroll-thumb-hover: rgba(161, 161, 170, 0.44);
+  --berry-scroll-track: transparent;
 }
 
 * {
   box-sizing: border-box;
+  scrollbar-width: thin;
+  scrollbar-color: var(--berry-scroll-thumb) var(--berry-scroll-track);
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--berry-scroll-track);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--berry-scroll-thumb);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--berry-scroll-thumb-hover);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 html,

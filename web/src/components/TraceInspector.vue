@@ -600,7 +600,9 @@ const isVisionEmpty = (step: LlmCallRow): boolean =>
 
               <!-- Plain readable output (vision, etc.) -->
               <div v-else class="ti-readable-text">
-                {{ step.responseText.trim() }}
+                {{
+                  step.responseText.replaceAll(/\*\*([^*]+)\*\*/g, "$1").trim()
+                }}
               </div>
             </template>
 

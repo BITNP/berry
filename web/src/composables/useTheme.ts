@@ -18,6 +18,7 @@ const theme = ref<"light" | "dark">(initialTheme());
 
 watchEffect(() => {
   document.documentElement.dataset.theme = theme.value;
+  document.documentElement.style.colorScheme = theme.value;
   localStorage.setItem(STORAGE_KEY, theme.value);
 });
 
