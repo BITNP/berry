@@ -119,6 +119,21 @@ export const runtimeSettingsSchema = Type.Object(
         }),
         contextMessages: Type.Integer({ minimum: 0, maximum: 40, default: 15 }),
         timeoutMs: Type.Integer({ minimum: 1000, default: 25_000 }),
+        cooldownWindowMinutes: Type.Integer({
+          minimum: 1,
+          maximum: 60,
+          default: 10,
+        }),
+        proactiveSoftLimit: Type.Integer({
+          minimum: 0,
+          maximum: 50,
+          default: 3,
+        }),
+        cooldownMinConfidence: Type.Number({
+          minimum: 0,
+          maximum: 1,
+          default: 0.88,
+        }),
       },
       { default: {}, additionalProperties: false },
     ),

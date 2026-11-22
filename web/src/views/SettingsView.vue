@@ -85,6 +85,9 @@ interface RuntimeSettingsView {
     batchWindowMs: number;
     contextMessages: number;
     timeoutMs: number;
+    cooldownWindowMinutes: number;
+    proactiveSoftLimit: number;
+    cooldownMinConfidence: number;
   };
   policy: {
     privateDefaultEnabled: boolean;
@@ -987,6 +990,31 @@ onMounted(() => {
                     class="w-full"
                     :min="1000"
                     :step="1000"
+                  />
+                </NFormItem>
+                <NFormItem label="主动插话冷却窗口（分钟）">
+                  <NInputNumber
+                    v-model:value="settings.gateModel.cooldownWindowMinutes"
+                    class="w-full"
+                    :max="60"
+                    :min="1"
+                  />
+                </NFormItem>
+                <NFormItem label="主动插话软阈值（0 关闭）">
+                  <NInputNumber
+                    v-model:value="settings.gateModel.proactiveSoftLimit"
+                    class="w-full"
+                    :max="50"
+                    :min="0"
+                  />
+                </NFormItem>
+                <NFormItem label="冷却期非 @ 最低置信度">
+                  <NInputNumber
+                    v-model:value="settings.gateModel.cooldownMinConfidence"
+                    class="w-full"
+                    :max="1"
+                    :min="0"
+                    :step="0.05"
                   />
                 </NFormItem>
                 <NFormItem label="异常时 Fail-Closed（报错时默认忽略而非乱回）">

@@ -46,6 +46,15 @@ export interface GateContextLine {
   sentAt: number;
 }
 
+export interface GateBotActivity {
+  windowMinutes: number;
+  proactiveReplies: number;
+  totalReplies: number;
+  softLimit: number;
+  cooldownActive: boolean;
+  secondsSinceLastReply: number | null;
+}
+
 const GATE_SYSTEM_PROMPT = `你是 BITNP（网协）QQ 机器人“树莓娘”的消息分流小模型。
 你的职责是结合候选消息、近期上下文、记忆提示（memoryHints）与发言人角色（role：admin 为管理员/管理层，member 为在籍部员，guest 为外部或未绑定人员），决定每条候选消息该 reply（交给主模型回复或贴表情）、memory（后台静默记入长期记忆）还是 ignore（忽略）。
 
@@ -68,7 +77,8 @@ const GATE_SYSTEM_PROMPT = `你是 BITNP（网协）QQ 机器人“树莓娘”�
    - 首次出现的离谱要求、甩作业代写或轻度互动（如打招呼、发单个表情、戳一戳 [戳了戳树莓娘]、叫“回答我”等）：若为私聊、发言人为 admin（且非要求闭嘴）、或本群 memoryHints.chat 要求积极互动，则可放行一次 reply（交给主模型简短回应、傲娇拒绝或回戳/贴表情）；若默认安静群且仅为持续刷屏/纯起哄调戏，或树莓娘刚才已拒绝过对方仍在纠缠，则判 ignore。
 3. 旁听模式未 @ 且未引用树莓娘（mentionedBot = false 且 quotedBot = false）：
    - 默认宁静勿吵，不因“承接树莓娘上文”或“管理员轻度吐槽”就抢话；
-   - 仅在以下情况判 reply：① 明显在紧接着追问树莓娘刚说过的内容且确实需要树莓娘回答，② 提出了树莓娘可直接解决的明确请求，或 ③ 本群 memoryHints.chat 明确开启积极互动且语境自然适合回应。
+   - 结合 botActivity 防“越聊越嗨”：当 botActivity.cooldownActive = true（本群最近 windowMinutes 分钟内主动插话 proactiveReplies 已达软阈值 softLimit）时，说明树莓娘最近已经很活跃，务必显著提高非 @ 插话门槛——非明确追问或直接求助一律判 ignore（明确 @ 或引用树莓娘的消息不受冷却影响）；
+   - 仅在以下情况判 reply：① 明显在紧接着追问树莓娘刚说过的内容且确实需要树莓娘回答，② 提出了树莓娘可直接解决的明确请求，或 ③ 本群 memoryHints.chat 明确开启积极互动、语境自然适合回应且未处于冷却节流期。
 4. 静默记忆（仅限 role = "admin"）：
    - 长期记忆是每轮必注入的轻量“随身小本本”，**不是知识库**。仅当消息未要求当场回复、但明确产生了以下轻量事实时才判 memory：① 对树莓娘自身行为/发言/群活跃度或互动习惯的约定；② 成员称呼/外号/QQ身份映射、群别称或管理员个人稳定偏好；③ 管理员明确说“记下来/记住”的轻量规则；④ 极简且有时效的近期提醒/排期。
    - **以下内容属于知识库（Bunko）或任务看板（公会）范畴，严禁判 memory，直接 ignore**：群友讨论项目架构、技术实现方案、功能脑暴、优化待办、工作流程规范（SOP）、漏洞/故障长篇排查、会议形式偏好或协作工具说明。
@@ -97,7 +107,7 @@ export class SmallModelClassifier {
       users: Record<string, { key: string; summary: string }[]>;
     },
     senderRoles?: Record<string, AccessRole>,
-    trace?: { jobId?: number | null },
+    trace?: { jobId?: number | null; botActivity?: GateBotActivity },
   ): Promise<{
     results: CandidateClassification[];
     model: string;
@@ -139,6 +149,7 @@ export class SmallModelClassifier {
         return Boolean(qq && qq !== "all" && qq !== botQQ);
       });
 
+    const botActivity = trace?.botActivity;
     const inputPayload = {
       botNames: settings.bot.names,
       chat: {
@@ -147,6 +158,7 @@ export class SmallModelClassifier {
         title: chat.title,
         triggerMode: chat.triggerMode,
       },
+      ...(botActivity ? { botActivity } : {}),
       recentContext: recentContext.map((item) => ({
         id: item.id,
         sender: item.isBot ? "树莓娘(bot)" : item.senderName,
@@ -216,15 +228,24 @@ export class SmallModelClassifier {
           };
         }
 
-        if (
-          item.action === "reply" &&
-          item.confidence < gateCfg.minConfidence
-        ) {
+        const isDirect =
+          chat.kind === "private" ||
+          candidate.mentionedBot ||
+          candidate.quotedBot;
+        const cooldownActive =
+          !isDirect && Boolean(botActivity?.cooldownActive);
+        const requiredConfidence = cooldownActive
+          ? Math.max(gateCfg.minConfidence, gateCfg.cooldownMinConfidence)
+          : gateCfg.minConfidence;
+
+        if (item.action === "reply" && item.confidence < requiredConfidence) {
           return {
             messageId: candidate.id,
             action: "ignore",
             confidence: item.confidence,
-            reason: `置信度 ${item.confidence.toFixed(2)} 低于阈值 ${gateCfg.minConfidence.toFixed(2)}：${item.reason}`,
+            reason: cooldownActive
+              ? `冷却节流生效（近 ${botActivity!.windowMinutes} 分钟主动插话 ${botActivity!.proactiveReplies}/${botActivity!.softLimit} 次），置信度 ${item.confidence.toFixed(2)} 低于冷却阈值 ${requiredConfidence.toFixed(2)}：${item.reason}`
+              : `置信度 ${item.confidence.toFixed(2)} 低于阈值 ${requiredConfidence.toFixed(2)}：${item.reason}`,
           };
         }
 

@@ -795,3 +795,140 @@ test("memory_update exposes knownGroups so DM instructions can save chat-scoped 
   assert.match(dialogSystemPrompt, /三层存储分工/);
   assert.match(dialogSystemPrompt, /记忆落库铁律/);
 });
+
+test("gate proactive cooldown passes recent botActivity and raises non-mention reply threshold", async (t) => {
+  const capturedActivities: {
+    windowMinutes?: number;
+    proactiveReplies?: number;
+    totalReplies?: number;
+    softLimit?: number;
+    cooldownActive?: boolean;
+  }[] = [];
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const userPayload = JSON.parse(reqJson.messages[1]?.content ?? "{}") as {
+      botActivity?: {
+        windowMinutes: number;
+        proactiveReplies: number;
+        totalReplies: number;
+        softLimit: number;
+        cooldownActive: boolean;
+      };
+      candidates?: { messageId: number }[];
+    };
+
+    res.setHeader("Content-Type", "application/json");
+    if (!userPayload.candidates) {
+      res.end(JSON.stringify(chatReply({ units: [] })));
+
+      return;
+    }
+
+    if (userPayload.botActivity) {
+      capturedActivities.push(userPayload.botActivity);
+    }
+
+    res.end(
+      JSON.stringify(
+        chatReply({
+          decisions: userPayload.candidates.map((c) => ({
+            messageId: c.messageId,
+            action: "reply",
+            confidence: 0.78,
+            reason: "氛围不错可以接话",
+          })),
+        }),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gateBaseUrl: `${llmStub.url}/v1`,
+      mainBaseUrl: `${llmStub.url}/v1`,
+    },
+    {
+      gateModel: {
+        batchWindowMs: 100,
+        minConfidence: 0.65,
+        cooldownWindowMinutes: 10,
+        proactiveSoftLimit: 2,
+        cooldownMinConfidence: 0.88,
+      },
+      policy: { adminBypassGate: false },
+    },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "6666",
+    title: "吹水群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  // Seed 2 recent non-mention proactive replies in the 10-minute window.
+  for (let i = 1; i <= 2; i += 1) {
+    const prev = await captureText(app, {
+      kind: "group",
+      chatId: "6666",
+      id: `prev-proactive-${i}`,
+      userId: "2001",
+      senderName: "群友甲",
+      text: `闲聊 ${i}`,
+    });
+
+    await app.store.gate.record({
+      chatKey: "group:6666",
+      messageId: prev.message.id,
+      action: "reply",
+      stage: "l1_classifier",
+      confidence: 0.8,
+      reason: "主动接话",
+      model: "gate-test",
+      durationMs: 10,
+    });
+  }
+
+  // Next batch has 1 non-mention chatter (0.78 < 0.88 -> throttled to ignore)
+  // and 1 explicit @mention (0.78 >= 0.65 -> direct mention bypasses cooldown -> reply).
+  const nonAt = await captureText(app, {
+    kind: "group",
+    chatId: "6666",
+    id: "cool-nonat",
+    userId: "2002",
+    senderName: "群友乙",
+    text: "哈哈确实",
+  });
+  const directAt = await captureText(app, {
+    kind: "group",
+    chatId: "6666",
+    id: "cool-at",
+    userId: "2003",
+    senderName: "群友丙",
+    text: "@树莓娘 帮我看看",
+    mentionedBot: true,
+  });
+
+  await app.gate.ingest(nonAt.message);
+  await app.gate.ingest(directAt.message);
+  await delay(130);
+  await app.worker.drainOnce();
+
+  assert.equal(capturedActivities.length > 0, true);
+  assert.equal(capturedActivities[0]?.proactiveReplies, 2);
+  assert.equal(capturedActivities[0]?.cooldownActive, true);
+
+  const decisions = await app.store.gate.listByMessageIds([
+    nonAt.message.id,
+    directAt.message.id,
+  ]);
+
+  assert.equal(decisions.get(nonAt.message.id)?.[0]?.action, "ignore");
+  assert.match(decisions.get(nonAt.message.id)?.[0]?.reason ?? "", /冷却节流/);
+  assert.equal(decisions.get(directAt.message.id)?.[0]?.action, "reply");
+});

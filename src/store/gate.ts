@@ -254,4 +254,44 @@ export class GateDecisionsStore {
 
     return map;
   }
+
+  public async recentReplyStats(
+    chatKey: string,
+    windowMs: number,
+    now = Date.now(),
+  ): Promise<{
+    totalReplies: number;
+    proactiveReplies: number;
+    lastReplyAt: number | null;
+  }> {
+    const since = now - Math.max(0, windowMs);
+    const rows = await this.#database.db
+      .selectFrom("gate_decisions")
+      .leftJoin("messages", "messages.id", "gate_decisions.message_id")
+      .select([
+        "gate_decisions.created_at",
+        "messages.mentioned_bot",
+        "messages.quoted_bot",
+      ])
+      .where("gate_decisions.chat_key", "=", chatKey)
+      .where("gate_decisions.action", "=", "reply")
+      .where("gate_decisions.stage", "!=", "dry_run")
+      .where("gate_decisions.created_at", ">=", since)
+      .orderBy("gate_decisions.created_at", "desc")
+      .execute();
+
+    let proactiveReplies = 0;
+
+    for (const row of rows) {
+      if (row.mentioned_bot === 0 && row.quoted_bot === 0) {
+        proactiveReplies += 1;
+      }
+    }
+
+    return {
+      totalReplies: rows.length,
+      proactiveReplies,
+      lastReplyAt: rows[0]?.created_at ?? null,
+    };
+  }
 }

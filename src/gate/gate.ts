@@ -285,6 +285,34 @@ export class MessageGate {
       senderRoles[userId] = await this.#resolveSenderRole(userId, settings);
     }
 
+    const botActivity =
+      chat.kind === "group"
+        ? await (async () => {
+            const windowMinutes = settings.gateModel.cooldownWindowMinutes;
+            const softLimit = settings.gateModel.proactiveSoftLimit;
+            const stats = await this.#store.gate.recentReplyStats(
+              chat.chatKey,
+              windowMinutes * 60_000,
+            );
+
+            return {
+              windowMinutes,
+              proactiveReplies: stats.proactiveReplies,
+              totalReplies: stats.totalReplies,
+              softLimit,
+              cooldownActive:
+                softLimit > 0 && stats.proactiveReplies >= softLimit,
+              secondsSinceLastReply:
+                stats.lastReplyAt === null
+                  ? null
+                  : Math.max(
+                      0,
+                      Math.round((Date.now() - stats.lastReplyAt) / 1000),
+                    ),
+            };
+          })()
+        : undefined;
+
     const { results, model, durationMs } = await this.#classifier.classifyBatch(
       settings,
       chat,
@@ -292,7 +320,7 @@ export class MessageGate {
       await this.#enrichContextLines(chat.chatKey, recentContext),
       { global: memIndex.global, chat: memIndex.chat, users: userMems },
       senderRoles,
-      { jobId: job.id },
+      { jobId: job.id, botActivity },
     );
 
     const replyMessages: MessageRecord[] = [];
