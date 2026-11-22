@@ -409,6 +409,26 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   assert.equal(searchQFaceCatalog("㊗️").resolvedUnicodeId, "12951");
   assert.equal(searchQFaceCatalog("🥵").resolvedUnicodeId, undefined);
 
+  // Supported Unicode reaction emojis are searchable by emoji char, Chinese name, and associate words.
+  const breadByChar = searchQFaceCatalog("🍞");
+
+  assert.equal(breadByChar.resolvedUnicodeId, "127838");
+  assert.equal(breadByChar.total, 1);
+  assert.equal(breadByChar.items[0]?.emoji, "🍞");
+  assert.equal(breadByChar.items[0]?.kind, "unicode");
+  assert.ok(
+    searchQFaceCatalog("面包").items.some((item) => item.id === "127838"),
+  );
+  assert.ok(
+    searchQFaceCatalog("吐司").items.some((item) => item.id === "127838"),
+  );
+  assert.ok(
+    searchQFaceCatalog("庆祝").items.some((item) => item.id === "127881"),
+  );
+  assert.equal(resolveReactionEmojiId("面包"), "127838");
+  assert.equal(resolveReactionEmojiId("🎉"), "127881");
+  assert.equal(resolveReactionEmojiId("庆祝"), "320");
+
   const { url } = await app.listen();
   const { csrfToken } = (await (
     await fetch(`${url}/api/auth/status`)

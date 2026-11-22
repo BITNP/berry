@@ -244,7 +244,7 @@ export const qqDirectoryTool = defineTool({
 export const searchQqEmojisTool = defineTool({
   name: "search_qq_emojis",
   description:
-    "检索全部 380+ QQNT 官方原生表情（支持按中文名称、关键词联想词或数字 ID 搜索，也可传入白名单内的常用 Unicode Emoji 查其回应码点）。",
+    '检索全部 380+ QQNT 官方原生表情及 53 个白名单 Unicode 回应 Emoji（支持按中文名称、关键词联想词、Emoji 字符或数字 ID 搜索）。查到后在最终回复 JSON 的 units 中使用 kind="qq_reaction"（不要把 qq_reaction 当工具调用）。',
   parameters: Type.Object(
     {
       query: Type.Optional(Type.String()),
