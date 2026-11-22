@@ -195,7 +195,7 @@ export class GatewayDispatcher {
               type: "image",
               data: {
                 file: fileRef,
-                subType: 1,
+                sub_type: 1,
                 ...(summary ? { summary: `[${summary}]` } : {}),
               },
             },

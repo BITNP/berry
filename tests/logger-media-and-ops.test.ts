@@ -1715,13 +1715,13 @@ test("sticker library auto-collects group stickers, enforces review, searches vi
 
   assert.equal(sentPrivatePayloads.length, 2);
   const imagePayload = sentPrivatePayloads[1] as {
-    message?: { type: string; data: { file?: string; subType?: number } }[];
+    message?: { type: string; data: { file?: string; sub_type?: number } }[];
   };
   const imgSeg = imagePayload.message?.find((s) => s.type === "image");
 
   assert.ok(imgSeg);
   assert.ok(imgSeg.data.file?.startsWith("base64://"));
-  assert.equal(imgSeg.data.subType, 1);
+  assert.equal(imgSeg.data.sub_type, 1);
   assert.equal((await app.store.stickers.get(collected.id))?.useCount, 1);
 
   // 4) Admin manual upload endpoint validates image bytes and saves approved sticker.
