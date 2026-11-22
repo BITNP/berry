@@ -430,11 +430,13 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   assert.equal(qfaceName("129397"), "🥵");
   assert.equal(qfaceName("478"), "对的对的");
   assert.equal(qfaceName("179"), "doge");
+  assert.equal(qfaceName("277"), "汪汪");
   assert.equal(resolveReactionEmojiId("㊗️"), "12951");
   assert.equal(resolveReactionEmojiId("❤️"), "10084");
   assert.equal(resolveReactionEmojiId("👍"), "128077");
   assert.equal(resolveReactionEmojiId("对的对的"), "478");
-  assert.equal(resolveReactionEmojiId("狗头"), "179");
+  assert.equal(resolveReactionEmojiId("狗头"), "277");
+  assert.equal(searchQFaceCatalog("狗头").items[0]?.id, "277");
   assert.equal(resolveReactionEmojiId("76"), "76");
   assert.equal(resolveReactionEmojiId("12951"), "12951");
   assert.throws(() => resolveReactionEmojiId("🥵"), /不支持的表情回应/);

@@ -95,8 +95,11 @@ function extractSupportedUnicodeEmojiCodepoint(text: string): string | null {
 }
 
 // Common colloquial aliases that differ from QQNT's official `describe` text.
+// Note: QQ face 277 ("汪汪") is the actual Shiba Inu dog-head ("狗头"), whereas
+// legacy face 179 ("doge") renders as a blushing yellow side-eye face in QQNT.
 const QFACE_ALIASES: Record<string, string> = {
-  狗头: "179",
+  狗头: "277",
+  柴犬: "277",
   滑稽: "178",
   大拇指: "76",
   强: "76",
@@ -215,7 +218,7 @@ function stripDecorators(raw: string): string {
  * - Supported single Unicode emojis (`"㊗️"`, `"🔥"`, `"👍"`, `"❤️"`) resolve to
  *   their decimal Unicode codepoint.
  * - Official QQNT native face names & aliases (`"对的对的"`, `"吃瓜"`, `"狗头"`) resolve
- *   to their numeric QQ face ID (`"478"`, `"271"`, `"179"`).
+ *   to their numeric QQ face ID (`"478"`, `"271"`, `"277"`).
  */
 export function resolveReactionEmojiId(input: string): string {
   const cleaned = stripDecorators(input);
