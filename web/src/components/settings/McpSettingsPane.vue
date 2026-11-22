@@ -3,6 +3,7 @@ import { Plus, Trash2 } from "@lucide/vue";
 import type { DataTableColumns } from "naive-ui";
 import {
   NButton,
+  NCard,
   NDataTable,
   NDynamicTags,
   NForm,
@@ -300,35 +301,37 @@ const toolColumns: DataTableColumns<McpToolRow> = [
 </script>
 
 <template>
-  <div>
-    <div class="filter-bar">
-      <NButton size="small" type="primary" @click="openCreate">
-        <template #icon>
-          <Plus :size="14" />
-        </template>
-        新增 MCP 服务
-      </NButton>
-      <NText class="sub-note" depth="3">
-        修改服务后请点击右上角「保存全部设置」完成热重载。
-      </NText>
-    </div>
+  <div class="mcp-stack">
+    <NCard size="small" :title="`已配置服务（${servers.length}）`">
+      <template #header-extra>
+        <NSpace align="center" :size="10">
+          <NText class="sub-note" depth="3">保存全部设置后热重载</NText>
+          <NButton size="small" type="primary" @click="openCreate">
+            <template #icon>
+              <Plus :size="14" />
+            </template>
+            新增 MCP 服务
+          </NButton>
+        </NSpace>
+      </template>
 
-    <NDataTable
-      class="mb-lg"
-      :columns="serverColumns"
-      :data="servers"
-      :scroll-x="720"
-      size="small"
-    />
+      <NDataTable
+        :columns="serverColumns"
+        :data="servers"
+        :scroll-x="720"
+        size="small"
+      />
+    </NCard>
 
-    <div class="section-title">已挂载工具目录（{{ tools.length }}）</div>
-    <NDataTable
-      :columns="toolColumns"
-      :data="tools"
-      :pagination="{ pageSize: 10 }"
-      :scroll-x="740"
-      size="small"
-    />
+    <NCard size="small" :title="`已挂载工具目录（${tools.length}）`">
+      <NDataTable
+        :columns="toolColumns"
+        :data="tools"
+        :pagination="{ pageSize: 10 }"
+        :scroll-x="740"
+        size="small"
+      />
+    </NCard>
 
     <NModal
       v-model:show="modalOpen"
@@ -421,6 +424,12 @@ const toolColumns: DataTableColumns<McpToolRow> = [
 </template>
 
 <style scoped>
+.mcp-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .form-grid-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

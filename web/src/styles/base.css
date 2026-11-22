@@ -238,10 +238,6 @@ body {
   max-width: 100%;
 }
 
-.form-narrow {
-  max-width: 720px;
-}
-
 .modal-sm {
   width: 420px;
   max-width: 94vw;

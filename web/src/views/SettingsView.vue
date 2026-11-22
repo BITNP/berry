@@ -496,7 +496,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div>
+  <div class="settings-page">
     <div class="page-bar">
       <h1 class="page-title">系统设置</h1>
       <NSpace :size="8">
@@ -521,38 +521,15 @@ onMounted(() => {
       </NSpace>
     </div>
 
-    <NCard v-if="envSummary" class="mb-md" size="small">
-      <NCollapse>
-        <NCollapseItem name="env" title="环境变量摘要（只读）">
-          <NDescriptions
-            bordered
-            :column="2"
-            label-placement="left"
-            size="small"
-          >
-            <NDescriptionsItem label="Message Gateway">
-              <span class="mono">{{ envSummary.gatewayUrl || "未设置" }}</span>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="网关账号标识">
-              <span class="mono">
-                {{ envSummary.gatewayAccount || "默认" }}
-              </span>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="公会内部地址">
-              <span class="mono">{{ envSummary.guildApiUrl || "未设置" }}</span>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="OIDC 发行方">
-              <span class="mono">{{ envSummary.oidcIssuer || "未设置" }}</span>
-            </NDescriptionsItem>
-          </NDescriptions>
-        </NCollapseItem>
-      </NCollapse>
-    </NCard>
-
-    <NCard v-if="settings" size="small">
-      <NTabs v-model:value="activeTab" type="line">
-        <NTabPane name="bot" tab="基本信息">
-          <NForm class="form-narrow" label-placement="top" size="small">
+    <NTabs
+      v-if="settings"
+      v-model:value="activeTab"
+      class="settings-tabs"
+      type="line"
+    >
+      <NTabPane name="bot" tab="基本信息">
+        <NForm class="settings-stack" label-placement="top" size="small">
+          <NCard size="small" title="身份及应答节奏">
             <div class="form-grid-2">
               <NFormItem label="机器人 QQ 号">
                 <NInput
@@ -562,9 +539,6 @@ onMounted(() => {
               </NFormItem>
               <NFormItem label="时区">
                 <NInput v-model:value="settings.bot.timezone" />
-              </NFormItem>
-              <NFormItem label="暂停被动应答（保留后台消息采集）">
-                <NSwitch v-model:value="settings.bot.paused" />
               </NFormItem>
               <NFormItem label="多气泡最小间隔（毫秒，0 关闭）">
                 <NInputNumber
@@ -585,293 +559,358 @@ onMounted(() => {
                 />
               </NFormItem>
             </div>
+            <div class="toggle-list">
+              <div class="toggle-row">
+                <div class="toggle-info">
+                  <span class="toggle-label">暂停被动应答</span>
+                  <span class="toggle-desc">
+                    暂停群聊及私聊自动回复，仍保留后台消息采集
+                  </span>
+                </div>
+                <NSwitch v-model:value="settings.bot.paused" />
+              </div>
+            </div>
+          </NCard>
+
+          <NCard size="small" title="人设及触发称呼">
             <NFormItem label="触发别名（直呼其名或昵称识别）">
               <NDynamicTags v-model:value="settings.bot.names" />
             </NFormItem>
-            <NFormItem label="人设指令（Persona System Prompt）">
+            <NFormItem
+              label="人设指令（Persona System Prompt）"
+              :show-feedback="false"
+            >
               <NInput
                 v-model:value="settings.bot.personaPrompt"
-                :rows="5"
+                :rows="6"
                 type="textarea"
               />
             </NFormItem>
-          </NForm>
-        </NTabPane>
+          </NCard>
 
-        <NTabPane name="models" tab="模型参数">
-          <NSpace :size="14" vertical>
-            <NCard size="small" title="主对话模型（工具调用、长文回答）">
-              <div class="form-grid-2">
-                <NFormItem label="API Base URL">
-                  <NInput v-model:value="settings.mainModel.baseURL" />
-                </NFormItem>
-                <NFormItem label="API Key">
-                  <NInput
-                    v-model:value="settings.mainModel.apiKey"
-                    show-password-on="click"
-                    type="password"
-                  />
-                </NFormItem>
-                <NFormItem label="模型名">
-                  <NInput v-model:value="settings.mainModel.model" />
-                </NFormItem>
-                <NFormItem label="思考强度（默认）">
-                  <NSelect
-                    v-model:value="settings.mainModel.thinkingEffort"
-                    :options="THINKING_EFFORT_OPTIONS"
-                  />
-                </NFormItem>
-                <NFormItem label="上下文窗口（Tokens）">
-                  <NInputNumber
-                    v-model:value="settings.mainModel.contextTokens"
-                    class="w-full"
-                    :min="8192"
-                    :step="4096"
-                  />
-                </NFormItem>
-                <NFormItem label="单轮最大输出（Tokens）">
-                  <NInputNumber
-                    v-model:value="settings.mainModel.maxOutputTokens"
-                    class="w-full"
-                    :min="256"
-                    :step="512"
-                  />
-                </NFormItem>
-                <NFormItem label="温度（Temperature）">
-                  <NInputNumber
-                    v-model:value="settings.mainModel.temperature"
-                    class="w-full"
-                    :max="2"
-                    :min="0"
-                    :step="0.1"
-                  />
-                </NFormItem>
-                <NFormItem label="超时时间（毫秒）">
-                  <NInputNumber
-                    v-model:value="settings.mainModel.timeoutMs"
-                    class="w-full"
-                    :min="1000"
-                    :step="5000"
-                  />
-                </NFormItem>
-              </div>
-            </NCard>
-
-            <NCard size="small" title="分流小模型（无 @ 微批消息判定）">
-              <div class="form-grid-2">
-                <NFormItem label="API Base URL">
-                  <NInput v-model:value="settings.gateModel.baseURL" />
-                </NFormItem>
-                <NFormItem label="API Key">
-                  <NInput
-                    v-model:value="settings.gateModel.apiKey"
-                    show-password-on="click"
-                    type="password"
-                  />
-                </NFormItem>
-                <NFormItem label="模型名">
-                  <NInput v-model:value="settings.gateModel.model" />
-                </NFormItem>
-                <NFormItem label="最低放行置信度">
-                  <NInputNumber
-                    v-model:value="settings.gateModel.minConfidence"
-                    class="w-full"
-                    :max="1"
-                    :min="0"
-                    :step="0.05"
-                  />
-                </NFormItem>
-                <NFormItem label="微批合并窗口（毫秒）">
-                  <NInputNumber
-                    v-model:value="settings.gateModel.batchWindowMs"
-                    class="w-full"
-                    :max="10000"
-                    :min="100"
-                    :step="100"
-                  />
-                </NFormItem>
-                <NFormItem label="上下文消息条数">
-                  <NInputNumber
-                    v-model:value="settings.gateModel.contextMessages"
-                    class="w-full"
-                    :max="40"
-                    :min="0"
-                  />
-                </NFormItem>
-                <NFormItem label="超时时间（毫秒）">
-                  <NInputNumber
-                    v-model:value="settings.gateModel.timeoutMs"
-                    class="w-full"
-                    :min="1000"
-                    :step="1000"
-                  />
-                </NFormItem>
-                <NFormItem label="主动插话冷却窗口（分钟）">
-                  <NInputNumber
-                    v-model:value="settings.gateModel.cooldownWindowMinutes"
-                    class="w-full"
-                    :max="60"
-                    :min="1"
-                  />
-                </NFormItem>
-                <NFormItem label="主动插话软阈值（0 关闭）">
-                  <NInputNumber
-                    v-model:value="settings.gateModel.proactiveSoftLimit"
-                    class="w-full"
-                    :max="50"
-                    :min="0"
-                  />
-                </NFormItem>
-                <NFormItem label="冷却期非 @ 最低置信度">
-                  <NInputNumber
-                    v-model:value="settings.gateModel.cooldownMinConfidence"
-                    class="w-full"
-                    :max="1"
-                    :min="0"
-                    :step="0.05"
-                  />
-                </NFormItem>
-                <NFormItem label="异常时 Fail-Closed（报错时默认忽略而非乱回）">
-                  <NSwitch v-model:value="settings.gateModel.failClosed" />
-                </NFormItem>
-              </div>
-            </NCard>
-
-            <NCard
-              v-if="thinkingTasks.length > 0"
-              size="small"
-              title="按任务覆盖参数（思考强度 / 输出上限）"
-            >
-              <template #header-extra>
-                <NSpace align="center" :size="8">
-                  <NTag v-if="taskOverrideCount > 0" size="small" type="info">
-                    已覆盖 {{ taskOverrideCount }} 项
-                  </NTag>
-                  <NText v-else class="sub-note" depth="3">全部默认</NText>
-                  <NButton
-                    v-if="taskOverrideCount > 0"
-                    quaternary
-                    size="tiny"
-                    @click="resetAllTaskOverrides"
-                  >
-                    全部恢复默认
-                  </NButton>
-                </NSpace>
-              </template>
-              <div class="task-override-table">
-                <div class="task-override-head">
-                  <span>任务</span>
-                  <span>思考强度</span>
-                  <span>最大输出（Tokens）</span>
-                </div>
-                <div
-                  v-for="task in thinkingTasks"
-                  :key="task.key"
-                  class="task-override-row"
+          <NCard v-if="envSummary" size="small">
+            <NCollapse>
+              <NCollapseItem name="env" title="环境变量摘要（只读）">
+                <NDescriptions
+                  bordered
+                  :column="2"
+                  label-placement="left"
+                  size="small"
                 >
-                  <div class="task-override-name">
-                    <span class="task-override-label">{{ task.label }}</span>
-                    <span class="mono task-override-key">{{ task.key }}</span>
-                  </div>
-                  <NSelect
-                    v-if="task.supportsThinking !== false"
-                    class="w-150"
-                    clearable
-                    :options="THINKING_EFFORT_OPTIONS"
-                    :placeholder="`默认 (${THINKING_SHORT_LABEL[defaultThinkingForTask(task)]})`"
-                    size="small"
-                    :value="
-                      settings.mainModel.taskThinkingEffort[task.key] ?? null
-                    "
-                    @update:value="
-                      (val: ThinkingEffort | null) =>
-                        setTaskThinking(task.key, val)
-                    "
-                  />
-                  <NText v-else class="sub-note" depth="3">—</NText>
-                  <NInputNumber
-                    class="w-165"
-                    clearable
-                    :max="65536"
-                    :min="64"
-                    :placeholder="`默认 (${defaultMaxOutputForTask(task)})`"
-                    :show-button="false"
-                    size="small"
-                    :step="256"
-                    :value="
-                      settings.mainModel.taskMaxOutputTokens[task.key] ?? null
-                    "
-                    @update:value="
-                      (val: number | null) =>
-                        setTaskMaxOutputTokens(task.key, val)
-                    "
-                  />
-                </div>
-              </div>
-            </NCard>
-          </NSpace>
-        </NTabPane>
+                  <NDescriptionsItem label="Message Gateway">
+                    <span class="mono">
+                      {{ envSummary.gatewayUrl || "未设置" }}
+                    </span>
+                  </NDescriptionsItem>
+                  <NDescriptionsItem label="网关账号标识">
+                    <span class="mono">
+                      {{ envSummary.gatewayAccount || "默认" }}
+                    </span>
+                  </NDescriptionsItem>
+                  <NDescriptionsItem label="公会内部地址">
+                    <span class="mono">
+                      {{ envSummary.guildApiUrl || "未设置" }}
+                    </span>
+                  </NDescriptionsItem>
+                  <NDescriptionsItem label="OIDC 发行方">
+                    <span class="mono">
+                      {{ envSummary.oidcIssuer || "未设置" }}
+                    </span>
+                  </NDescriptionsItem>
+                </NDescriptions>
+              </NCollapseItem>
+            </NCollapse>
+          </NCard>
+        </NForm>
+      </NTabPane>
 
-        <NTabPane name="media" tab="多模态识别">
-          <NForm class="form-narrow" label-placement="top" size="small">
-            <NCard class="mb-md" size="small" title="图片识别">
-              <div class="form-grid-2">
-                <NFormItem label="入站自动识别图片内容">
-                  <NSwitch v-model:value="settings.media.autoAnalyzeImages" />
-                </NFormItem>
-                <NFormItem label="自动展开合并转发消息">
-                  <NSwitch v-model:value="settings.media.expandForwards" />
-                </NFormItem>
-                <NFormItem label="视觉模型 Base URL（留空则沿用主模型）">
-                  <NInput v-model:value="settings.media.visionBaseURL" />
-                </NFormItem>
-                <NFormItem label="视觉模型 API Key（留空则沿用主模型）">
-                  <NInput
-                    v-model:value="settings.media.visionApiKey"
-                    show-password-on="click"
-                    type="password"
-                  />
-                </NFormItem>
-                <NFormItem label="视觉模型名称">
-                  <NInput
-                    v-model:value="settings.media.visionModel"
-                    placeholder="留空则使用 mainModel.model"
-                  />
-                </NFormItem>
-              </div>
-            </NCard>
-
-            <NCard size="small" title="语音转写">
-              <div class="form-grid-2">
-                <NFormItem label="自动转写 QQ 语音消息">
-                  <NSwitch v-model:value="settings.media.autoTranscribeAudio" />
-                </NFormItem>
-                <NFormItem label="Whisper 模型名称">
-                  <NInput v-model:value="settings.media.audioModel" />
-                </NFormItem>
-                <NFormItem label="语音转写 Base URL">
-                  <NInput v-model:value="settings.media.audioBaseURL" />
-                </NFormItem>
-                <NFormItem label="语音转写 API Key">
-                  <NInput
-                    v-model:value="settings.media.audioApiKey"
-                    show-password-on="click"
-                    type="password"
-                  />
-                </NFormItem>
-              </div>
-            </NCard>
-          </NForm>
-        </NTabPane>
-
-        <NTabPane name="policy" tab="门控策略">
-          <NForm class="form-narrow" label-placement="top" size="small">
+      <NTabPane name="models" tab="模型参数">
+        <NForm class="settings-stack" label-placement="top" size="small">
+          <NCard size="small" title="主对话模型（工具调用、长文回答）">
             <div class="form-grid-2">
-              <NFormItem label="新私聊默认启用">
-                <NSwitch
-                  v-model:value="settings.policy.privateDefaultEnabled"
+              <NFormItem label="API Base URL">
+                <NInput v-model:value="settings.mainModel.baseURL" />
+              </NFormItem>
+              <NFormItem label="API Key">
+                <NInput
+                  v-model:value="settings.mainModel.apiKey"
+                  show-password-on="click"
+                  type="password"
                 />
               </NFormItem>
+              <NFormItem label="模型名">
+                <NInput v-model:value="settings.mainModel.model" />
+              </NFormItem>
+              <NFormItem label="思考强度（默认）">
+                <NSelect
+                  v-model:value="settings.mainModel.thinkingEffort"
+                  :options="THINKING_EFFORT_OPTIONS"
+                />
+              </NFormItem>
+              <NFormItem label="上下文窗口（Tokens）">
+                <NInputNumber
+                  v-model:value="settings.mainModel.contextTokens"
+                  class="w-full"
+                  :min="8192"
+                  :step="4096"
+                />
+              </NFormItem>
+              <NFormItem label="单轮最大输出（Tokens）">
+                <NInputNumber
+                  v-model:value="settings.mainModel.maxOutputTokens"
+                  class="w-full"
+                  :min="256"
+                  :step="512"
+                />
+              </NFormItem>
+              <NFormItem label="温度（Temperature）" :show-feedback="false">
+                <NInputNumber
+                  v-model:value="settings.mainModel.temperature"
+                  class="w-full"
+                  :max="2"
+                  :min="0"
+                  :step="0.1"
+                />
+              </NFormItem>
+              <NFormItem label="超时时间（毫秒）" :show-feedback="false">
+                <NInputNumber
+                  v-model:value="settings.mainModel.timeoutMs"
+                  class="w-full"
+                  :min="1000"
+                  :step="5000"
+                />
+              </NFormItem>
+            </div>
+          </NCard>
+
+          <NCard size="small" title="分流小模型（无 @ 微批消息判定）">
+            <div class="form-grid-2">
+              <NFormItem label="API Base URL">
+                <NInput v-model:value="settings.gateModel.baseURL" />
+              </NFormItem>
+              <NFormItem label="API Key">
+                <NInput
+                  v-model:value="settings.gateModel.apiKey"
+                  show-password-on="click"
+                  type="password"
+                />
+              </NFormItem>
+              <NFormItem label="模型名">
+                <NInput v-model:value="settings.gateModel.model" />
+              </NFormItem>
+              <NFormItem label="最低放行置信度">
+                <NInputNumber
+                  v-model:value="settings.gateModel.minConfidence"
+                  class="w-full"
+                  :max="1"
+                  :min="0"
+                  :step="0.05"
+                />
+              </NFormItem>
+              <NFormItem label="微批合并窗口（毫秒）">
+                <NInputNumber
+                  v-model:value="settings.gateModel.batchWindowMs"
+                  class="w-full"
+                  :max="10000"
+                  :min="100"
+                  :step="100"
+                />
+              </NFormItem>
+              <NFormItem label="上下文消息条数">
+                <NInputNumber
+                  v-model:value="settings.gateModel.contextMessages"
+                  class="w-full"
+                  :max="40"
+                  :min="0"
+                />
+              </NFormItem>
+              <NFormItem label="超时时间（毫秒）">
+                <NInputNumber
+                  v-model:value="settings.gateModel.timeoutMs"
+                  class="w-full"
+                  :min="1000"
+                  :step="1000"
+                />
+              </NFormItem>
+              <NFormItem label="主动插话冷却窗口（分钟）">
+                <NInputNumber
+                  v-model:value="settings.gateModel.cooldownWindowMinutes"
+                  class="w-full"
+                  :max="60"
+                  :min="1"
+                />
+              </NFormItem>
+              <NFormItem label="主动插话软阈值（0 关闭）">
+                <NInputNumber
+                  v-model:value="settings.gateModel.proactiveSoftLimit"
+                  class="w-full"
+                  :max="50"
+                  :min="0"
+                />
+              </NFormItem>
+              <NFormItem label="冷却期非 @ 最低置信度">
+                <NInputNumber
+                  v-model:value="settings.gateModel.cooldownMinConfidence"
+                  class="w-full"
+                  :max="1"
+                  :min="0"
+                  :step="0.05"
+                />
+              </NFormItem>
+            </div>
+            <div class="toggle-list">
+              <div class="toggle-row">
+                <div class="toggle-info">
+                  <span class="toggle-label">异常时 Fail-Closed</span>
+                  <span class="toggle-desc">
+                    分流报错时默认忽略而非放行乱回
+                  </span>
+                </div>
+                <NSwitch v-model:value="settings.gateModel.failClosed" />
+              </div>
+            </div>
+          </NCard>
+
+          <NCard
+            v-if="thinkingTasks.length > 0"
+            size="small"
+            title="按任务覆盖参数（思考强度 / 输出上限）"
+          >
+            <template #header-extra>
+              <NSpace align="center" :size="8">
+                <NTag v-if="taskOverrideCount > 0" size="small" type="info">
+                  已覆盖 {{ taskOverrideCount }} 项
+                </NTag>
+                <NText v-else class="sub-note" depth="3">全部默认</NText>
+                <NButton
+                  v-if="taskOverrideCount > 0"
+                  quaternary
+                  size="tiny"
+                  @click="resetAllTaskOverrides"
+                >
+                  全部恢复默认
+                </NButton>
+              </NSpace>
+            </template>
+            <div class="task-override-table">
+              <div class="task-override-head">
+                <span>任务</span>
+                <span>思考强度</span>
+                <span>最大输出（Tokens）</span>
+              </div>
+              <div
+                v-for="task in thinkingTasks"
+                :key="task.key"
+                class="task-override-row"
+              >
+                <div class="task-override-name">
+                  <span class="task-override-label">{{ task.label }}</span>
+                  <span class="mono task-override-key">{{ task.key }}</span>
+                </div>
+                <NSelect
+                  v-if="task.supportsThinking !== false"
+                  class="w-150"
+                  clearable
+                  :options="THINKING_EFFORT_OPTIONS"
+                  :placeholder="`默认 (${THINKING_SHORT_LABEL[defaultThinkingForTask(task)]})`"
+                  size="small"
+                  :value="
+                    settings.mainModel.taskThinkingEffort[task.key] ?? null
+                  "
+                  @update:value="
+                    (val: ThinkingEffort | null) =>
+                      setTaskThinking(task.key, val)
+                  "
+                />
+                <NText v-else class="sub-note" depth="3">—</NText>
+                <NInputNumber
+                  class="w-165"
+                  clearable
+                  :max="65536"
+                  :min="64"
+                  :placeholder="`默认 (${defaultMaxOutputForTask(task)})`"
+                  :show-button="false"
+                  size="small"
+                  :step="256"
+                  :value="
+                    settings.mainModel.taskMaxOutputTokens[task.key] ?? null
+                  "
+                  @update:value="
+                    (val: number | null) =>
+                      setTaskMaxOutputTokens(task.key, val)
+                  "
+                />
+              </div>
+            </div>
+          </NCard>
+        </NForm>
+      </NTabPane>
+
+      <NTabPane name="media" tab="多模态识别">
+        <NForm class="settings-stack" label-placement="top" size="small">
+          <NCard size="small" title="图片识别">
+            <template #header-extra>
+              <NSpace align="center" :size="8">
+                <NText class="sub-note" depth="3">入站自动识图</NText>
+                <NSwitch v-model:value="settings.media.autoAnalyzeImages" />
+              </NSpace>
+            </template>
+            <div class="form-grid-2">
+              <NFormItem label="视觉模型 Base URL（留空沿用主模型）">
+                <NInput v-model:value="settings.media.visionBaseURL" />
+              </NFormItem>
+              <NFormItem label="视觉模型 API Key（留空沿用主模型）">
+                <NInput
+                  v-model:value="settings.media.visionApiKey"
+                  show-password-on="click"
+                  type="password"
+                />
+              </NFormItem>
+              <NFormItem label="视觉模型名称">
+                <NInput
+                  v-model:value="settings.media.visionModel"
+                  placeholder="留空则使用 mainModel.model"
+                />
+              </NFormItem>
+            </div>
+            <div class="toggle-list">
+              <div class="toggle-row">
+                <span class="toggle-label">自动展开合并转发消息</span>
+                <NSwitch v-model:value="settings.media.expandForwards" />
+              </div>
+            </div>
+          </NCard>
+
+          <NCard size="small" title="语音转写">
+            <template #header-extra>
+              <NSpace align="center" :size="8">
+                <NText class="sub-note" depth="3">自动转写 QQ 语音</NText>
+                <NSwitch v-model:value="settings.media.autoTranscribeAudio" />
+              </NSpace>
+            </template>
+            <div class="form-grid-2">
+              <NFormItem label="语音转写 Base URL">
+                <NInput v-model:value="settings.media.audioBaseURL" />
+              </NFormItem>
+              <NFormItem label="语音转写 API Key">
+                <NInput
+                  v-model:value="settings.media.audioApiKey"
+                  show-password-on="click"
+                  type="password"
+                />
+              </NFormItem>
+              <NFormItem label="Whisper 模型名称" :show-feedback="false">
+                <NInput v-model:value="settings.media.audioModel" />
+              </NFormItem>
+            </div>
+          </NCard>
+        </NForm>
+      </NTabPane>
+
+      <NTabPane name="policy" tab="门控策略">
+        <NForm class="settings-stack" label-placement="top" size="small">
+          <NCard size="small" title="默认接入策略">
+            <div class="form-grid-2">
               <NFormItem label="私聊响应范围">
                 <NSelect
                   v-model:value="settings.policy.privateAccessMode"
@@ -901,48 +940,69 @@ onMounted(() => {
                   ]"
                 />
               </NFormItem>
-              <NFormItem label="管理员直连跳过小模型（@/引用/私聊）">
-                <NSwitch v-model:value="settings.policy.adminBypassGate" />
-              </NFormItem>
             </div>
+            <div class="toggle-list">
+              <div class="toggle-row">
+                <span class="toggle-label">新私聊默认启用</span>
+                <NSwitch
+                  v-model:value="settings.policy.privateDefaultEnabled"
+                />
+              </div>
+              <div class="toggle-row">
+                <div class="toggle-info">
+                  <span class="toggle-label">管理员直连跳过小模型</span>
+                  <span class="toggle-desc">
+                    管理员 @ / 引用 / 私聊消息直接进入主对话
+                  </span>
+                </div>
+                <NSwitch v-model:value="settings.policy.adminBypassGate" />
+              </div>
+            </div>
+          </NCard>
+
+          <NCard size="small" title="权限白名单">
             <NFormItem label="管理员 QQ 列表">
               <NDynamicTags v-model:value="settings.policy.adminQQs" />
             </NFormItem>
             <NFormItem
               label="允许群聊白名单（留空不限制，填写后仅监听和响应指定群号）"
+              :show-feedback="false"
             >
               <NDynamicTags v-model:value="settings.policy.allowedGroups" />
             </NFormItem>
-          </NForm>
-        </NTabPane>
+          </NCard>
+        </NForm>
+      </NTabPane>
 
-        <NTabPane name="digest" tab="文库与摘要">
-          <div v-if="envSummary" class="filter-bar mb-md">
-            <NTag
-              size="small"
-              :type="envSummary.bunkoConfigured ? 'success' : 'default'"
-            >
-              Bunko 云文档：{{
-                envSummary.bunkoConfigured ? "已接入" : "未配置"
-              }}
-            </NTag>
-            <NButton
-              v-if="envSummary.bunkoPublicUrl"
-              :href="envSummary.bunkoPublicUrl"
-              rel="noopener noreferrer"
-              size="small"
-              tag="a"
-              target="_blank"
-            >
-              <template #icon>
-                <ExternalLink :size="14" />
-              </template>
-              打开 Bunko 云文档
-            </NButton>
-          </div>
-          <NForm class="form-narrow" label-placement="top" size="small">
+      <NTabPane name="digest" tab="文库摘要">
+        <NForm class="settings-stack" label-placement="top" size="small">
+          <NCard size="small" title="Bunko 云文档">
+            <template #header-extra>
+              <NSpace align="center" :size="8">
+                <NTag
+                  size="small"
+                  :type="envSummary?.bunkoConfigured ? 'success' : 'default'"
+                >
+                  {{ envSummary?.bunkoConfigured ? "已接入" : "未配置" }}
+                </NTag>
+                <NButton
+                  v-if="envSummary?.bunkoPublicUrl"
+                  :href="envSummary.bunkoPublicUrl"
+                  rel="noopener noreferrer"
+                  size="tiny"
+                  tag="a"
+                  target="_blank"
+                >
+                  <template #icon>
+                    <ExternalLink :size="12" />
+                  </template>
+                  打开云文档
+                </NButton>
+              </NSpace>
+            </template>
             <NFormItem
-              label="树莓娘自动记录默认目录（非主动要求记录的内容默认写入此处）"
+              label="自动记录默认目录（非主动要求记录的内容默认写入此处）"
+              :show-feedback="false"
             >
               <NSelect
                 v-if="bunkoFolders.length > 0"
@@ -961,10 +1021,16 @@ onMounted(() => {
                 placeholder="可选 Bunko 目录 UUID（留空写根目录）"
               />
             </NFormItem>
-            <div class="form-grid-2">
-              <NFormItem label="定期生成群聊讨论摘要">
+          </NCard>
+
+          <NCard size="small" title="群聊讨论摘要">
+            <template #header-extra>
+              <NSpace align="center" :size="8">
+                <NText class="sub-note" depth="3">定期生成</NText>
                 <NSwitch v-model:value="settings.groupDigest.enabled" />
-              </NFormItem>
+              </NSpace>
+            </template>
+            <div class="form-grid-3">
               <NFormItem label="巡检间隔（分钟）">
                 <NInputNumber
                   v-model:value="settings.groupDigest.intervalMinutes"
@@ -979,7 +1045,7 @@ onMounted(() => {
                   :min="1"
                 />
               </NFormItem>
-              <NFormItem label="群聊摘要目标目录（留空写入工作区根目录）">
+              <NFormItem label="目标目录（留空写根目录）">
                 <NSelect
                   v-if="bunkoFolders.length > 0"
                   clearable
@@ -994,94 +1060,107 @@ onMounted(() => {
                 <NInput
                   v-else
                   v-model:value="settings.groupDigest.folderId"
-                  placeholder="可选 Bunko 目录 UUID（留空写根目录）"
+                  placeholder="可选 Bunko 目录 UUID"
                 />
               </NFormItem>
             </div>
             <NFormItem label="纳入摘要的群号列表">
               <NDynamicTags v-model:value="settings.groupDigest.groups" />
             </NFormItem>
-            <NFormItem label="摘要整理提示词">
+            <NFormItem label="摘要整理提示词" :show-feedback="false">
               <NInput
                 v-model:value="settings.groupDigest.prompt"
                 :rows="3"
                 type="textarea"
               />
             </NFormItem>
-          </NForm>
-        </NTabPane>
+          </NCard>
+        </NForm>
+      </NTabPane>
 
-        <NTabPane name="guild" tab="公会联动">
-          <div v-if="envSummary" class="filter-bar mb-md">
-            <NTag
-              size="small"
-              :type="envSummary.guildConfigured ? 'success' : 'default'"
-            >
-              公会接口：{{ envSummary.guildConfigured ? "已就绪" : "未配置" }}
-            </NTag>
-            <NTag
-              size="small"
-              :type="envSummary.guildStreamConnected ? 'success' : 'default'"
-            >
-              实时事件流：{{
-                envSummary.guildStreamConnected ? "已连接" : "未连接"
-              }}
-            </NTag>
-            <NButton
-              v-if="envSummary.guildPublicUrl"
-              :href="envSummary.guildPublicUrl"
-              rel="noopener noreferrer"
-              size="small"
-              tag="a"
-              target="_blank"
-            >
-              <template #icon>
-                <ExternalLink :size="14" />
-              </template>
-              打开公会看板
-            </NButton>
-            <NButton
-              :disabled="!envSummary.guildConfigured"
-              :loading="triggeringGuild === 'due'"
-              size="small"
-              @click="triggerGuildTask('due')"
-            >
-              触发到期提醒
-            </NButton>
-            <NButton
-              :disabled="!envSummary.guildConfigured"
-              :loading="triggeringGuild === 'assignments'"
-              size="small"
-              @click="triggerGuildTask('assignments')"
-            >
-              触发新指派通知
-            </NButton>
-            <NButton
-              :disabled="
-                !envSummary.guildConfigured || !envSummary.bunkoConfigured
-              "
-              :loading="triggeringGuild === 'weekly'"
-              size="small"
-              @click="triggerGuildTask('weekly')"
-            >
-              生成本周周报
-            </NButton>
-          </div>
-          <NForm class="form-narrow" label-placement="top" size="small">
-            <div class="form-grid-2">
-              <NFormItem label="开启公会自动巡检">
+      <NTabPane name="guild" tab="公会联动">
+        <NForm class="settings-stack" label-placement="top" size="small">
+          <NCard v-if="envSummary" size="small" title="连接状态及手动触发">
+            <template #header-extra>
+              <NButton
+                v-if="envSummary.guildPublicUrl"
+                :href="envSummary.guildPublicUrl"
+                rel="noopener noreferrer"
+                size="tiny"
+                tag="a"
+                target="_blank"
+              >
+                <template #icon>
+                  <ExternalLink :size="12" />
+                </template>
+                打开公会看板
+              </NButton>
+            </template>
+            <div class="guild-status-bar">
+              <NSpace align="center" :size="8">
+                <NTag
+                  size="small"
+                  :type="envSummary.guildConfigured ? 'success' : 'default'"
+                >
+                  公会接口：{{
+                    envSummary.guildConfigured ? "已就绪" : "未配置"
+                  }}
+                </NTag>
+                <NTag
+                  size="small"
+                  :type="
+                    envSummary.guildStreamConnected ? 'success' : 'default'
+                  "
+                >
+                  实时事件流：{{
+                    envSummary.guildStreamConnected ? "已连接" : "未连接"
+                  }}
+                </NTag>
+              </NSpace>
+              <NSpace :size="8" wrap>
+                <NButton
+                  :disabled="!envSummary.guildConfigured"
+                  :loading="triggeringGuild === 'due'"
+                  size="small"
+                  @click="triggerGuildTask('due')"
+                >
+                  触发到期提醒
+                </NButton>
+                <NButton
+                  :disabled="!envSummary.guildConfigured"
+                  :loading="triggeringGuild === 'assignments'"
+                  size="small"
+                  @click="triggerGuildTask('assignments')"
+                >
+                  触发新指派通知
+                </NButton>
+                <NButton
+                  :disabled="
+                    !envSummary.guildConfigured || !envSummary.bunkoConfigured
+                  "
+                  :loading="triggeringGuild === 'weekly'"
+                  size="small"
+                  @click="triggerGuildTask('weekly')"
+                >
+                  生成本周周报
+                </NButton>
+              </NSpace>
+            </div>
+          </NCard>
+
+          <NCard size="small" title="自动巡检规则">
+            <template #header-extra>
+              <NSpace align="center" :size="8">
+                <NText class="sub-note" depth="3">开启自动巡检</NText>
                 <NSwitch v-model:value="settings.guildAutomation.enabled" />
-              </NFormItem>
+              </NSpace>
+            </template>
+            <div class="form-grid-3">
               <NFormItem label="巡检周期（秒）">
                 <NInputNumber
                   v-model:value="settings.guildAutomation.pollSeconds"
                   class="w-full"
                   :min="10"
-                />
-              </NFormItem>
-              <NFormItem label="开启临期提醒">
-                <NSwitch
-                  v-model:value="settings.guildAutomation.dueReminderEnabled"
                 />
               </NFormItem>
               <NFormItem label="临期提前小时数">
@@ -1092,17 +1171,7 @@ onMounted(() => {
                   :step="1"
                 />
               </NFormItem>
-              <NFormItem label="开启新指派私信提醒">
-                <NSwitch
-                  v-model:value="settings.guildAutomation.assignmentsEnabled"
-                />
-              </NFormItem>
-              <NFormItem label="开启每周公会周报">
-                <NSwitch
-                  v-model:value="settings.guildAutomation.weeklyReportEnabled"
-                />
-              </NFormItem>
-              <NFormItem label="Bunko 周报归档目录（留空写入工作区根目录）">
+              <NFormItem label="Bunko 周报归档目录">
                 <NSelect
                   v-if="bunkoFolders.length > 0"
                   clearable
@@ -1117,154 +1186,267 @@ onMounted(() => {
                 <NInput
                   v-else
                   v-model:value="settings.guildAutomation.weeklyFolderId"
-                  placeholder="可选 Bunko 目录 UUID（留空写根目录）"
+                  placeholder="留空写工作区根目录"
                 />
               </NFormItem>
-              <NFormItem label="自定义周报触发时刻">
-                <NSwitch v-model:value="customWeeklyEnabled" />
-              </NFormItem>
             </div>
-
-            <div v-if="customWeeklyEnabled" class="form-grid-2">
-              <NFormItem label="每周触发日">
+            <div class="toggle-list">
+              <div class="toggle-row">
+                <span class="toggle-label">开启临期提醒</span>
+                <NSwitch
+                  v-model:value="settings.guildAutomation.dueReminderEnabled"
+                />
+              </div>
+              <div class="toggle-row">
+                <span class="toggle-label">开启新指派私信提醒</span>
+                <NSwitch
+                  v-model:value="settings.guildAutomation.assignmentsEnabled"
+                />
+              </div>
+              <div class="toggle-row">
+                <span class="toggle-label">开启每周公会周报</span>
+                <NSwitch
+                  v-model:value="settings.guildAutomation.weeklyReportEnabled"
+                />
+              </div>
+              <div class="toggle-row">
+                <span class="toggle-label">自定义周报触发时刻</span>
+                <NSwitch v-model:value="customWeeklyEnabled" />
+              </div>
+            </div>
+            <div v-if="customWeeklyEnabled" class="form-grid-2 mt-md">
+              <NFormItem label="每周触发日" :show-feedback="false">
                 <NSelect
                   v-model:value="weeklyDays"
                   multiple
                   :options="weekdayOptions"
                 />
               </NFormItem>
-              <NFormItem label="触发时刻（HH:mm）">
+              <NFormItem label="触发时刻（HH:mm）" :show-feedback="false">
                 <NInput v-model:value="weeklyTime" placeholder="20:00" />
               </NFormItem>
             </div>
-          </NForm>
-        </NTabPane>
+          </NCard>
+        </NForm>
+      </NTabPane>
 
-        <NTabPane name="social" tab="拟人互动">
-          <NForm class="form-narrow" label-placement="top" size="small">
-            <NCard class="mb-md" size="small" title="分群表达风格提炼">
-              <div class="form-grid-2">
-                <NFormItem label="后台定时提炼群聊风格">
-                  <NSwitch
-                    v-model:value="settings.social.styleDistillEnabled"
-                  />
-                </NFormItem>
-                <NFormItem label="提炼周期（小时）">
-                  <NInputNumber
-                    v-model:value="settings.social.styleDistillIntervalHours"
-                    class="w-full"
-                    :max="168"
-                    :min="1"
-                  />
-                </NFormItem>
-                <NFormItem label="周期内最少新增消息数">
-                  <NInputNumber
-                    v-model:value="settings.social.styleDistillMinMessages"
-                    class="w-full"
-                    :max="500"
-                    :min="10"
-                  />
-                </NFormItem>
+      <NTabPane name="social" tab="拟人互动">
+        <NForm class="settings-stack" label-placement="top" size="small">
+          <NCard size="small" title="分群表达风格提炼">
+            <template #header-extra>
+              <NSpace align="center" :size="8">
+                <NText class="sub-note" depth="3">后台定时提炼</NText>
+                <NSwitch v-model:value="settings.social.styleDistillEnabled" />
+              </NSpace>
+            </template>
+            <div class="form-grid-2">
+              <NFormItem label="提炼周期（小时）" :show-feedback="false">
+                <NInputNumber
+                  v-model:value="settings.social.styleDistillIntervalHours"
+                  class="w-full"
+                  :max="168"
+                  :min="1"
+                />
+              </NFormItem>
+              <NFormItem label="周期内最少新增消息数" :show-feedback="false">
+                <NInputNumber
+                  v-model:value="settings.social.styleDistillMinMessages"
+                  class="w-full"
+                  :max="500"
+                  :min="10"
+                />
+              </NFormItem>
+            </div>
+          </NCard>
+
+          <NCard size="small" title="群内黑话词典提炼">
+            <template #header-extra>
+              <NSpace align="center" :size="8">
+                <NText class="sub-note" depth="3">后台自动提炼</NText>
+                <NSwitch v-model:value="settings.social.jargonLearnEnabled" />
+              </NSpace>
+            </template>
+            <div class="form-grid-2">
+              <NFormItem label="提炼周期（小时）">
+                <NInputNumber
+                  v-model:value="settings.social.jargonIntervalHours"
+                  class="w-full"
+                  :max="168"
+                  :min="1"
+                />
+              </NFormItem>
+              <NFormItem label="周期内最少新增消息数">
+                <NInputNumber
+                  v-model:value="settings.social.jargonMinMessages"
+                  class="w-full"
+                  :max="500"
+                  :min="10"
+                />
+              </NFormItem>
+            </div>
+            <div class="toggle-list">
+              <div class="toggle-row">
+                <div class="toggle-info">
+                  <span class="toggle-label">自动审核通过</span>
+                  <span class="toggle-desc">
+                    关闭后新提炼黑话进入待审核状态
+                  </span>
+                </div>
+                <NSwitch v-model:value="settings.social.jargonAutoApprove" />
               </div>
-            </NCard>
+            </div>
+          </NCard>
 
-            <NCard class="mb-md" size="small" title="群内黑话词典提炼">
-              <div class="form-grid-2">
-                <NFormItem label="后台自动提炼群内黑话">
-                  <NSwitch v-model:value="settings.social.jargonLearnEnabled" />
-                </NFormItem>
-                <NFormItem label="自动审核通过（关闭则需人工审核）">
-                  <NSwitch v-model:value="settings.social.jargonAutoApprove" />
-                </NFormItem>
-                <NFormItem label="提炼周期（小时）">
-                  <NInputNumber
-                    v-model:value="settings.social.jargonIntervalHours"
-                    class="w-full"
-                    :max="168"
-                    :min="1"
-                  />
-                </NFormItem>
-                <NFormItem label="周期内最少新增消息数">
-                  <NInputNumber
-                    v-model:value="settings.social.jargonMinMessages"
-                    class="w-full"
-                    :max="500"
-                    :min="10"
-                  />
-                </NFormItem>
+          <NCard size="small" title="成员轻量印象卡">
+            <template #header-extra>
+              <NSpace align="center" :size="8">
+                <NText class="sub-note" depth="3">后台低频更新</NText>
+                <NSwitch
+                  v-model:value="settings.social.impressionUpdateEnabled"
+                />
+              </NSpace>
+            </template>
+            <div class="form-grid-2">
+              <NFormItem label="更新周期（小时）" :show-feedback="false">
+                <NInputNumber
+                  v-model:value="settings.social.impressionIntervalHours"
+                  class="w-full"
+                  :max="168"
+                  :min="1"
+                />
+              </NFormItem>
+              <NFormItem label="周期内最少发言条数" :show-feedback="false">
+                <NInputNumber
+                  v-model:value="settings.social.impressionMinMessages"
+                  class="w-full"
+                  :max="200"
+                  :min="3"
+                />
+              </NFormItem>
+            </div>
+          </NCard>
+
+          <NCard size="small" title="表情包库自动收集">
+            <template #header-extra>
+              <NSpace align="center" :size="8">
+                <NText class="sub-note" depth="3">自动收集群内表情包</NText>
+                <NSwitch
+                  v-model:value="settings.social.stickerCollectEnabled"
+                />
+              </NSpace>
+            </template>
+            <div class="form-grid-2">
+              <NFormItem label="自动收集上限（张）">
+                <NInputNumber
+                  v-model:value="settings.social.stickerMaxCount"
+                  class="w-full"
+                  :max="2000"
+                  :min="10"
+                />
+              </NFormItem>
+            </div>
+            <div class="toggle-list">
+              <div class="toggle-row">
+                <div class="toggle-info">
+                  <span class="toggle-label">自动审核通过</span>
+                  <span class="toggle-desc">
+                    关闭后自动收集的表情包需人工审核上架
+                  </span>
+                </div>
+                <NSwitch v-model:value="settings.social.stickerAutoApprove" />
               </div>
-            </NCard>
+            </div>
+          </NCard>
+        </NForm>
+      </NTabPane>
 
-            <NCard class="mb-md" size="small" title="成员轻量印象卡">
-              <div class="form-grid-2">
-                <NFormItem label="后台低频更新成员印象">
-                  <NSwitch
-                    v-model:value="settings.social.impressionUpdateEnabled"
-                  />
-                </NFormItem>
-                <NFormItem label="更新周期（小时）">
-                  <NInputNumber
-                    v-model:value="settings.social.impressionIntervalHours"
-                    class="w-full"
-                    :max="168"
-                    :min="1"
-                  />
-                </NFormItem>
-                <NFormItem label="周期内最少发言条数">
-                  <NInputNumber
-                    v-model:value="settings.social.impressionMinMessages"
-                    class="w-full"
-                    :max="200"
-                    :min="3"
-                  />
-                </NFormItem>
-              </div>
-            </NCard>
+      <NTabPane name="mcp" tab="MCP 服务">
+        <McpSettingsPane
+          v-model:servers="settings.mcpServers"
+          :statuses="mcpStatuses"
+          :tools="mcpTools"
+        />
+      </NTabPane>
 
-            <NCard class="mb-md" size="small" title="表情包库自动收集">
-              <div class="form-grid-2">
-                <NFormItem label="自动收集群内表情包">
-                  <NSwitch
-                    v-model:value="settings.social.stickerCollectEnabled"
-                  />
-                </NFormItem>
-                <NFormItem label="自动审核通过（关闭则需人工审核）">
-                  <NSwitch v-model:value="settings.social.stickerAutoApprove" />
-                </NFormItem>
-                <NFormItem label="自动收集上限（张）">
-                  <NInputNumber
-                    v-model:value="settings.social.stickerMaxCount"
-                    class="w-full"
-                    :max="2000"
-                    :min="10"
-                  />
-                </NFormItem>
-              </div>
-            </NCard>
-          </NForm>
-        </NTabPane>
-
-        <NTabPane name="mcp" tab="MCP 服务">
-          <McpSettingsPane
-            v-model:servers="settings.mcpServers"
-            :statuses="mcpStatuses"
-            :tools="mcpTools"
-          />
-        </NTabPane>
-
-        <NTabPane name="storage" tab="存储维护">
-          <StorageMaintenancePane :storage @purged="loadSettings" />
-        </NTabPane>
-      </NTabs>
-    </NCard>
+      <NTabPane name="storage" tab="存储维护">
+        <StorageMaintenancePane :storage @purged="loadSettings" />
+      </NTabPane>
+    </NTabs>
   </div>
 </template>
 
 <style scoped>
+.settings-page {
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+.settings-tabs :deep(.n-tabs-pane-wrapper) {
+  padding-top: 14px;
+}
+
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .form-grid-2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 14px;
+  gap: 2px 20px;
+}
+
+.form-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px 16px;
+}
+
+.toggle-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: 4px;
+  border-top: 1px solid var(--berry-border);
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--berry-border);
+}
+
+.toggle-row:last-child {
+  padding-bottom: 2px;
+  border-bottom: none;
+}
+
+.toggle-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.toggle-label {
+  font-size: 13px;
+  color: var(--berry-text);
+}
+
+.toggle-desc {
+  font-size: 12px;
+  color: var(--berry-muted);
+}
+
+.guild-status-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
 }
 
 .task-override-table {
@@ -1319,8 +1501,9 @@ onMounted(() => {
   text-overflow: ellipsis;
 }
 
-@media (max-width: 700px) {
-  .form-grid-2 {
+@media (max-width: 780px) {
+  .form-grid-2,
+  .form-grid-3 {
     grid-template-columns: 1fr;
   }
 
