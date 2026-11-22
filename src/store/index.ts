@@ -7,6 +7,7 @@ import { CursorsStore } from "./cursors.ts";
 import { BerryDatabase } from "./database.ts";
 import { DeliveriesStore } from "./deliveries.ts";
 import { GateDecisionsStore } from "./gate.ts";
+import { JargonStore } from "./jargon.ts";
 import { JobsStore } from "./jobs.ts";
 import { MaintenanceStore } from "./maintenance.ts";
 import { MemoriesStore } from "./memories.ts";
@@ -27,6 +28,7 @@ export class Store {
   public readonly gate: GateDecisionsStore;
   public readonly conversations: ConversationsStore;
   public readonly memories: MemoriesStore;
+  public readonly jargon: JargonStore;
   public readonly jobs: JobsStore;
   public readonly deliveries: DeliveriesStore;
   public readonly schedules: SchedulesStore;
@@ -46,6 +48,7 @@ export class Store {
     this.gate = new GateDecisionsStore(database, events);
     this.conversations = new ConversationsStore(database, events);
     this.memories = new MemoriesStore(database, events);
+    this.jargon = new JargonStore(database);
     this.jobs = new JobsStore(database, events);
     this.deliveries = new DeliveriesStore(database, events);
     this.schedules = new SchedulesStore(database, events);

@@ -238,6 +238,18 @@ export const runtimeSettingsSchema = Type.Object(
           maximum: 500,
           default: 30,
         }),
+        jargonLearnEnabled: Type.Boolean({ default: false }),
+        jargonIntervalHours: Type.Integer({
+          minimum: 1,
+          maximum: 168,
+          default: 12,
+        }),
+        jargonMinMessages: Type.Integer({
+          minimum: 10,
+          maximum: 500,
+          default: 30,
+        }),
+        jargonAutoApprove: Type.Boolean({ default: false }),
       },
       { default: {}, additionalProperties: false },
     ),
@@ -336,7 +348,8 @@ export function resolveThinkingEffort(
   if (
     purpose === "memory_update" ||
     purpose === "compaction" ||
-    purpose === "style_distill"
+    purpose === "style_distill" ||
+    purpose === "jargon_distill"
   ) {
     return "none";
   }

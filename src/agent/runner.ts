@@ -28,7 +28,7 @@ import type {
 import { Logger } from "../utils/logger.ts";
 import { errorMessage, formatDateTime } from "../utils/time.ts";
 import { DialogCacheGuard, makeCacheSessionKey } from "./cache-guard.ts";
-import { completeChat } from "./llm.ts";
+import { completeChat, validateModelJson } from "./llm.ts";
 import { runChatToolLoop } from "./loop.ts";
 import { ModelIds } from "./model-ids.ts";
 import { buildStaticSystemPrompt, resultsAsText } from "./prompt.ts";
@@ -473,6 +473,19 @@ export class BerryAgent {
       ...(input.content ? { instruction: input.content } : {}),
     };
 
+    const jargonHaystack = [
+      ...requestMessages,
+      ...quotedMessages,
+      ...recentContext,
+    ]
+      .map((m) => enrichedText.get(m.id) ?? m.text)
+      .join("\n");
+    const matchedJargon = await store.jargon.matchInText(
+      input.chatKey,
+      jargonHaystack,
+      8,
+    );
+
     // Transient water-chat context + memory index + structured handoff hint are sent in this invocation only.
     const fullTurnPayload = {
       ...coreEnvelope,
@@ -482,6 +495,7 @@ export class BerryAgent {
           ? { styleHint: chat.stylePrompt.trim() }
           : {}),
       },
+      ...(matchedJargon.length > 0 ? { jargonHints: matchedJargon } : {}),
       ...(conversation.handoff
         ? {
             conversationHandoff: {
@@ -825,6 +839,128 @@ export class BerryAgent {
     }
 
     return store.chats.update(chatKey, { stylePrompt: distilled });
+  }
+
+  public async distillChatJargon(
+    chatKey: ChatKey,
+    options?: { sampleLimit?: number; jobId?: number | null },
+  ): Promise<{ inserted: number; totalExtracted: number }> {
+    const { store } = this.#services;
+    const settings = this.#services.getSettings();
+    const chat = await store.chats.get(chatKey);
+
+    if (!chat) {
+      throw new Error(`未找到会话：${chatKey}`);
+    }
+
+    const recent = await store.messages.recent(
+      chatKey,
+      Math.max(40, Math.min(200, options?.sampleLimit ?? 100)),
+    );
+    const samples = recent.filter((m) => !m.isBot && m.text.trim().length > 0);
+
+    if (samples.length < 10) {
+      throw new Error(
+        `近期有效群聊样本不足（当前 ${samples.length} 条，至少需要 10 条非机器人消息）`,
+      );
+    }
+
+    const cfg = settings.mainModel;
+
+    if (!cfg.apiKey || !cfg.model) {
+      throw new Error("主模型未配置，无法提炼群内黑话词条");
+    }
+
+    const existingTerms = (await store.jargon.list({ chatKey })).map(
+      (item) => item.term,
+    );
+    const transcript = samples
+      .slice(-100)
+      .map(
+        (m) => `${m.senderName}: ${m.text.replace(/\s+/g, " ").slice(0, 140)}`,
+      )
+      .join("\n");
+    const thinkingEffort = resolveThinkingEffort(settings, "jargon_distill");
+    const jargonExtractSchema = Type.Object(
+      {
+        entries: Type.Array(
+          Type.Object(
+            {
+              term: Type.String({ minLength: 2, maxLength: 48 }),
+              aliases: Type.Optional(Type.Array(Type.String())),
+              meaning: Type.String({ minLength: 2, maxLength: 240 }),
+            },
+            { additionalProperties: false },
+          ),
+        ),
+      },
+      { additionalProperties: false },
+    );
+
+    const response = await completeChat({
+      apiKey: cfg.apiKey,
+      baseURL: cfg.baseURL,
+      model: cfg.model,
+      timeoutMs: cfg.timeoutMs,
+      maxRetries: 1,
+      store,
+      timeZone: settings.bot.timezone,
+      purpose: "jargon_distill",
+      chatKey,
+      jobId: options?.jobId ?? null,
+      params: {
+        temperature: 0.2,
+        max_tokens: 900,
+        response_format: { type: "json_object" },
+        ...(thinkingEffort === "none"
+          ? {}
+          : { reasoning_effort: thinkingEffort }),
+        messages: [
+          {
+            role: "system",
+            content:
+              '你是群内黑话与圈内梗词典提炼助手。请从群聊样本中挑出真正具有圈内特定含义的梗、黑话、外号或简称（最多 8 条；忽略普通日常词汇、单字词和已收录词条；若没有明显黑话则返回空数组）。严格输出 JSON：{"entries":[{"term":"词条","aliases":["同义写法"],"meaning":"一句简明解释"}]}。',
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              chatTitle: chat.title || chat.chatKey,
+              existingTerms,
+              transcript,
+            }),
+          },
+        ],
+      },
+    });
+
+    const parsed = validateModelJson(
+      jargonExtractSchema,
+      response.choices[0]?.message?.content ?? "{}",
+    );
+
+    if (!parsed.ok) {
+      throw new Error(`黑话提炼返回格式无效：${parsed.issue}`);
+    }
+
+    const status = settings.social.jargonAutoApprove ? "approved" : "pending";
+    let inserted = 0;
+
+    for (const entry of parsed.value.entries.slice(0, 8)) {
+      const added = await store.jargon.insertIfAbsent({
+        chatKey,
+        term: entry.term,
+        aliases: entry.aliases ?? [],
+        meaning: entry.meaning,
+        status,
+        source: "auto",
+      });
+
+      if (added) {
+        inserted += 1;
+      }
+    }
+
+    return { inserted, totalExtracted: parsed.value.entries.length };
   }
 
   public async updateMemoryFromMessage(

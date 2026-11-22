@@ -146,4 +146,15 @@ export const createDefaultJobRegistry = (deps: {
         });
       },
       summarize: (job) => `提炼 ${job.payload.chatKey} 群表达风格`,
+    })
+    .register({
+      kind: "jargon_distill",
+      label: "黑话提炼",
+      lane: "background",
+      execute: async (job) => {
+        await deps.agent.distillChatJargon(job.payload.chatKey, {
+          jobId: job.id,
+        });
+      },
+      summarize: (job) => `提炼 ${job.payload.chatKey} 群内黑话词条`,
     });

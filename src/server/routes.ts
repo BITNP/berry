@@ -18,6 +18,7 @@ import { Type } from "typebox";
 
 import type { BerryApp } from "../app.ts";
 import { parseSettings, scheduleSpecSchema } from "../config/settings.ts";
+import type { ChatKey } from "../types.ts";
 import { errorMessage } from "../utils/time.ts";
 import { hasConsoleAccess } from "./auth.ts";
 import {
@@ -895,6 +896,113 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
 
       return {
         deleted: await berry.store.memories.remove(scope, ownerId, key),
+      };
+    }),
+  );
+
+  router.get(
+    "/api/admin/jargon",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const query = await parseQuery(
+        event,
+        Type.Object({
+          chatKey: Type.Optional(Type.String()),
+          status: Type.Optional(
+            Type.Union([Type.Literal("approved"), Type.Literal("pending")]),
+          ),
+          search: Type.Optional(Type.String()),
+        }),
+      );
+
+      return {
+        items: await berry.store.jargon.list(query),
+      };
+    }),
+  );
+
+  router.post(
+    "/api/admin/jargon",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const body = await parseBody(
+        event,
+        Type.Object({
+          chatKey: Type.Optional(Type.String()),
+          term: Type.String({ minLength: 1, maxLength: 48 }),
+          aliases: Type.Optional(Type.Array(Type.String())),
+          meaning: Type.String({ minLength: 1, maxLength: 240 }),
+          status: Type.Optional(
+            Type.Union([Type.Literal("approved"), Type.Literal("pending")]),
+          ),
+        }),
+      );
+
+      return berry.store.jargon.upsert({ ...body, source: "manual" });
+    }),
+  );
+
+  router.patch(
+    "/api/admin/jargon/:id",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const { id } = await parseParams(
+        event,
+        Type.Object({ id: Type.Number({ minimum: 1 }) }),
+        "无效的黑话词条 ID",
+      );
+      const body = await parseBody(
+        event,
+        Type.Object({
+          chatKey: Type.Optional(Type.String()),
+          term: Type.Optional(Type.String({ minLength: 1, maxLength: 48 })),
+          aliases: Type.Optional(Type.Array(Type.String())),
+          meaning: Type.Optional(Type.String({ minLength: 1, maxLength: 240 })),
+          status: Type.Optional(
+            Type.Union([Type.Literal("approved"), Type.Literal("pending")]),
+          ),
+        }),
+      );
+      const updated = await berry.store.jargon.update(id, body);
+
+      if (!updated) {
+        throw createError({ statusCode: 404, statusMessage: "词条不存在" });
+      }
+
+      return updated;
+    }),
+  );
+
+  router.delete(
+    "/api/admin/jargon/:id",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const { id } = await parseParams(
+        event,
+        Type.Object({ id: Type.Number({ minimum: 1 }) }),
+        "无效的黑话词条 ID",
+      );
+
+      return {
+        deleted: await berry.store.jargon.remove(id),
+      };
+    }),
+  );
+
+  router.post(
+    "/api/admin/jargon/distill",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const body = await parseBody(
+        event,
+        Type.Object({
+          chatKey: Type.String({ minLength: 1 }),
+        }),
+      );
+
+      return {
+        ok: true,
+        ...(await berry.agent.distillChatJargon(body.chatKey as ChatKey)),
       };
     }),
   );

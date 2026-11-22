@@ -15,6 +15,7 @@ export class ScheduleRunner {
   #ticking = false;
   #lastDigestCheck = 0;
   #lastStyleCheck = 0;
+  #lastJargonCheck = 0;
   #lastMemoryPurge = 0;
 
   constructor(
@@ -80,6 +81,14 @@ export class ScheduleRunner {
       ) {
         this.#lastStyleCheck = now;
         await this.#checkStyleDistill(now);
+      }
+
+      if (
+        settings.social.jargonLearnEnabled &&
+        now - this.#lastJargonCheck >= 60_000
+      ) {
+        this.#lastJargonCheck = now;
+        await this.#checkJargonDistill(now);
       }
 
       if (now - this.#lastMemoryPurge >= 600_000) {
@@ -259,11 +268,17 @@ export class ScheduleRunner {
     }
   }
 
-  async #checkStyleDistill(now: number): Promise<void> {
+  async #checkPeriodicGroupJob(
+    now: number,
+    options: {
+      kind: "style_distill" | "jargon_distill";
+      cursorPrefix: string;
+      intervalHours: number;
+      minMessages: number;
+    },
+  ): Promise<void> {
     const { store } = this.#services;
-    const settings = this.#services.getSettings();
-    const intervalMs = settings.social.styleDistillIntervalHours * 3_600_000;
-    const minMessages = settings.social.styleDistillMinMessages;
+    const intervalMs = options.intervalHours * 3_600_000;
     const chats = await store.chats.list();
 
     for (const chat of chats) {
@@ -271,7 +286,7 @@ export class ScheduleRunner {
         continue;
       }
 
-      const cursorKey = `style_distill:${chat.chatKey}`;
+      const cursorKey = `${options.cursorPrefix}:${chat.chatKey}`;
       const saved = await store.cursors.get(cursorKey);
       const lastRunAt = saved ? Number(saved) : 0;
 
@@ -282,17 +297,17 @@ export class ScheduleRunner {
       const recent = await store.messages.search(chat.chatKey, {
         startTimeMs: lastRunAt > 0 ? lastRunAt : now - intervalMs,
         endTimeMs: now,
-        limit: minMessages + 20,
+        limit: options.minMessages + 20,
       });
       const userCount = recent.filter((m) => !m.isBot && m.text.trim()).length;
 
-      if (userCount < minMessages) {
+      if (userCount < options.minMessages) {
         continue;
       }
 
       await store.jobs.enqueue(
-        "style_distill",
-        `style-distill:${chat.chatKey}:${Math.floor(now / intervalMs)}`,
+        options.kind,
+        `${options.cursorPrefix}:${chat.chatKey}:${Math.floor(now / intervalMs)}`,
         chat.chatKey,
         { chatKey: chat.chatKey },
         now,
@@ -300,6 +315,28 @@ export class ScheduleRunner {
       await store.cursors.set(cursorKey, String(now));
       this.#wake();
     }
+  }
+
+  #checkStyleDistill(now: number): Promise<void> {
+    const settings = this.#services.getSettings();
+
+    return this.#checkPeriodicGroupJob(now, {
+      kind: "style_distill",
+      cursorPrefix: "style_distill",
+      intervalHours: settings.social.styleDistillIntervalHours,
+      minMessages: settings.social.styleDistillMinMessages,
+    });
+  }
+
+  #checkJargonDistill(now: number): Promise<void> {
+    const settings = this.#services.getSettings();
+
+    return this.#checkPeriodicGroupJob(now, {
+      kind: "jargon_distill",
+      cursorPrefix: "jargon_distill",
+      intervalHours: settings.social.jargonIntervalHours,
+      minMessages: settings.social.jargonMinMessages,
+    });
   }
 
   async #enqueueScheduleTask(

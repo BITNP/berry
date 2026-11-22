@@ -136,6 +136,10 @@ interface RuntimeSettingsView {
     styleDistillEnabled: boolean;
     styleDistillIntervalHours: number;
     styleDistillMinMessages: number;
+    jargonLearnEnabled: boolean;
+    jargonIntervalHours: number;
+    jargonMinMessages: number;
+    jargonAutoApprove: boolean;
   };
 }
 
@@ -1398,6 +1402,33 @@ onMounted(() => {
                 <NFormItem label="周期内最少新增消息数">
                   <NInputNumber
                     v-model:value="settings.social.styleDistillMinMessages"
+                    class="w-full"
+                    :max="500"
+                    :min="10"
+                  />
+                </NFormItem>
+              </div>
+            </NCard>
+
+            <NCard class="mb-md" size="small" title="群内黑话词典提炼">
+              <div class="form-grid-2">
+                <NFormItem label="后台自动提炼群内黑话">
+                  <NSwitch v-model:value="settings.social.jargonLearnEnabled" />
+                </NFormItem>
+                <NFormItem label="自动审核通过（关闭则需人工审核）">
+                  <NSwitch v-model:value="settings.social.jargonAutoApprove" />
+                </NFormItem>
+                <NFormItem label="提炼周期（小时）">
+                  <NInputNumber
+                    v-model:value="settings.social.jargonIntervalHours"
+                    class="w-full"
+                    :max="168"
+                    :min="1"
+                  />
+                </NFormItem>
+                <NFormItem label="周期内最少新增消息数">
+                  <NInputNumber
+                    v-model:value="settings.social.jargonMinMessages"
                     class="w-full"
                     :max="500"
                     :min="10"

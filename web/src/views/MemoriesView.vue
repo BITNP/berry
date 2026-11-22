@@ -13,6 +13,8 @@ import {
   NPopconfirm,
   NSelect,
   NSpace,
+  NTabPane,
+  NTabs,
   NTag,
   NText,
   useMessage,
@@ -20,6 +22,7 @@ import {
 import { computed, h, onMounted, ref, watch } from "vue";
 
 import { apiFetch } from "../api/client.ts";
+import JargonPane from "../components/JargonPane.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useLiveRefresh } from "../composables/useEventStream.ts";
 import { formatTime } from "../utils/format.ts";
@@ -50,6 +53,7 @@ const SCOPE_META: Record<
 const message = useMessage();
 const { chats, users, chatOptions, userOptions } = useChatOptions();
 
+const activeTab = ref("memories");
 const loading = ref(false);
 const saving = ref(false);
 const items = ref<MemoryRow[]>([]);
@@ -385,10 +389,17 @@ onMounted(() => {
   <div>
     <div class="page-bar">
       <NSpace align="center" :size="10">
-        <h1 class="page-title">长期记忆</h1>
-        <NText class="sub-note" depth="3">{{ visibleItems.length }} 条</NText>
+        <h1 class="page-title">记忆与词典</h1>
+        <NText v-if="activeTab === 'memories'" class="sub-note" depth="3">
+          {{ visibleItems.length }} 条
+        </NText>
       </NSpace>
-      <NButton size="small" type="primary" @click="openCreate">
+      <NButton
+        v-if="activeTab === 'memories'"
+        size="small"
+        type="primary"
+        @click="openCreate"
+      >
         <template #icon>
           <Plus :size="14" />
         </template>
@@ -396,54 +407,62 @@ onMounted(() => {
       </NButton>
     </div>
 
-    <div class="filter-bar">
-      <NSelect
-        v-model:value="filterScope"
-        class="w-165"
-        clearable
-        :options="[
-          { label: '全局记忆（global）', value: 'global' },
-          { label: '群聊记忆（chat）', value: 'chat' },
-          { label: '成员记忆（user）', value: 'user' },
-        ]"
-        placeholder="全部范围"
-        size="small"
-      />
-      <NSelect
-        v-model:value="filterOwnerId"
-        class="w-240"
-        clearable
-        filterable
-        :options="ownerFilterOptions"
-        placeholder="选择或输入归属（支持群名/QQ）"
-        size="small"
-        tag
-      />
-      <NInput
-        v-model:value="filterSearch"
-        class="w-190"
-        clearable
-        placeholder="关键词筛选"
-        size="small"
-      />
-      <NButton :loading size="small" @click="loadMemories">
-        <template #icon>
-          <RefreshCw :size="14" />
-        </template>
-        查询
-      </NButton>
-    </div>
+    <NTabs v-model:value="activeTab" class="mb-md" type="line">
+      <NTabPane name="memories" tab="长期记忆">
+        <div class="filter-bar">
+          <NSelect
+            v-model:value="filterScope"
+            class="w-165"
+            clearable
+            :options="[
+              { label: '全局记忆（global）', value: 'global' },
+              { label: '群聊记忆（chat）', value: 'chat' },
+              { label: '成员记忆（user）', value: 'user' },
+            ]"
+            placeholder="全部范围"
+            size="small"
+          />
+          <NSelect
+            v-model:value="filterOwnerId"
+            class="w-240"
+            clearable
+            filterable
+            :options="ownerFilterOptions"
+            placeholder="选择或输入归属（支持群名/QQ）"
+            size="small"
+            tag
+          />
+          <NInput
+            v-model:value="filterSearch"
+            class="w-190"
+            clearable
+            placeholder="关键词筛选"
+            size="small"
+          />
+          <NButton :loading size="small" @click="loadMemories">
+            <template #icon>
+              <RefreshCw :size="14" />
+            </template>
+            查询
+          </NButton>
+        </div>
 
-    <NCard size="small">
-      <NDataTable
-        :columns
-        :data="visibleItems"
-        :loading
-        :pagination="{ pageSize: 20 }"
-        :scroll-x="900"
-        size="small"
-      />
-    </NCard>
+        <NCard size="small">
+          <NDataTable
+            :columns
+            :data="visibleItems"
+            :loading
+            :pagination="{ pageSize: 20 }"
+            :scroll-x="900"
+            size="small"
+          />
+        </NCard>
+      </NTabPane>
+
+      <NTabPane name="jargon" tab="群内黑话">
+        <JargonPane />
+      </NTabPane>
+    </NTabs>
 
     <NModal
       v-model:show="modalOpen"

@@ -1060,3 +1060,158 @@ test("group style distillation persists stylePrompt and injects chat.styleHint t
     /"styleHint":"本群偏技术吹水，回复短句直给，少发长段。"/,
   );
 });
+
+test("jargon dictionary distills pending entries, approves via API, and injects only matched approved terms", async (t) => {
+  const capturedUsers: string[] = [];
+  let capturedSys = "";
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const sys = reqJson.messages[0]?.content ?? "";
+
+    res.setHeader("Content-Type", "application/json");
+    if (sys.includes("黑话与圈内梗词典提炼助手")) {
+      res.end(
+        JSON.stringify(
+          chatReply({
+            entries: [
+              {
+                term: "群呆唯",
+                aliases: ["呆唯"],
+                meaning: "网协群主郭逸戈在群里的外号",
+              },
+              {
+                term: "光速跑路",
+                aliases: [],
+                meaning: "下班或开溜的戏称",
+              },
+            ],
+          }),
+        ),
+      );
+
+      return;
+    }
+
+    capturedSys = sys;
+    capturedUsers.push(reqJson.messages.at(-1)?.content ?? "");
+    res.end(JSON.stringify(chatReply({ units: [] })));
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      devAuthBypass: true,
+      mainBaseUrl: `${llmStub.url}/v1`,
+    },
+    {},
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "7788",
+    title: "黑话测试群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  for (let i = 1; i <= 12; i += 1) {
+    await captureText(app, {
+      kind: "group",
+      chatId: "7788",
+      id: `jargon-sample-${i}`,
+      userId: String(4000 + (i % 3)),
+      senderName: `成员${i % 3}`,
+      text: i % 2 === 0 ? "群呆唯又在炼丹了" : "呆唯今天怎么没冒泡",
+    });
+  }
+
+  const { url } = await app.listen();
+  const { csrfToken } = (await (
+    await fetch(`${url}/api/auth/status`)
+  ).json()) as { csrfToken: string };
+
+  const distillRes = (await (
+    await fetch(`${url}/api/admin/jargon/distill`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({ chatKey: "group:7788" }),
+    })
+  ).json()) as { ok: boolean; inserted: number; totalExtracted: number };
+
+  assert.equal(distillRes.ok, true);
+  assert.equal(distillRes.inserted, 2);
+
+  const listed = (await (
+    await fetch(`${url}/api/admin/jargon?chatKey=group%3A7788`)
+  ).json()) as {
+    items: { id: number; term: string; status: string }[];
+  };
+
+  assert.equal(listed.items.length, 2);
+  assert.ok(listed.items.every((item) => item.status === "pending"));
+
+  // Pending terms are NOT injected yet.
+  const msg1 = await captureText(app, {
+    kind: "group",
+    chatId: "7788",
+    id: "jargon-q-1",
+    userId: "4001",
+    senderName: "成员1",
+    text: "@树莓娘 呆唯呢",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:7788",
+    kind: "group",
+    chatId: "7788",
+    triggerMessageIds: [msg1.message.id],
+    senderId: "4001",
+    senderName: "成员1",
+  });
+  assert.doesNotMatch(capturedUsers[0] ?? "", /jargonHints/);
+
+  // Approve both entries.
+  for (const item of listed.items) {
+    await fetch(`${url}/api/admin/jargon/${item.id}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({ status: "approved" }),
+    });
+  }
+
+  // Turn mentioning ONLY alias "呆唯" injects "群呆唯", NOT unrelated "炼丹".
+  const msg2 = await captureText(app, {
+    kind: "group",
+    chatId: "7788",
+    id: "jargon-q-2",
+    userId: "4001",
+    senderName: "成员1",
+    text: "@树莓娘 找一下呆唯",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:7788",
+    kind: "group",
+    chatId: "7788",
+    triggerMessageIds: [msg2.message.id],
+    senderId: "4001",
+    senderName: "成员1",
+  });
+
+  assert.doesNotMatch(capturedSys, /郭逸戈/);
+  assert.match(capturedUsers[1] ?? "", /"term":"群呆唯"/);
+  assert.doesNotMatch(capturedUsers[1] ?? "", /"term":"光速跑路"/);
+});

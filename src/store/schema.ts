@@ -194,6 +194,17 @@ export interface BerryTables {
     user_id: string;
     updated_at: number;
   };
+  jargon_entries: {
+    id: Generated<number>;
+    chat_key: string;
+    term: string;
+    aliases_json: string;
+    meaning: string;
+    status: string;
+    source: string;
+    created_at: number;
+    updated_at: number;
+  };
 }
 
 export type BerryDb = Kysely<BerryTables>;
@@ -748,6 +759,31 @@ const migrations: Record<string, Migration> = {
           .addColumn("style_prompt", "text", (c) => c.notNull().defaultTo(""))
           .execute();
       }
+    },
+  },
+  "009_jargon_entries": {
+    async up(db) {
+      await db.schema
+        .createTable("jargon_entries")
+        .ifNotExists()
+        .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+        .addColumn("chat_key", "text", (c) => c.notNull().defaultTo("global"))
+        .addColumn("term", "text", (c) => c.notNull())
+        .addColumn("aliases_json", "text", (c) => c.notNull().defaultTo("[]"))
+        .addColumn("meaning", "text", (c) => c.notNull())
+        .addColumn("status", "text", (c) => c.notNull().defaultTo("approved"))
+        .addColumn("source", "text", (c) => c.notNull().defaultTo("manual"))
+        .addColumn("created_at", "integer", (c) => c.notNull())
+        .addColumn("updated_at", "integer", (c) => c.notNull())
+        .addUniqueConstraint("uq_jargon_chat_term", ["chat_key", "term"])
+        .execute();
+
+      await db.schema
+        .createIndex("idx_jargon_status_chat")
+        .ifNotExists()
+        .on("jargon_entries")
+        .columns(["status", "chat_key"])
+        .execute();
     },
   },
 };

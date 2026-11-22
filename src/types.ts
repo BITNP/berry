@@ -207,6 +207,9 @@ export interface JobPayloads {
   style_distill: {
     chatKey: ChatKey;
   };
+  jargon_distill: {
+    chatKey: ChatKey;
+  };
 }
 
 export type BuiltInJobKind = keyof JobPayloads;
@@ -285,6 +288,20 @@ export interface ScheduleRecord {
 }
 
 export type MemoryScope = "global" | "chat" | "user";
+
+export type JargonStatus = "approved" | "pending";
+
+export interface JargonRecord {
+  id: number;
+  chatKey: string;
+  term: string;
+  aliases: string[];
+  meaning: string;
+  status: JargonStatus;
+  source: "manual" | "auto";
+  createdAt: number;
+  updatedAt: number;
+}
 
 export interface MemoryRecord {
   id: number;
