@@ -1121,7 +1121,11 @@ const isVisionEmpty = (step: LlmCallRow): boolean =>
 }
 
 .dot-ok {
-  background: #e11d48;
+  background: #16a34a;
+}
+
+:global(:root[data-theme="dark"]) .dot-ok {
+  background: #22c55e;
 }
 
 .dot-error {
