@@ -13,7 +13,7 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 
 import { apiFetch } from "../../api/client.ts";
 import { useLiveRefresh } from "../../composables/useEventStream.ts";
@@ -87,12 +87,15 @@ const props = defineProps<{
   paused?: boolean;
 }>();
 
+const contextMode = defineModel<"active" | "full">("mode", {
+  default: "active",
+});
+
 const message = useMessage();
 const TURN_PREVIEW_LIMIT = 900;
 
 const loading = ref(false);
 const conversation = ref<ConversationView | null>(null);
-const contextMode = ref<"active" | "full">("active");
 const fullTapeEntries = ref<TapeEntryView[]>([]);
 const loadingTape = ref(false);
 const resettingContext = ref(false);
@@ -229,13 +232,15 @@ async function refresh() {
 }
 
 function handleContextModeChange(mode: "active" | "full") {
+  contextMode.value = mode;
+}
+
+watch(contextMode, (mode) => {
   if (mode === "full") {
     loadingTape.value = true;
     void loadFullTape();
   }
-
-  contextMode.value = mode;
-}
+});
 
 async function openSidecar(sidecarId: string) {
   sidecarIdActive.value = sidecarId;

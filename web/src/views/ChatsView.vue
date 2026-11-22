@@ -99,8 +99,12 @@ const message = useMessage();
 const loading = ref(false);
 const syncing = ref(false);
 const chats = ref<ChatRow[]>([]);
-const filterText = ref("");
-const filterKind = ref<"all" | ChatKind>("all");
+const filterText = ref(typeof route.query.q === "string" ? route.query.q : "");
+const filterKind = ref<"all" | ChatKind>(
+  route.query.kind === "group" || route.query.kind === "private"
+    ? route.query.kind
+    : "all",
+);
 const busyBackfill = ref<string | null>(null);
 const busyDigest = ref<string | null>(null);
 
@@ -124,7 +128,9 @@ const createForm = ref<{
 });
 
 const selectedChatKey = ref<string | null>(null);
-const messageSearch = ref("");
+const messageSearch = ref(
+  typeof route.query.search === "string" ? route.query.search : "",
+);
 const loadingMessages = ref(false);
 const loadingOlderMessages = ref(false);
 const hasOlderMessages = ref(false);
@@ -209,7 +215,49 @@ async function loadChats(options: { silent?: boolean } = {}) {
   }
 }
 
-async function selectChat(row: ChatRow, syncQuery = true) {
+function syncQuery() {
+  const next: Record<string, string> = {};
+
+  if (selectedChatKey.value) {
+    next.chatKey = selectedChatKey.value;
+  }
+
+  if (filterKind.value !== "all") {
+    next.kind = filterKind.value;
+  }
+
+  const trimmedChatQ = filterText.value.trim();
+
+  if (trimmedChatQ) {
+    next.q = trimmedChatQ;
+  }
+
+  const trimmedSearch = messageSearch.value.trim();
+
+  if (trimmedSearch) {
+    next.search = trimmedSearch;
+  }
+
+  const currentKeys = Object.keys(route.query).filter((k) => {
+    const v = route.query[k];
+
+    return typeof v === "string" && v !== "";
+  });
+  const nextKeys = Object.keys(next);
+
+  if (
+    currentKeys.length !== nextKeys.length ||
+    !nextKeys.every((k) => route.query[k] === next[k])
+  ) {
+    void router.replace({ query: next });
+  }
+}
+
+async function selectChat(
+  row: ChatRow,
+  options: { syncQuery?: boolean; preserveSearch?: boolean } = {},
+) {
+  const shouldSync = options.syncQuery ?? true;
   const changed = selectedChatKey.value !== row.chatKey;
 
   selectedChatKey.value = row.chatKey;
@@ -219,13 +267,16 @@ async function selectChat(row: ChatRow, syncQuery = true) {
   }
 
   if (changed) {
-    messageSearch.value = "";
+    if (!options.preserveSearch) {
+      messageSearch.value = "";
+    }
+
     messages.value = [];
     hasOlderMessages.value = false;
   }
 
-  if (syncQuery && route.query.chatKey !== row.chatKey) {
-    void router.replace({ query: { chatKey: row.chatKey } });
+  if (shouldSync) {
+    syncQuery();
   }
 
   await loadMessages();
@@ -681,6 +732,21 @@ function assetKindLabel(kind: MessageAssetView["kind"]): string {
 }
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let chatFilterTimer: ReturnType<typeof setTimeout> | null = null;
+
+watch(filterKind, () => {
+  syncQuery();
+});
+
+watch(filterText, () => {
+  if (chatFilterTimer) {
+    clearTimeout(chatFilterTimer);
+  }
+
+  chatFilterTimer = setTimeout(() => {
+    syncQuery();
+  }, 240);
+});
 
 watch(messageSearch, () => {
   if (!activeChat.value) {
@@ -692,9 +758,47 @@ watch(messageSearch, () => {
   }
 
   searchTimer = setTimeout(() => {
+    syncQuery();
     void loadMessages();
   }, 260);
 });
+
+watch(
+  () => route.query,
+  (q) => {
+    const nextKind: "all" | ChatKind =
+      q.kind === "group" || q.kind === "private" ? q.kind : "all";
+
+    if (nextKind !== filterKind.value) {
+      filterKind.value = nextKind;
+    }
+
+    const nextQ = typeof q.q === "string" ? q.q : "";
+
+    if (nextQ !== filterText.value) {
+      filterText.value = nextQ;
+    }
+
+    const nextSearch = typeof q.search === "string" ? q.search : "";
+
+    if (nextSearch !== messageSearch.value) {
+      messageSearch.value = nextSearch;
+    }
+
+    const nextChatKey =
+      (typeof q.chatKey === "string" && q.chatKey) ||
+      (typeof q.chat === "string" && q.chat) ||
+      "";
+
+    if (nextChatKey && nextChatKey !== selectedChatKey.value) {
+      const match = chats.value.find((c) => c.chatKey === nextChatKey);
+
+      if (match) {
+        void selectChat(match, { syncQuery: false, preserveSearch: true });
+      }
+    }
+  },
+);
 
 onMounted(async () => {
   window.addEventListener("resize", updateViewport);
@@ -709,14 +813,17 @@ onMounted(async () => {
     const match = chats.value.find((c) => c.chatKey === queryChat);
 
     if (match) {
-      await selectChat(match, false);
+      await selectChat(match, { syncQuery: false, preserveSearch: true });
 
       return;
     }
   }
 
   if (!isMobile.value && chats.value.length > 0) {
-    await selectChat(chats.value[0], false);
+    await selectChat(chats.value[0], {
+      syncQuery: false,
+      preserveSearch: true,
+    });
   }
 });
 
@@ -725,6 +832,10 @@ onUnmounted(() => {
 
   if (searchTimer) {
     clearTimeout(searchTimer);
+  }
+
+  if (chatFilterTimer) {
+    clearTimeout(chatFilterTimer);
   }
 });
 </script>

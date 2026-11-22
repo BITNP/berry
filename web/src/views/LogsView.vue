@@ -11,7 +11,8 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import ChronoVirtualList from "../components/ChronoVirtualList.vue";
@@ -36,17 +37,63 @@ interface LogMetaChip {
 }
 
 const MAX_LOG_ITEMS = 2000;
+const VALID_LEVELS = new Set<LogLevel>(["debug", "error", "info", "warn"]);
 
+const route = useRoute();
+const router = useRouter();
 const message = useMessage();
+
+const parseLevel = (raw: unknown): LogLevel | null =>
+  typeof raw === "string" && VALID_LEVELS.has(raw as LogLevel)
+    ? (raw as LogLevel)
+    : null;
 
 const loadingLogs = ref(false);
 const entries = ref<LogEntryView[]>([]);
 const scopes = ref<string[]>([]);
-const filterLevel = ref<LogLevel | null>(null);
-const filterScope = ref<string | null>(null);
-const filterSearch = ref("");
+const filterLevel = ref<LogLevel | null>(parseLevel(route.query.level));
+const filterScope = ref<string | null>(
+  typeof route.query.scope === "string" && route.query.scope
+    ? route.query.scope
+    : null,
+);
+const filterSearch = ref(
+  typeof route.query.q === "string" ? route.query.q : "",
+);
 const autoScroll = ref(true);
 const expandedLogIds = ref<Record<number, boolean>>({});
+
+function syncQuery() {
+  const next: Record<string, string> = {};
+
+  if (filterLevel.value) {
+    next.level = filterLevel.value;
+  }
+
+  if (filterScope.value) {
+    next.scope = filterScope.value;
+  }
+
+  const trimmed = filterSearch.value.trim();
+
+  if (trimmed) {
+    next.q = trimmed;
+  }
+
+  const currentKeys = Object.keys(route.query).filter((k) => {
+    const v = route.query[k];
+
+    return typeof v === "string" && v !== "";
+  });
+  const nextKeys = Object.keys(next);
+
+  if (
+    currentKeys.length !== nextKeys.length ||
+    !nextKeys.every((k) => route.query[k] === next[k])
+  ) {
+    void router.replace({ query: next });
+  }
+}
 
 const levelPriority: Record<LogLevel, number> = {
   debug: 10,
@@ -302,8 +349,55 @@ const { paused: streamPaused, togglePause } = useEventStream(
   },
 );
 
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+
+watch([filterLevel, filterScope], () => {
+  syncQuery();
+  void loadLogs();
+});
+
+watch(filterSearch, () => {
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+  }
+
+  searchTimer = setTimeout(() => {
+    syncQuery();
+    void loadLogs();
+  }, 240);
+});
+
+watch(
+  () => route.query,
+  (q) => {
+    const nextLevel = parseLevel(q.level);
+
+    if (nextLevel !== filterLevel.value) {
+      filterLevel.value = nextLevel;
+    }
+
+    const nextScope = typeof q.scope === "string" && q.scope ? q.scope : null;
+
+    if (nextScope !== filterScope.value) {
+      filterScope.value = nextScope;
+    }
+
+    const nextSearch = typeof q.q === "string" ? q.q : "";
+
+    if (nextSearch !== filterSearch.value) {
+      filterSearch.value = nextSearch;
+    }
+  },
+);
+
 onMounted(() => {
   void loadLogs();
+});
+
+onUnmounted(() => {
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+  }
 });
 </script>
 

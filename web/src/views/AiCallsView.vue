@@ -86,10 +86,18 @@ function resolveScope(
 }
 
 const activeTab = ref<AiTab>(resolveTab(route.query.tab));
+const contextMode = ref<"active" | "full">(
+  route.query.mode === "full" ? "full" : "active",
+);
 const loadingTraces = ref(false);
 const traces = ref<AiTraceView[]>([]);
 const totalTraces = ref(0);
-const selectedTraceId = ref<string | null>(null);
+const initialTraceId =
+  typeof route.query.trace === "string" && route.query.trace
+    ? route.query.trace
+    : null;
+const selectedTraceId = ref<string | null>(initialTraceId);
+const pinnedTraceId = ref<string | null>(initialTraceId);
 const jobCounts = ref<JobCountsSummary>({ pending: 0, running: 0, failed: 0 });
 const retryingJobs = ref(false);
 const dryRunOpen = ref(false);
@@ -126,7 +134,9 @@ const filterChatKey = ref<string | null>(
     ? route.query.chatKey
     : null,
 );
-const filterSearch = ref("");
+const filterSearch = ref(
+  typeof route.query.q === "string" ? route.query.q : "",
+);
 
 const isMobile = ref(false);
 const mobileShowDetail = ref(false);
@@ -143,8 +153,70 @@ const selectedTrace = computed(
   () => traces.value.find((t) => t.id === selectedTraceId.value) ?? null,
 );
 
+function buildUrlQuery(): Record<string, string> {
+  const query: Record<string, string> = {};
+
+  if (activeTab.value !== "calls") {
+    query.tab = activeTab.value;
+    if (activeTab.value === "context" && contextMode.value === "full") {
+      query.mode = "full";
+    }
+
+    return query;
+  }
+
+  if (traceScope.value !== "active") {
+    query.scope = traceScope.value;
+  }
+
+  if (filterPurpose.value) {
+    query.purpose = filterPurpose.value;
+  }
+
+  if (filterChatKey.value) {
+    query.chatKey = filterChatKey.value;
+  }
+
+  const trimmed = filterSearch.value.trim();
+
+  if (trimmed) {
+    query.q = trimmed;
+  }
+
+  if (pinnedTraceId.value) {
+    query.trace = pinnedTraceId.value;
+  }
+
+  return query;
+}
+
+function sameQuery(next: Record<string, string>): boolean {
+  const currentKeys = Object.keys(route.query).filter((k) => {
+    const v = route.query[k];
+
+    return typeof v === "string" && v !== "";
+  });
+  const nextKeys = Object.keys(next);
+
+  if (currentKeys.length !== nextKeys.length) {
+    return false;
+  }
+
+  return nextKeys.every((k) => route.query[k] === next[k]);
+}
+
+function syncUrlQuery() {
+  const next = buildUrlQuery();
+
+  if (!sameQuery(next)) {
+    void router.replace({ query: next });
+  }
+}
+
 function selectTrace(trace: AiTraceView) {
   selectedTraceId.value = trace.id;
+  pinnedTraceId.value = trace.id;
+  syncUrlQuery();
   if (isMobile.value) {
     mobileShowDetail.value = true;
   }
@@ -169,6 +241,14 @@ function traceHeadline(trace: AiTraceView): string {
     return trace.instruction.replaceAll(/\s+/g, " ").trim();
   }
 
+  if (trace.failedJobs[0]?.summary) {
+    return trace.failedJobs[0].summary;
+  }
+
+  if (trace.failedDeliveries[0]?.summary) {
+    return trace.failedDeliveries[0].summary;
+  }
+
   return trace.outcome.preview || "后台模型调用";
 }
 
@@ -181,7 +261,19 @@ function traceSender(trace: AiTraceView): string {
     return names.join("、");
   }
 
-  return trace.instruction ? "系统指令" : "";
+  if (trace.instruction) {
+    return "系统指令";
+  }
+
+  if (trace.failedJobs[0]) {
+    return `任务 #${trace.failedJobs[0].id}`;
+  }
+
+  if (trace.failedDeliveries[0]) {
+    return `投递 #${trace.failedDeliveries[0].id}`;
+  }
+
+  return "";
 }
 
 function summarizeStepBadges(trace: AiTraceView): {
@@ -276,8 +368,16 @@ async function loadTraces() {
         !res.items.some((item) => item.id === selectedTraceId.value))
     ) {
       selectedTraceId.value = res.items[0].id;
+      if (pinnedTraceId.value) {
+        pinnedTraceId.value = null;
+        syncUrlQuery();
+      }
     } else if (res.items.length === 0) {
       selectedTraceId.value = null;
+      if (pinnedTraceId.value) {
+        pinnedTraceId.value = null;
+        syncUrlQuery();
+      }
     }
   } catch (err) {
     message.error(err instanceof Error ? err.message : "加载追踪链路失败");
@@ -357,12 +457,16 @@ useLiveRefresh({
   debounceMs: 400,
   refresh: () => {
     void loadJobStatus();
+    if (activeTab.value === "calls" && traceScope.value === "error") {
+      void loadTraces();
+    }
   },
 });
 
 let filterTimer: ReturnType<typeof setTimeout> | null = null;
 
 watch([traceScope, filterPurpose, filterChatKey], () => {
+  syncUrlQuery();
   void loadTraces();
 });
 
@@ -372,28 +476,20 @@ watch(filterSearch, () => {
   }
 
   filterTimer = setTimeout(() => {
+    syncUrlQuery();
     void loadTraces();
   }, 240);
 });
 
-watch(activeTab, (tab) => {
-  const nextQuery = { ...route.query };
-
-  if (tab === "calls") {
-    delete nextQuery.tab;
-  } else {
-    nextQuery.tab = tab;
-  }
-
-  if (route.query.tab !== nextQuery.tab) {
-    void router.replace({ query: nextQuery });
-  }
+watch([activeTab, contextMode], () => {
+  syncUrlQuery();
 });
 
 watch(
   () => route.query,
   (q) => {
     activeTab.value = resolveTab(q.tab);
+    contextMode.value = q.mode === "full" ? "full" : "active";
 
     const nextChatKey =
       typeof q.chatKey === "string" && q.chatKey ? q.chatKey : null;
@@ -413,8 +509,25 @@ watch(
       filterPurpose.value = nextPurpose;
     }
 
-    if (q.scope || q.status || q.tab === "gate") {
-      traceScope.value = resolveScope(q.scope, q.status, q.tab, nextPurpose);
+    const nextScope = resolveScope(q.scope, q.status, q.tab, nextPurpose);
+
+    if (nextScope !== traceScope.value) {
+      traceScope.value = nextScope;
+    }
+
+    const nextSearch = typeof q.q === "string" ? q.q : "";
+
+    if (nextSearch !== filterSearch.value) {
+      filterSearch.value = nextSearch;
+    }
+
+    const nextTrace = typeof q.trace === "string" && q.trace ? q.trace : null;
+
+    if (nextTrace !== pinnedTraceId.value) {
+      pinnedTraceId.value = nextTrace;
+      if (nextTrace) {
+        selectedTraceId.value = nextTrace;
+      }
     }
   },
 );
@@ -427,17 +540,10 @@ onMounted(() => {
   if (
     route.query.tab === "gate" ||
     route.query.tab === "jobs" ||
-    route.query.tab === "deliveries"
+    route.query.tab === "deliveries" ||
+    route.query.status === "error"
   ) {
-    const cleaned = { ...route.query };
-
-    delete cleaned.tab;
-    if (route.query.tab === "gate") {
-      cleaned.scope = "all";
-      cleaned.purpose = "gate";
-    }
-
-    void router.replace({ query: cleaned });
+    syncUrlQuery();
   }
 
   void loadTraces();
@@ -446,6 +552,9 @@ onMounted(() => {
 
 onUnmounted(() => {
   mediaQuery?.removeEventListener("change", handleViewportChange);
+  if (filterTimer) {
+    clearTimeout(filterTimer);
+  }
 });
 </script>
 
@@ -652,14 +761,18 @@ onUnmounted(() => {
               </NButton>
             </div>
             <div class="trace-detail-scroll">
-              <TraceInspector :trace="selectedTrace" />
+              <TraceInspector :trace="selectedTrace" @refresh="refreshAll" />
             </div>
           </div>
         </div>
       </NTabPane>
 
       <NTabPane name="context" tab="全局上下文">
-        <GlobalContextPane ref="contextPaneRef" :paused="streamPaused" />
+        <GlobalContextPane
+          v-model:mode="contextMode"
+          ref="contextPaneRef"
+          :paused="streamPaused"
+        />
       </NTabPane>
 
       <NTabPane name="usage" tab="用量统计">
