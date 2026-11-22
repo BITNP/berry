@@ -473,3 +473,160 @@ test("BERRY_ALLOWED_GROUPS restricts group events, group listing, and outbound g
 
   assert.equal(liftedDispatch.status, "sent");
 });
+
+test("gate classifier sends max_tokens >= 2048, mentionedOthers/replyToOther flags, and real memoryHints in dryRun", async (t) => {
+  const seenRequests: {
+    maxTokens?: number;
+    systemPrompt: string;
+    payload: {
+      memoryHints: {
+        global?: { key: string; summary: string }[];
+        chat: { key: string; summary: string }[];
+      };
+      candidates: {
+        mentionedBot: boolean;
+        mentionedOthers: boolean;
+        quotedBot: boolean;
+        replyToOther: boolean;
+      }[];
+    };
+  }[] = [];
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const reqJson = JSON.parse(bodyText) as {
+      max_tokens?: number;
+      messages: { role: string; content: string }[];
+    };
+    const payload = JSON.parse(reqJson.messages[1]!.content) as {
+      memoryHints: {
+        global?: { key: string; summary: string }[];
+        chat: { key: string; summary: string }[];
+      };
+      candidates: {
+        messageId: number;
+        mentionedBot: boolean;
+        mentionedOthers: boolean;
+        quotedBot: boolean;
+        replyToOther: boolean;
+      }[];
+    };
+
+    seenRequests.push({
+      maxTokens: reqJson.max_tokens,
+      systemPrompt: reqJson.messages[0]!.content,
+      payload,
+    });
+
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        chatReply({
+          decisions: payload.candidates.map((c) => ({
+            messageId: c.messageId,
+            action: c.mentionedBot ? "reply" : "ignore",
+            confidence: 0.9,
+            reason: "测试决策",
+          })),
+        }),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      mainBaseUrl: `${llmStub.url}/v1`,
+      gateBaseUrl: `${llmStub.url}/v1`,
+      botQQ: "999999",
+    },
+    {
+      gateModel: {
+        batchWindowMs: 100,
+      },
+    },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "300",
+    title: "活跃测试群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+  await app.store.memories.upsert({
+    scope: "global",
+    ownerId: "global",
+    key: "bot_speaking_style",
+    summary: "全局默认克制话少",
+    content: "全局默认克制话少",
+  });
+  await app.store.memories.upsert({
+    scope: "chat",
+    ownerId: "group:300",
+    key: "group_active_style",
+    summary: "本群可以积极一点，多回应大家",
+    content: "本群可以积极一点，多回应大家",
+  });
+
+  // 1) Message @ing someone else while quoting a human message sets mentionedOthers & replyToOther.
+  const humanOrig = await captureText(app, {
+    kind: "group",
+    chatId: "300",
+    id: "m-human-1",
+    userId: "2001",
+    senderName: "甲",
+    text: "原消息",
+  });
+  const atOther = await app.store.messages.capture({
+    kind: "group",
+    chatId: "300",
+    onebotMessageId: "m-at-other",
+    userId: "2002",
+    senderName: "乙",
+    text: "@甲 讨论一下树莓娘的逻辑",
+    segments: [
+      { type: "at", data: { qq: "2001" } },
+      { type: "text", data: { text: " 讨论一下树莓娘的逻辑" } },
+    ],
+    replyToMessageId: humanOrig.message.onebotMessageId,
+    isBot: false,
+    mentionedBot: false,
+    sentAt: Date.now(),
+  });
+
+  await app.gate.ingest(atOther.message);
+  await delay(140);
+  await app.worker.drainOnce();
+
+  assert.equal(seenRequests.length, 1);
+  assert.ok((seenRequests[0]?.maxTokens ?? 0) >= 2048);
+  assert.match(seenRequests[0]!.systemPrompt, /memoryHints\.chat/);
+  assert.equal(seenRequests[0]!.payload.candidates[0]?.mentionedOthers, true);
+  assert.equal(seenRequests[0]!.payload.candidates[0]?.replyToOther, true);
+  assert.equal(
+    seenRequests[0]!.payload.memoryHints.chat[0]?.key,
+    "group_active_style",
+  );
+
+  // 2) dryRun also loads real global + chat memoryHints for the target chatKey.
+  await app.classifier.dryRun(app.settings, {
+    chatKey: "group:300",
+    triggerMode: "smart_observe",
+    senderName: "部员",
+    userId: "2002",
+    mentionedBot: true,
+    quotedBot: false,
+    text: "@树莓娘 🐱",
+    recentContext: [],
+  });
+
+  assert.equal(seenRequests.length, 2);
+  assert.equal(
+    seenRequests[1]!.payload.memoryHints.global?.[0]?.key,
+    "bot_speaking_style",
+  );
+  assert.equal(
+    seenRequests[1]!.payload.memoryHints.chat[0]?.key,
+    "group_active_style",
+  );
+});
