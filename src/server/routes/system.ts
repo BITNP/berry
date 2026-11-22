@@ -316,31 +316,12 @@ export function registerSystemRoutes(router: Router, berry: BerryApp): void {
             supportsThinking: false,
             defaultMaxOutputTokens: DEFAULT_TASK_MAX_OUTPUT_TOKENS.vision,
           },
-          {
-            key: "report",
-            label: "公会周报",
-            defaultMaxOutputTokens: DEFAULT_TASK_MAX_OUTPUT_TOKENS.report,
-          },
+          { key: "report", label: "公会周报" },
           { key: "memory_update", label: "记忆提炼" },
           { key: "compaction", label: "摘要压缩" },
-          {
-            key: "style_distill",
-            label: "群风提炼",
-            defaultMaxOutputTokens:
-              DEFAULT_TASK_MAX_OUTPUT_TOKENS.style_distill,
-          },
-          {
-            key: "jargon_distill",
-            label: "黑话提炼",
-            defaultMaxOutputTokens:
-              DEFAULT_TASK_MAX_OUTPUT_TOKENS.jargon_distill,
-          },
-          {
-            key: "impression_update",
-            label: "成员印象",
-            defaultMaxOutputTokens:
-              DEFAULT_TASK_MAX_OUTPUT_TOKENS.impression_update,
-          },
+          { key: "style_distill", label: "群风提炼" },
+          { key: "jargon_distill", label: "黑话提炼" },
+          { key: "impression_update", label: "成员印象" },
         ],
         envSummary: {
           gatewayUrl: berry.env.gatewayUrl,

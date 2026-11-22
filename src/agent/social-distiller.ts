@@ -1,5 +1,3 @@
-import { Type } from "typebox";
-
 import type { RuntimeSettings } from "../config/settings.ts";
 import {
   resolveMaxOutputTokens,
@@ -7,23 +5,126 @@ import {
 } from "../config/settings.ts";
 import type { Store } from "../store/index.ts";
 import type { ChatConfig, ChatKey, MemberImpressionRecord } from "../types.ts";
-import { completeChat, validateModelJson } from "./llm.ts";
+import { errorMessage } from "../utils/time.ts";
+import { completeChat, parseModelJson } from "./llm.ts";
 
-const jargonExtractSchema = Type.Object(
-  {
-    entries: Type.Array(
-      Type.Object(
-        {
-          term: Type.String({ minLength: 2, maxLength: 48 }),
-          aliases: Type.Optional(Type.Array(Type.String())),
-          meaning: Type.String({ minLength: 2, maxLength: 240 }),
-        },
-        { additionalProperties: false },
-      ),
-    ),
+interface ExtractedJargonEntry {
+  term: string;
+  aliases: string[];
+  meaning: string;
+}
+
+function normalizeAliases(raw: unknown): string[] {
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+
+    return trimmed ? [trimmed] : [];
+  }
+
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  return raw
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+export function parseJargonResponse(
+  rawContent: string | null | undefined,
+  options: {
+    finishReason?: string | null;
+    maxTokens: number;
+    excludedTerms?: readonly string[];
   },
-  { additionalProperties: false },
-);
+): ExtractedJargonEntry[] {
+  const raw = (rawContent ?? "").trim();
+  const truncated = options.finishReason === "length";
+  const excluded = new Set(
+    (options.excludedTerms ?? [])
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean),
+  );
+
+  if (!raw) {
+    throw new Error(
+      truncated
+        ? `黑话提炼输出被截断（已达 max_tokens=${options.maxTokens} 上限，可在系统设置调大 jargon_distill 输出上限）`
+        : "黑话提炼未返回正文内容",
+    );
+  }
+
+  let parsed: unknown;
+
+  try {
+    parsed = parseModelJson(raw);
+  } catch (error) {
+    if (truncated) {
+      throw new Error(
+        `黑话提炼 JSON 在达到 max_tokens=${options.maxTokens} 上限时被截断，可在系统设置调大 jargon_distill 输出上限`,
+      );
+    }
+
+    throw new Error(
+      `黑话提炼返回格式无效：JSON 解析失败: ${errorMessage(error)}`,
+    );
+  }
+
+  let rawEntries: unknown;
+
+  if (Array.isArray(parsed)) {
+    rawEntries = parsed;
+  } else if (parsed && typeof parsed === "object") {
+    const obj = parsed as Record<string, unknown>;
+
+    if (Array.isArray(obj.entries)) {
+      rawEntries = obj.entries;
+    } else if (Object.keys(obj).length === 0 && !truncated) {
+      rawEntries = [];
+    }
+  }
+
+  if (!Array.isArray(rawEntries)) {
+    throw new TypeError(
+      truncated
+        ? `黑话提炼输出在达到 max_tokens=${options.maxTokens} 上限时被截断，可在系统设置调大 jargon_distill 输出上限`
+        : "黑话提炼返回格式无效：缺少 entries 数组",
+    );
+  }
+
+  const out: ExtractedJargonEntry[] = [];
+
+  for (const item of rawEntries) {
+    if (!item || typeof item !== "object") {
+      continue;
+    }
+
+    const row = item as Record<string, unknown>;
+    const term =
+      typeof row.term === "string" ? row.term.trim().slice(0, 48) : "";
+    const meaning =
+      typeof row.meaning === "string" ? row.meaning.trim().slice(0, 240) : "";
+
+    if (
+      term.length < 2 ||
+      meaning.length < 2 ||
+      excluded.has(term.toLowerCase())
+    ) {
+      continue;
+    }
+
+    out.push({
+      term,
+      aliases: normalizeAliases(row.aliases).filter(
+        (alias) => !excluded.has(alias.toLowerCase()),
+      ),
+      meaning,
+    });
+  }
+
+  return out;
+}
 
 export class SocialDistiller {
   #store: Store;
@@ -45,6 +146,7 @@ export class SocialDistiller {
     );
     const cfg = this.#requireMainModel(settings, "提炼群聊表达风格");
     const thinkingEffort = resolveThinkingEffort(settings, "style_distill");
+    const maxTokens = resolveMaxOutputTokens(settings, "style_distill");
     const response = await completeChat({
       apiKey: cfg.apiKey,
       baseURL: cfg.baseURL,
@@ -58,7 +160,7 @@ export class SocialDistiller {
       jobId: options?.jobId ?? null,
       params: {
         temperature: 0.2,
-        max_tokens: resolveMaxOutputTokens(settings, "style_distill"),
+        max_tokens: maxTokens,
         ...(thinkingEffort === "none"
           ? {}
           : { reasoning_effort: thinkingEffort }),
@@ -81,14 +183,19 @@ export class SocialDistiller {
       },
     });
 
-    const distilled = (response.choices[0]?.message?.content ?? "")
+    const choice = response.choices[0];
+    const distilled = (choice?.message?.content ?? "")
       .trim()
       .replace(/^```[\s\S]*?\n|```$/g, "")
       .trim()
       .slice(0, 600);
 
     if (!distilled) {
-      throw new Error("模型未返回有效的群风格摘要");
+      throw new Error(
+        choice?.finish_reason === "length"
+          ? `群风格提炼输出被截断（已达 max_tokens=${maxTokens} 上限，可在系统设置调大 style_distill 输出上限）`
+          : "模型未返回有效的群风格摘要",
+      );
     }
 
     return this.#store.chats.update(chatKey, { stylePrompt: distilled });
@@ -104,10 +211,23 @@ export class SocialDistiller {
       options?.sampleLimit ?? 100,
     );
     const cfg = this.#requireMainModel(settings, "提炼群内黑话词条");
-    const existingTerms = (await this.#store.jargon.list({ chatKey })).map(
-      (item) => item.term,
-    );
+    const [existingRows, memoryIndex] = await Promise.all([
+      this.#store.jargon.list({ chatKey }),
+      this.#store.memories.index(chatKey),
+    ]);
+    const existingTerms = existingRows.map((item) => item.term);
+    const botNames = [
+      ...new Set(
+        [...settings.bot.names, "树莓娘", "网协树莓娘", "树莓", "berry"]
+          .map((name) => name.trim())
+          .filter(Boolean),
+      ),
+    ];
+    const knownMemories = [...memoryIndex.global, ...memoryIndex.chat]
+      .slice(0, 24)
+      .map((item) => `${item.key}: ${item.summary}`);
     const thinkingEffort = resolveThinkingEffort(settings, "jargon_distill");
+    const maxTokens = resolveMaxOutputTokens(settings, "jargon_distill");
     const response = await completeChat({
       apiKey: cfg.apiKey,
       baseURL: cfg.baseURL,
@@ -121,7 +241,7 @@ export class SocialDistiller {
       jobId: options?.jobId ?? null,
       params: {
         temperature: 0.2,
-        max_tokens: resolveMaxOutputTokens(settings, "jargon_distill"),
+        max_tokens: maxTokens,
         response_format: { type: "json_object" },
         ...(thinkingEffort === "none"
           ? {}
@@ -130,12 +250,17 @@ export class SocialDistiller {
           {
             role: "system",
             content:
-              '你是群内黑话与圈内梗词典提炼助手。请从群聊样本中挑出真正具有圈内特定含义的梗、黑话、外号或简称（最多 8 条；忽略普通日常词汇、单字词和已收录词条；若没有明显黑话则返回空数组）。严格输出 JSON：{"entries":[{"term":"词条","aliases":["同义写法"],"meaning":"一句简明解释"}]}。',
+              '你是北京理工大学网络开拓者协会（BITNP）QQ 机器人“树莓娘”的群内黑话词典提炼助手。请从群聊样本中挑出真正具有本群或圈内特定含义的梗、黑话、外号或简称（最多 8 条；若没有明显黑话则返回空数组）。严格遵守：1) botIdentity.names 是你（群机器人树莓娘）自己的名字和别称，严禁把机器人自己的名字收录成黑话，也禁止望文生义误解为“树莓派”；2) 忽略普通日常词汇、单字词、通用软件/开发/工程术语（如 staging、tape、API、注入、PR、Docker 等）以及 existingTerms / knownMemories 中已收录或已明确定义的内容；3) 每条释义必须能在群聊上下文中得到明确佐证，不确定含义时宁缺毋滥，不要凭字面臆测。严格输出 JSON：{"entries":[{"term":"词条","aliases":["同义写法"],"meaning":"一句简明解释"}]}。',
           },
           {
             role: "user",
             content: JSON.stringify({
               chatTitle: chat.title || chat.chatKey,
+              botIdentity: {
+                names: botNames,
+                role: "北京理工大学网络开拓者协会（BITNP）QQ 群机器人",
+              },
+              knownMemories,
               existingTerms,
               transcript,
             }),
@@ -144,23 +269,21 @@ export class SocialDistiller {
       },
     });
 
-    const parsed = validateModelJson(
-      jargonExtractSchema,
-      response.choices[0]?.message?.content ?? "{}",
-    );
-
-    if (!parsed.ok) {
-      throw new Error(`黑话提炼返回格式无效：${parsed.issue}`);
-    }
+    const choice = response.choices[0];
+    const entries = parseJargonResponse(choice?.message?.content, {
+      finishReason: choice?.finish_reason,
+      maxTokens,
+      excludedTerms: [...botNames, ...existingTerms],
+    });
 
     const status = settings.social.jargonAutoApprove ? "approved" : "pending";
     let inserted = 0;
 
-    for (const entry of parsed.value.entries.slice(0, 8)) {
+    for (const entry of entries.slice(0, 8)) {
       const added = await this.#store.jargon.insertIfAbsent({
         chatKey,
         term: entry.term,
-        aliases: entry.aliases ?? [],
+        aliases: entry.aliases,
         meaning: entry.meaning,
         status,
         source: "auto",
@@ -171,7 +294,7 @@ export class SocialDistiller {
       }
     }
 
-    return { inserted, totalExtracted: parsed.value.entries.length };
+    return { inserted, totalExtracted: entries.length };
   }
 
   public async refreshMemberImpression(
@@ -215,6 +338,7 @@ export class SocialDistiller {
       .map((m) => m.text.replace(/\s+/g, " ").slice(0, 120))
       .join("\n");
     const thinkingEffort = resolveThinkingEffort(settings, "impression_update");
+    const maxTokens = resolveMaxOutputTokens(settings, "impression_update");
     const response = await completeChat({
       apiKey: cfg.apiKey,
       baseURL: cfg.baseURL,
@@ -228,7 +352,7 @@ export class SocialDistiller {
       jobId: options?.jobId ?? null,
       params: {
         temperature: 0.2,
-        max_tokens: resolveMaxOutputTokens(settings, "impression_update"),
+        max_tokens: maxTokens,
         ...(thinkingEffort === "none"
           ? {}
           : { reasoning_effort: thinkingEffort }),
@@ -250,14 +374,19 @@ export class SocialDistiller {
       },
     });
 
-    const impression = (response.choices[0]?.message?.content ?? "")
+    const choice = response.choices[0];
+    const impression = (choice?.message?.content ?? "")
       .trim()
       .replace(/^["“”'`]+|["“”'`]+$/g, "")
       .replace(/\s+/g, " ")
       .slice(0, 120);
 
     if (!impression) {
-      throw new Error("模型未返回有效的成员印象");
+      throw new Error(
+        choice?.finish_reason === "length"
+          ? `成员印象提炼输出被截断（已达 max_tokens=${maxTokens} 上限，可在系统设置调大 impression_update 输出上限）`
+          : "模型未返回有效的成员印象",
+      );
     }
 
     return this.#store.impressions.upsert({

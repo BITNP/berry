@@ -5,6 +5,7 @@ import { Type } from "typebox";
 
 import { computeReplyPaceDelayMs } from "../src/agent/dispatch.ts";
 import { ModelIds } from "../src/agent/model-ids.ts";
+import { parseJargonResponse } from "../src/agent/social-distiller.ts";
 import {
   parseSettings,
   resolveMaxOutputTokens,
@@ -556,11 +557,47 @@ test("per-task thinkingEffort resolves defaults, category fallback, and exact ov
   });
 
   assert.equal(resolveMaxOutputTokens(baseNone, "dialog"), 4096);
-  assert.equal(resolveMaxOutputTokens(baseNone, "impression_update"), 2048);
-  assert.equal(resolveMaxOutputTokens(baseNone, "jargon_distill"), 2048);
-  assert.equal(resolveMaxOutputTokens(baseNone, "style_distill"), 2048);
+  assert.equal(resolveMaxOutputTokens(baseNone, "impression_update"), 4096);
+  assert.equal(resolveMaxOutputTokens(baseNone, "jargon_distill"), 4096);
+  assert.equal(resolveMaxOutputTokens(baseNone, "style_distill"), 4096);
   assert.equal(resolveMaxOutputTokens(baseNone, "gate"), 2048);
   assert.equal(resolveMaxOutputTokens(baseNone, "vision"), 2048);
+
+  // parseJargonResponse tolerates extra keys, null/string aliases, skips 1-char terms and excluded bot names.
+  const extracted = parseJargonResponse(
+    JSON.stringify({
+      entries: [
+        { term: "树莓娘", aliases: ["树莓"], meaning: "树莓派的拟人化称呼" },
+        { term: "寄", aliases: null, meaning: "完蛋了" },
+        {
+          term: "群串子",
+          aliases: "串子",
+          meaning: "指群里爱带节奏整活的成员",
+          extraNote: "ignored",
+        },
+        { term: "炼丹", aliases: ["调参", "树莓", null], meaning: "训练模型" },
+      ],
+    }),
+    {
+      finishReason: "stop",
+      maxTokens: 4096,
+      excludedTerms: ["树莓娘", "树莓"],
+    },
+  );
+
+  assert.deepEqual(extracted, [
+    {
+      term: "群串子",
+      aliases: ["串子"],
+      meaning: "指群里爱带节奏整活的成员",
+    },
+    { term: "炼丹", aliases: ["调参"], meaning: "训练模型" },
+  ]);
+
+  assert.throws(
+    () => parseJargonResponse("", { finishReason: "length", maxTokens: 4096 }),
+    /max_tokens=4096/,
+  );
   assert.equal(resolveMaxOutputTokens(baseMedium, "impression_update"), 1024);
   assert.equal(
     resolveMaxOutputTokens(baseMedium, "subagent:guild_operator"),

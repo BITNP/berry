@@ -1074,11 +1074,21 @@ test("jargon dictionary distills pending entries, approves via API, and injects 
     const sys = reqJson.messages[0]?.content ?? "";
 
     res.setHeader("Content-Type", "application/json");
-    if (sys.includes("黑话与圈内梗词典提炼助手")) {
+    if (sys.includes("黑话词典提炼助手")) {
+      const userPayload = JSON.parse(
+        reqJson.messages.at(-1)?.content ?? "{}",
+      ) as { botIdentity?: { names?: string[] } };
+
+      assert.ok(userPayload.botIdentity?.names?.includes("树莓娘"));
       res.end(
         JSON.stringify(
           chatReply({
             entries: [
+              {
+                term: "树莓娘",
+                aliases: ["树莓"],
+                meaning: "树莓派的拟人化称呼",
+              },
               {
                 term: "群呆唯",
                 aliases: ["呆唯"],

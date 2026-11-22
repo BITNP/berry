@@ -388,10 +388,6 @@ export function resolveThinkingEffort(
 export const DEFAULT_TASK_MAX_OUTPUT_TOKENS: Record<string, number> = {
   gate: 2048,
   vision: 2048,
-  report: 2048,
-  style_distill: 2048,
-  jargon_distill: 2048,
-  impression_update: 2048,
 };
 
 export function resolveMaxOutputTokens(
