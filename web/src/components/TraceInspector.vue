@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Image as ImageIcon,
   MessageSquare,
+  RotateCcw,
   Sparkles,
   Wrench,
 } from "@lucide/vue";
@@ -16,6 +17,7 @@ import { NAlert, NButton, NImage, NTag, useMessage } from "naive-ui";
 import { ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
+import { apiFetch } from "../api/client.ts";
 import type { AiTraceView, LlmCallRow, TraceOutcome } from "../utils/ai.ts";
 import {
   formatDurationHuman,
@@ -29,6 +31,10 @@ import {
 import { formatPercent, formatTime } from "../utils/format.ts";
 import { routes } from "../utils/routes.ts";
 
+const emit = defineEmits<{
+  refresh: [];
+}>();
+
 const props = defineProps<{
   trace: AiTraceView | null;
   hideJumpToChat?: boolean;
@@ -39,6 +45,29 @@ const message = useMessage();
 
 const rawOpenByStep = ref<Record<number, boolean>>({});
 const toolResultOpen = ref<Record<string, boolean>>({});
+const retryingJobId = ref<number | null>(null);
+
+async function retryJob(jobId: number) {
+  retryingJobId.value = jobId;
+
+  try {
+    const res = await apiFetch<{ retried: boolean }>(
+      `/api/admin/jobs/${jobId}/retry`,
+      { method: "POST" },
+    );
+
+    if (res.retried) {
+      message.success(`任务 #${jobId} 已重新入队`);
+      emit("refresh");
+    } else {
+      message.info(`任务 #${jobId} 当前无需重试`);
+    }
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : "重试任务失败");
+  } finally {
+    retryingJobId.value = null;
+  }
+}
 
 watch(
   () => props.trace?.id,
@@ -230,6 +259,76 @@ const isVisionEmpty = (step: LlmCallRow): boolean =>
         查看会话
       </NButton>
     </header>
+
+    <!-- Failed jobs / deliveries summary -->
+    <section
+      v-if="trace.failedJobs.length > 0 || trace.failedDeliveries.length > 0"
+      class="ti-section"
+    >
+      <div class="ti-section-label">异常记录</div>
+
+      <NAlert
+        v-for="job in trace.failedJobs"
+        :key="`fj-${job.id}`"
+        :show-icon="false"
+        type="error"
+      >
+        <div class="ti-fail-row">
+          <div class="ti-fail-main">
+            <div class="ti-fail-head">
+              <NTag :bordered="false" size="tiny" type="error">
+                {{ job.label }}
+              </NTag>
+              <span class="mono ti-muted">任务 #{{ job.id }}</span>
+              <span class="tabular ti-muted">已尝试 {{ job.attempts }} 次</span>
+              <span class="tabular ti-muted">
+                {{ formatTime(job.updatedAt) }}
+              </span>
+            </div>
+            <div v-if="job.summary" class="ti-fail-summary">
+              {{ job.summary }}
+            </div>
+            <div class="ti-fail-error">{{ job.lastError }}</div>
+          </div>
+          <NButton
+            :loading="retryingJobId === job.id"
+            secondary
+            size="tiny"
+            type="error"
+            @click="retryJob(job.id)"
+          >
+            <template #icon>
+              <RotateCcw :size="12" />
+            </template>
+            重试任务
+          </NButton>
+        </div>
+      </NAlert>
+
+      <NAlert
+        v-for="del in trace.failedDeliveries"
+        :key="`fd-${del.id}`"
+        :show-icon="false"
+        type="error"
+      >
+        <div class="ti-fail-main">
+          <div class="ti-fail-head">
+            <NTag :bordered="false" size="tiny" type="error">
+              投递 · {{ del.label }}
+            </NTag>
+            <span class="mono ti-muted">投递 #{{ del.id }}</span>
+            <span class="tabular ti-muted">已尝试 {{ del.attempts }} 次</span>
+            <span class="tabular ti-muted">
+              {{ formatTime(del.updatedAt) }}
+            </span>
+          </div>
+          <div v-if="del.summary" class="ti-fail-summary">
+            {{ del.summary }}
+          </div>
+          <div class="ti-fail-error">{{ del.error }}</div>
+        </div>
+      </NAlert>
+    </section>
 
     <!-- Causal overview: Trigger -> Outcome -->
     <section
@@ -758,6 +857,40 @@ const isVisionEmpty = (step: LlmCallRow): boolean =>
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.ti-fail-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.ti-fail-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ti-fail-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.ti-fail-summary {
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.ti-fail-error {
+  font-size: 12px;
+  font-family: var(--berry-mono);
+  word-break: break-word;
+  white-space: pre-wrap;
 }
 
 .ti-section:last-child {

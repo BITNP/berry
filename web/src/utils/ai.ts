@@ -79,9 +79,30 @@ export interface TraceOutcome {
   preview: string;
 }
 
+export interface TraceFailedJob {
+  id: number;
+  kind: string;
+  label: string;
+  lane: "gate" | "dialog" | "background";
+  summary: string;
+  attempts: number;
+  lastError: string;
+  updatedAt: number;
+}
+
+export interface TraceFailedDelivery {
+  id: number;
+  kind: "qq_reply" | "qq_forward" | "qq_reaction" | "qq_poke" | "qq_image";
+  label: string;
+  summary: string;
+  attempts: number;
+  error: string;
+  updatedAt: number;
+}
+
 export interface AiTraceView {
   id: string;
-  kind: "message" | "job" | "standalone";
+  kind: "message" | "job" | "delivery" | "standalone";
   chatKey: string | null;
   chatTitle: string;
   chatKind: "group" | "private" | null;
@@ -91,6 +112,8 @@ export interface AiTraceView {
   instruction: string | null;
   gateDecisions: TraceGateDecision[];
   steps: LlmCallRow[];
+  failedJobs: TraceFailedJob[];
+  failedDeliveries: TraceFailedDelivery[];
   status: "ok" | "error";
   outcome: TraceOutcome;
   totalDurationMs: number;

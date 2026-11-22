@@ -179,4 +179,26 @@ export class AssetsStore {
         .execute();
     });
   }
+
+  public async listFailed(
+    filter: { chatKey?: string; limit?: number } = {},
+  ): Promise<MessageAssetRecord[]> {
+    const limit = Math.min(200, Math.max(1, filter.limit ?? 60));
+    let query = this.#database.db
+      .selectFrom("message_assets")
+      .selectAll()
+      .where("status", "=", "failed");
+
+    if (filter.chatKey) {
+      query = query.where("chat_key", "=", filter.chatKey);
+    }
+
+    const rows = await query
+      .orderBy("updated_at", "desc")
+      .orderBy("id", "desc")
+      .limit(limit)
+      .execute();
+
+    return rows.map(decodeAsset);
+  }
 }

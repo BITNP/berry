@@ -1,8 +1,10 @@
 import type { BerryApp } from "../app.ts";
 import type {
   ChatConfig,
+  DeliveryRecord,
   GateAction,
   GateDecisionRecord,
+  JobLane,
   JobRecord,
   LlmCallRecord,
   MessageAssetRecord,
@@ -21,6 +23,27 @@ export interface TraceMessageSnippet {
   assets: MessageAssetRecord[];
 }
 
+export interface TraceFailedJob {
+  id: number;
+  kind: string;
+  label: string;
+  lane: JobLane;
+  summary: string;
+  attempts: number;
+  lastError: string;
+  updatedAt: number;
+}
+
+export interface TraceFailedDelivery {
+  id: number;
+  kind: DeliveryRecord["kind"];
+  label: string;
+  summary: string;
+  attempts: number;
+  error: string;
+  updatedAt: number;
+}
+
 export interface TraceOutcome {
   kind:
     | "reply"
@@ -37,7 +60,7 @@ export interface TraceOutcome {
 
 export interface AiTraceView {
   id: string;
-  kind: "message" | "job" | "standalone";
+  kind: "message" | "job" | "delivery" | "standalone";
   chatKey: string | null;
   chatTitle: string;
   chatKind: "group" | "private" | null;
@@ -47,6 +70,8 @@ export interface AiTraceView {
   instruction: string | null;
   gateDecisions: GateDecisionRecord[];
   steps: LlmCallRecord[];
+  failedJobs: TraceFailedJob[];
+  failedDeliveries: TraceFailedDelivery[];
   status: "ok" | "error";
   outcome: TraceOutcome;
   totalDurationMs: number;
@@ -283,14 +308,125 @@ function parseDialogOutcome(steps: LlmCallRecord[]): TraceOutcome | null {
   return null;
 }
 
+const DELIVERY_KIND_LABELS: Record<DeliveryRecord["kind"], string> = {
+  qq_reply: "文本回复",
+  qq_forward: "合并转发",
+  qq_reaction: "表情回应",
+  qq_poke: "戳一戳",
+  qq_image: "表情包",
+};
+
+const JOB_KIND_PURPOSES: Record<string, readonly string[]> = {
+  invoke: ["dialog"],
+  gate_batch: ["gate"],
+  media_process: ["vision", "audio"],
+  guild_weekly_report: ["report"],
+};
+
+function summarizeDelivery(delivery: DeliveryRecord): string {
+  const { payload } = delivery;
+
+  switch (payload.kind) {
+    case "qq_reply": {
+      return payload.text.replaceAll(/\s+/g, " ").trim().slice(0, 140);
+    }
+
+    case "qq_forward": {
+      return `${payload.title || "合并转发"}（${payload.items.length} 条）`;
+    }
+
+    case "qq_reaction": {
+      return `${payload.remove ? "取消表情" : "贴表情"} #${payload.emojiId}`;
+    }
+
+    case "qq_poke": {
+      return `戳了戳 ${payload.userId}`;
+    }
+
+    case "qq_image": {
+      return payload.stickerId
+        ? `发送表情包 #${payload.stickerId}`
+        : "发送图片";
+    }
+  }
+}
+
+const toFailedDeliveryView = (
+  delivery: DeliveryRecord,
+): TraceFailedDelivery => ({
+  id: delivery.id,
+  kind: delivery.kind,
+  label: DELIVERY_KIND_LABELS[delivery.kind],
+  summary: summarizeDelivery(delivery),
+  attempts: delivery.attempts,
+  error: delivery.error || "消息投递失败",
+  updatedAt: delivery.updatedAt,
+});
+
+function toFailedJobView(
+  berry: BerryApp,
+  job: JobRecord,
+  messagesById: ReadonlyMap<number, MessageRecord>,
+): TraceFailedJob {
+  const meta = berry.jobs.describeJob(job, { messagesById });
+
+  return {
+    id: job.id,
+    kind: job.kind,
+    label: meta.label,
+    lane: meta.lane,
+    summary: meta.summary,
+    attempts: job.attempts,
+    lastError: job.lastError || "任务执行失败",
+    updatedAt: job.updatedAt,
+  };
+}
+
+const jobMatchesPurpose = (kind: string, purpose: string): boolean =>
+  kind === purpose || (JOB_KIND_PURPOSES[kind]?.includes(purpose) ?? false);
+
 function computeOutcome(
   steps: LlmCallRecord[],
   gateDecisions: GateDecisionRecord[],
   replyMessages: TraceMessageSnippet[],
   triggerMessages: TraceMessageSnippet[],
+  failedJobs: TraceFailedJob[],
+  failedDeliveries: TraceFailedDelivery[],
 ): TraceOutcome {
   const failedStep = steps.find((s) => s.status === "error");
   const dialogOutcome = parseDialogOutcome(steps);
+
+  if (dialogOutcome?.kind === "error") {
+    return dialogOutcome;
+  }
+
+  if (failedJobs.length > 0) {
+    const first = failedJobs[0]!;
+
+    return {
+      kind: "error",
+      label: `${first.label}失败`,
+      preview: first.lastError || first.summary,
+    };
+  }
+
+  if (failedDeliveries.length > 0) {
+    const first = failedDeliveries[0]!;
+
+    return {
+      kind: "error",
+      label: "投递失败",
+      preview: first.error || first.summary,
+    };
+  }
+
+  if (failedStep) {
+    return {
+      kind: "error",
+      label: `${purposeLabelCn(failedStep.purpose)}失败`,
+      preview: failedStep.error ?? "模型调用异常",
+    };
+  }
 
   if (dialogOutcome) {
     return dialogOutcome;
@@ -305,6 +441,18 @@ function computeOutcome(
         .replaceAll(/\s+/g, " ")
         .trim()
         .slice(0, 140),
+    };
+  }
+
+  const failedAsset = triggerMessages
+    .flatMap((m) => m.assets)
+    .find((a) => a.status === "failed");
+
+  if (failedAsset) {
+    return {
+      kind: "error",
+      label: "媒体失败",
+      preview: failedAsset.error ?? "附件解析失败",
     };
   }
 
@@ -326,26 +474,6 @@ function computeOutcome(
         preview: latestGate.reason,
       };
     }
-  }
-
-  if (failedStep) {
-    return {
-      kind: "error",
-      label: "调用失败",
-      preview: failedStep.error ?? "模型调用异常",
-    };
-  }
-
-  const failedAsset = triggerMessages
-    .flatMap((m) => m.assets)
-    .find((a) => a.status === "failed");
-
-  if (failedAsset) {
-    return {
-      kind: "error",
-      label: "媒体失败",
-      preview: failedAsset.error ?? "附件解析失败",
-    };
   }
 
   const visionStep = [...steps].reverse().find((s) => s.purpose === "vision");
@@ -392,6 +520,8 @@ function finalizeTrace(input: {
   instruction: string | null;
   gateDecisions: GateDecisionRecord[];
   steps: LlmCallRecord[];
+  failedJobs: TraceFailedJob[];
+  failedDeliveries: TraceFailedDelivery[];
 }): AiTraceView {
   const orderedSteps = [...input.steps].sort(
     (a, b) => a.createdAt - b.createdAt || a.id - b.id,
@@ -418,6 +548,8 @@ function finalizeTrace(input: {
     input.gateDecisions,
     input.replyMessages,
     input.triggerMessages,
+    input.failedJobs,
+    input.failedDeliveries,
   );
   const hasFailedAsset = input.triggerMessages
     .flatMap((m) => m.assets)
@@ -425,13 +557,17 @@ function finalizeTrace(input: {
   const status: "ok" | "error" =
     orderedSteps.some((s) => s.status === "error") ||
     outcome.kind === "error" ||
-    hasFailedAsset
+    hasFailedAsset ||
+    input.failedJobs.length > 0 ||
+    input.failedDeliveries.length > 0
       ? "error"
       : "ok";
   const timestamps = [
     ...orderedSteps.map((s) => s.createdAt),
     ...input.gateDecisions.map((g) => g.createdAt),
     ...input.triggerMessages.map((m) => m.sentAt),
+    ...input.failedJobs.map((j) => j.updatedAt),
+    ...input.failedDeliveries.map((d) => d.updatedAt),
   ];
   const startedAt =
     timestamps.length > 0 ? Math.min(...timestamps) : Date.now();
@@ -449,6 +585,8 @@ function finalizeTrace(input: {
     instruction: input.instruction,
     gateDecisions: input.gateDecisions,
     steps: orderedSteps,
+    failedJobs: input.failedJobs,
+    failedDeliveries: input.failedDeliveries,
     status,
     outcome,
     totalDurationMs,
@@ -523,6 +661,10 @@ export async function buildMessageTrace(
     jobIds,
     messageId: message.id,
   });
+  const msgLookup = new Map<number, MessageRecord>([[message.id, message]]);
+  const failedJobs = relatedJobs
+    .filter((job) => job.state === "failed")
+    .map((job) => toFailedJobView(berry, job, msgLookup));
 
   return finalizeTrace({
     id: `msg:${message.id}`,
@@ -536,6 +678,8 @@ export async function buildMessageTrace(
     instruction: null,
     gateDecisions: gateMap.get(message.id) ?? [],
     steps: calls,
+    failedJobs,
+    failedDeliveries: [],
   });
 }
 
@@ -551,10 +695,20 @@ export async function buildAiTraces(
   } = {},
 ): Promise<{ items: AiTraceView[]; total: number }> {
   const limit = Math.min(120, Math.max(1, filter.limit ?? 50));
+  const errorOnly = filter.scope === "error" || filter.status === "error";
 
-  const [{ items: recentCalls }, chats, recentJobs] = await Promise.all([
+  const [
+    { items: initialCalls },
+    chats,
+    recentJobs,
+    failedJobRows,
+    failedAssetRows,
+    failedDeliveryRows,
+  ] = await Promise.all([
     berry.store.usage.listRecent({
       chatKey: filter.chatKey,
+      status: errorOnly ? "error" : undefined,
+      purpose: filter.purpose,
       limit: 200,
     }),
     berry.store.chats.list(),
@@ -562,14 +716,101 @@ export async function buildAiTraces(
       chatKey: filter.chatKey,
       limit: 160,
     }),
+    berry.store.jobs.list({
+      chatKey: filter.chatKey,
+      state: "failed",
+      limit: 100,
+    }),
+    errorOnly
+      ? berry.store.assets.listFailed({
+          chatKey: filter.chatKey,
+          limit: 80,
+        })
+      : Promise.resolve([]),
+    errorOnly
+      ? berry.store.deliveries.listFailed({
+          chatKey: filter.chatKey,
+          limit: 60,
+        })
+      : Promise.resolve([]),
   ]);
 
   const chatByKey = new Map<string, ChatConfig>(
     chats.map((c) => [c.chatKey, c]),
   );
-  const jobById = new Map(recentJobs.map((j) => [j.id, j]));
+  const jobById = new Map<number, JobRecord>();
 
-  // Map each call to its canonical group key (preferring triggering message ID, then job ID, then call ID).
+  for (const job of recentJobs) {
+    jobById.set(job.id, job);
+  }
+
+  for (const job of failedJobRows) {
+    jobById.set(job.id, job);
+  }
+
+  const missingJobIds = [
+    ...new Set(
+      initialCalls
+        .map((c) => c.jobId)
+        .filter((id): id is number => id !== null && !jobById.has(id)),
+    ),
+  ];
+
+  if (missingJobIds.length > 0) {
+    const extraJobs = await berry.store.jobs.getByIds(missingJobIds);
+
+    for (const job of extraJobs) {
+      jobById.set(job.id, job);
+    }
+  }
+
+  // When filtering by error or purpose, hydrate sibling LLM steps so each trace shows its full timeline.
+  let allCalls = initialCalls;
+
+  if (errorOnly || Boolean(filter.purpose)) {
+    const hydrateJobIds = new Set<number>();
+    const hydrateMsgIds = new Set<number>();
+
+    for (const call of initialCalls) {
+      if (call.jobId !== null) {
+        hydrateJobIds.add(call.jobId);
+      }
+
+      for (const mid of call.messageIds) {
+        hydrateMsgIds.add(mid);
+      }
+    }
+
+    for (const job of failedJobRows) {
+      hydrateJobIds.add(job.id);
+      for (const mid of collectJobMessageIds(job, berry)) {
+        hydrateMsgIds.add(mid);
+      }
+    }
+
+    for (const asset of failedAssetRows) {
+      hydrateMsgIds.add(asset.messageId);
+    }
+
+    const siblingCalls = await berry.store.usage.listForGroups({
+      jobIds: [...hydrateJobIds],
+      messageIds: [...hydrateMsgIds],
+      limit: 400,
+    });
+    const mergedById = new Map<number, LlmCallRecord>();
+
+    for (const call of initialCalls) {
+      mergedById.set(call.id, call);
+    }
+
+    for (const call of siblingCalls) {
+      mergedById.set(call.id, call);
+    }
+
+    allCalls = [...mergedById.values()];
+  }
+
+  // Map each call / failed job / failed asset / failed delivery to its canonical group key.
   interface RawGroup {
     id: string;
     kind: AiTraceView["kind"];
@@ -577,6 +818,8 @@ export async function buildAiTraces(
     messageIds: Set<number>;
     jobIds: Set<number>;
     steps: LlmCallRecord[];
+    failedJobs: Map<number, JobRecord>;
+    failedDeliveries: Map<number, DeliveryRecord>;
     instruction: string | null;
   }
 
@@ -597,6 +840,8 @@ export async function buildAiTraces(
         messageIds: new Set(),
         jobIds: new Set(),
         steps: [],
+        failedJobs: new Map(),
+        failedDeliveries: new Map(),
         instruction: null,
       };
       groups.set(key, g);
@@ -605,7 +850,38 @@ export async function buildAiTraces(
     return g;
   }
 
-  for (const call of recentCalls) {
+  function attachJobToGroup(job: JobRecord): RawGroup {
+    const jobMsgIds = collectJobMessageIds(job, berry);
+    const chatKey = job.chatKey || null;
+    let group: RawGroup;
+
+    if (jobMsgIds.length > 0) {
+      group = getOrCreate(`msg:${jobMsgIds[0]!}`, "message", chatKey);
+      for (const mid of jobMsgIds) {
+        group.messageIds.add(mid);
+      }
+    } else {
+      group = getOrCreate(`job:${job.id}`, "job", chatKey);
+    }
+
+    group.jobIds.add(job.id);
+    if (job.state === "failed") {
+      group.failedJobs.set(job.id, job);
+    }
+
+    if (
+      !group.instruction &&
+      job.kind === "invoke" &&
+      "content" in job.payload &&
+      typeof job.payload.content === "string"
+    ) {
+      group.instruction = job.payload.content;
+    }
+
+    return group;
+  }
+
+  for (const call of allCalls) {
     const job = call.jobId === null ? undefined : jobById.get(call.jobId);
     const jobMsgIds = job ? collectJobMessageIds(job, berry) : [];
     const callMsgIds = call.messageIds.length > 0 ? call.messageIds : jobMsgIds;
@@ -627,6 +903,9 @@ export async function buildAiTraces(
 
     if (job) {
       group.jobIds.add(job.id);
+      if (job.state === "failed") {
+        group.failedJobs.set(job.id, job);
+      }
     }
 
     if (!group.instruction) {
@@ -642,6 +921,30 @@ export async function buildAiTraces(
     }
 
     group.steps.push(call);
+  }
+
+  for (const job of failedJobRows) {
+    attachJobToGroup(job);
+  }
+
+  for (const asset of failedAssetRows) {
+    const group = getOrCreate(
+      `msg:${asset.messageId}`,
+      "message",
+      asset.chatKey,
+    );
+
+    group.messageIds.add(asset.messageId);
+  }
+
+  for (const delivery of failedDeliveryRows) {
+    const group = getOrCreate(
+      `delivery:${delivery.id}`,
+      "delivery",
+      delivery.chatKey,
+    );
+
+    group.failedDeliveries.set(delivery.id, delivery);
   }
 
   // Batch load all referenced messages, their assets, gate decisions, and bot replies.
@@ -754,6 +1057,12 @@ export async function buildAiTraces(
     const gateDecisions = [...g.messageIds]
       .flatMap((id) => gateMap.get(id) ?? [])
       .sort((a, b) => a.createdAt - b.createdAt || a.id - b.id);
+    const failedJobs = [...g.failedJobs.values()]
+      .sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id)
+      .map((job) => toFailedJobView(berry, job, msgById));
+    const failedDeliveries = [...g.failedDeliveries.values()]
+      .sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id)
+      .map(toFailedDeliveryView);
 
     traces.push(
       finalizeTrace({
@@ -768,6 +1077,8 @@ export async function buildAiTraces(
         instruction: g.instruction,
         gateDecisions,
         steps: g.steps,
+        failedJobs,
+        failedDeliveries,
       }),
     );
   }
@@ -780,15 +1091,50 @@ export async function buildAiTraces(
   if (filter.scope === "error") {
     traces = traces.filter((t) => t.status === "error");
   } else if (filter.scope === "active") {
-    traces = traces.filter((t) => t.steps.some((s) => s.purpose !== "gate"));
+    traces = traces.filter(
+      (t) =>
+        t.steps.some((s) => s.purpose !== "gate") ||
+        t.failedJobs.length > 0 ||
+        t.failedDeliveries.length > 0,
+    );
   }
 
   if (filter.purpose) {
-    traces = traces.filter((t) =>
-      filter.purpose === "subagent"
-        ? t.steps.some((s) => s.purpose.startsWith("subagent"))
-        : t.steps.some((s) => s.purpose === filter.purpose),
-    );
+    const purpose = filter.purpose;
+
+    traces = traces.filter((t) => {
+      if (purpose === "subagent") {
+        return t.steps.some((s) => s.purpose.startsWith("subagent"));
+      }
+
+      if (t.steps.some((s) => s.purpose === purpose)) {
+        return true;
+      }
+
+      if (t.failedJobs.some((j) => jobMatchesPurpose(j.kind, purpose))) {
+        return true;
+      }
+
+      if (purpose === "dialog" && t.failedDeliveries.length > 0) {
+        return true;
+      }
+
+      if (
+        (purpose === "vision" || purpose === "audio") &&
+        t.triggerMessages
+          .flatMap((m) => m.assets)
+          .some(
+            (a) =>
+              a.status === "failed" &&
+              ((purpose === "vision" && a.kind === "image") ||
+                (purpose === "audio" && a.kind === "audio")),
+          )
+      ) {
+        return true;
+      }
+
+      return false;
+    });
   }
 
   if (filter.search?.trim()) {
@@ -799,9 +1145,21 @@ export async function buildAiTraces(
         t.chatTitle,
         t.chatKey ?? "",
         t.instruction ?? "",
+        t.outcome.label,
         t.outcome.preview,
-        ...t.triggerMessages.flatMap((m) => [m.senderName, m.text]),
+        ...t.triggerMessages.flatMap((m) => [
+          m.senderName,
+          m.text,
+          ...m.assets.map((a) => a.error ?? ""),
+        ]),
         ...t.replyMessages.map((m) => m.text),
+        ...t.failedJobs.flatMap((j) => [
+          j.label,
+          j.kind,
+          j.summary,
+          j.lastError,
+        ]),
+        ...t.failedDeliveries.flatMap((d) => [d.label, d.summary, d.error]),
         ...t.steps.flatMap((s) => [
           s.model,
           s.error ?? "",

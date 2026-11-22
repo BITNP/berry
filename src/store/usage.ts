@@ -416,6 +416,57 @@ export class UsageStore {
     return rows.map(decodeLlmCall);
   }
 
+  public async listForGroups(input: {
+    jobIds?: number[];
+    messageIds?: number[];
+    limit?: number;
+  }): Promise<LlmCallRecord[]> {
+    const jobIds = [
+      ...new Set(
+        (input.jobIds ?? []).filter((id) => Number.isInteger(id) && id > 0),
+      ),
+    ];
+    const messageIds = [
+      ...new Set(
+        (input.messageIds ?? []).filter((id) => Number.isInteger(id) && id > 0),
+      ),
+    ];
+    const limit = Math.min(400, Math.max(1, input.limit ?? 300));
+
+    if (jobIds.length === 0 && messageIds.length === 0) {
+      return [];
+    }
+
+    const rows = await this.#database.db
+      .selectFrom("llm_usage")
+      .selectAll()
+      .where((eb) => {
+        const branches = [];
+
+        if (jobIds.length > 0) {
+          branches.push(eb("job_id", "in", jobIds));
+        }
+
+        if (messageIds.length > 0) {
+          branches.push(
+            eb(
+              sql<number>`exists (select 1 from json_each(coalesce(llm_usage.message_ids_json, '[]')) where value in (${sql.join(messageIds)}))`,
+              "=",
+              1,
+            ),
+          );
+        }
+
+        return eb.or(branches);
+      })
+      .orderBy("created_at", "asc")
+      .orderBy("id", "asc")
+      .limit(limit)
+      .execute();
+
+    return rows.map(decodeLlmCall);
+  }
+
   public async listLinkedToMessages(
     messageIds: number[],
   ): Promise<LlmCallRecord[]> {

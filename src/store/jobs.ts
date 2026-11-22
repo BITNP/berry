@@ -525,6 +525,24 @@ export class JobsStore {
     return Boolean(row);
   }
 
+  public async getByIds(ids: number[]): Promise<JobRecord[]> {
+    const unique = [
+      ...new Set(ids.filter((id) => Number.isInteger(id) && id > 0)),
+    ];
+
+    if (unique.length === 0) {
+      return [];
+    }
+
+    const rows = await this.#database.db
+      .selectFrom("jobs")
+      .selectAll()
+      .where("id", "in", unique)
+      .execute();
+
+    return rows.map(decodeJob);
+  }
+
   public async list(
     filter: number | JobListFilter = 100,
   ): Promise<JobRecord[]> {

@@ -6,6 +6,7 @@ import test from "node:test";
 import { WebSocketServer } from "ws";
 
 import { MessageGatewayClient } from "../src/gateway/client.ts";
+import { buildAiTraces } from "../src/server/traces.ts";
 import { createTestBerryApp, startStubServer, waitUntil } from "./helpers.ts";
 
 test("GatewayEventSubscriber connects to /ws/event with Bearer auth, ingests events, and reconnects after 503 and disconnect", async (t) => {
@@ -1115,4 +1116,138 @@ test("chat titles and temporary-session sender names resolve via OneBot info API
   );
   assert.equal((await app.store.chats.get("private:55555"))?.title, "好友备注");
   assert.equal((await app.store.chats.get("group:99999"))?.title, "手动命名群");
+});
+
+test("buildAiTraces scope=error surfaces failed jobs, older failed LLM calls, failed assets, and failed deliveries", async (t) => {
+  const { app } = await createTestBerryApp({}, {}, t);
+
+  await app.store.chats.ensure("group", "2001", {
+    title: "测试异常群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  // 1. Failed background job with 0 LLM calls.
+  await app.store.jobs.enqueue(
+    "jargon_distill",
+    "jargon-fail-1",
+    "group:2001",
+    { chatKey: "group:2001" },
+  );
+  const claimed = await app.store.jobs.claim(["jargon_distill"]);
+
+  assert.ok(claimed);
+  await app.store.jobs.retryOrFail(claimed, "上游模型 502 超时", false);
+
+  // 2. Failed media asset with 0 LLM calls.
+  const { message: imgMsg } = await app.store.messages.capture({
+    kind: "group",
+    chatId: "2001",
+    onebotMessageId: "ob-img-fail",
+    userId: "1001",
+    senderName: "测试成员",
+    text: "[图片]",
+    segments: [],
+    isBot: false,
+    mentionedBot: false,
+    replyToMessageId: null,
+    sentAt: Date.now(),
+  });
+  const asset = await app.store.assets.create({
+    messageId: imgMsg.id,
+    chatKey: "group:2001",
+    kind: "image",
+    rawUrl: "https://example.invalid/broken.png",
+  });
+
+  await app.store.assets.markFailed(asset.id, "下载图片 HTTP 404");
+
+  // 3. Failed delivery.
+  const failedDelivery = await app.store.deliveries.create("group:2001", {
+    kind: "qq_reply",
+    text: "这条投递会失败",
+  });
+
+  await app.store.deliveries.updateStatus(failedDelivery.id, {
+    status: "failed",
+    attempts: 2,
+    error: "OneBot 网关断开",
+  });
+
+  // 4. An error LLM call followed by a successful call on the same message.
+  const { message: callMsg } = await app.store.messages.capture({
+    kind: "group",
+    chatId: "2001",
+    onebotMessageId: "ob-llm-fail",
+    userId: "1002",
+    senderName: "提问成员",
+    text: "帮我查一下",
+    segments: [],
+    isBot: false,
+    mentionedBot: true,
+    replyToMessageId: null,
+    sentAt: Date.now(),
+  });
+
+  await app.store.usage.record({
+    purpose: "gate",
+    model: "gate-mini",
+    chatKey: "group:2001",
+    status: "ok",
+    inputTokens: 100,
+    cachedInputTokens: 0,
+    outputTokens: 20,
+    durationMs: 120,
+    messageIds: [callMsg.id],
+  });
+  await app.store.usage.record({
+    purpose: "dialog",
+    model: "main-llm",
+    chatKey: "group:2001",
+    status: "error",
+    inputTokens: 200,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    durationMs: 450,
+    error: "HTTP 429 rate_limit_exceeded",
+    messageIds: [callMsg.id],
+  });
+
+  const errorTraces = await buildAiTraces(app, { scope: "error", limit: 50 });
+
+  assert.equal(errorTraces.total, 4);
+  assert.ok(errorTraces.items.every((item) => item.status === "error"));
+
+  const jobTrace = errorTraces.items.find((i) => i.id === `job:${claimed.id}`);
+
+  assert.ok(jobTrace);
+  assert.equal(jobTrace.failedJobs.length, 1);
+  assert.match(jobTrace.failedJobs[0]!.lastError, /502/);
+
+  const assetTrace = errorTraces.items.find((i) => i.id === `msg:${imgMsg.id}`);
+
+  assert.ok(assetTrace);
+  assert.equal(assetTrace.outcome.label, "媒体失败");
+
+  const deliveryTrace = errorTraces.items.find(
+    (i) => i.id === `delivery:${failedDelivery.id}`,
+  );
+
+  assert.ok(deliveryTrace);
+  assert.equal(deliveryTrace.failedDeliveries.length, 1);
+  assert.match(deliveryTrace.failedDeliveries[0]!.error, /网关断开/);
+
+  const llmTrace = errorTraces.items.find((i) => i.id === `msg:${callMsg.id}`);
+
+  assert.ok(llmTrace);
+  assert.equal(llmTrace.steps.length, 2);
+
+  // Purpose filter matches failed job kind as well.
+  const jargonErrors = await buildAiTraces(app, {
+    scope: "error",
+    purpose: "jargon_distill",
+  });
+
+  assert.equal(jargonErrors.total, 1);
+  assert.equal(jargonErrors.items[0]!.id, `job:${claimed.id}`);
 });

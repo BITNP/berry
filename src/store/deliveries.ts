@@ -118,4 +118,26 @@ export class DeliveriesStore {
 
     return rows.map(decodeDelivery);
   }
+
+  public async listFailed(
+    filter: { chatKey?: string; limit?: number } = {},
+  ): Promise<DeliveryRecord[]> {
+    const limit = Math.min(200, Math.max(1, filter.limit ?? 60));
+    let query = this.#database.db
+      .selectFrom("deliveries")
+      .selectAll()
+      .where("status", "=", "failed");
+
+    if (filter.chatKey) {
+      query = query.where("chat_key", "=", filter.chatKey);
+    }
+
+    const rows = await query
+      .orderBy("updated_at", "desc")
+      .orderBy("id", "desc")
+      .limit(limit)
+      .execute();
+
+    return rows.map(decodeDelivery);
+  }
 }
