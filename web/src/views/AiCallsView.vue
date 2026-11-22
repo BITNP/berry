@@ -484,11 +484,11 @@ async function loadMeta() {
 
   try {
     const [usageRes, convRes] = await Promise.all([
-      apiFetch<{ items: UsageBucket[] }>("/api/admin/usage?days=30"),
+      apiFetch<{ buckets: UsageBucket[] }>("/api/admin/usage?days=30"),
       apiFetch<ConversationView>("/api/admin/conversation"),
     ]);
 
-    usageBuckets.value = usageRes.items;
+    usageBuckets.value = usageRes.buckets ?? [];
     conversation.value = convRes;
 
     if (contextMode.value === "full") {
@@ -650,6 +650,8 @@ watch(
       q.tab === "usage"
     ) {
       activeTab.value = q.tab;
+    } else if (!q.tab) {
+      activeTab.value = "calls";
     }
 
     if (typeof q.chatKey === "string" && q.chatKey !== filterChatKey.value) {

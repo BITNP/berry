@@ -329,7 +329,11 @@ onMounted(() => {
     </div>
 
     <div v-if="overview" class="metric-grid">
-      <button class="metric-card" type="button" @click="router.push('/ai')">
+      <button
+        class="metric-card"
+        type="button"
+        @click="router.push('/ai?tab=usage')"
+      >
         <div class="metric-card-top">
           <span class="metric-label">今日 AI 调用</span>
           <ArrowRight class="metric-arrow" :size="13" />
