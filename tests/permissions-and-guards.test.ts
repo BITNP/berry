@@ -1709,3 +1709,149 @@ test("proactive DM lookup resolves userRef across Keycloak/groups and BerryAgent
 
   assert.deepEqual(sentPrivateTargets, [Number(targetUserId)]);
 });
+
+test("group invocations expose qqGroupRole and botQqGroupRole separately from Keycloak access role", async (t) => {
+  let memberListCalls = 0;
+  const capturedPayloads: {
+    chat?: { botQqGroupRole?: string };
+    speaker?: { role?: string; qqGroupRole?: string; qqGroupTitle?: string };
+  }[] = [];
+
+  const gwStub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/api/v1/accounts/qq/get_group_member_list") {
+      memberListCalls += 1;
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: [
+            {
+              user_id: 999_999,
+              nickname: "树莓娘",
+              role: "admin",
+            },
+            {
+              user_id: 40_001,
+              nickname: "李周任",
+              card: "22-记联-李周任",
+              role: "member",
+              title: "老前辈",
+            },
+            {
+              user_id: 30_001,
+              nickname: "群主大人",
+              role: "owner",
+            },
+          ],
+        }),
+      );
+
+      return;
+    }
+
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
+  }, t);
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const lastUser = reqJson.messages.findLast((m) => m.role === "user");
+
+    if (lastUser?.content) {
+      const jsonStart = lastUser.content.indexOf("{");
+
+      if (jsonStart !== -1) {
+        capturedPayloads.push(
+          JSON.parse(lastUser.content.slice(jsonStart)) as {
+            chat?: { botQqGroupRole?: string };
+            speaker?: {
+              role?: string;
+              qqGroupRole?: string;
+              qqGroupTitle?: string;
+            };
+          },
+        );
+      }
+    }
+
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify(chatReply({ units: [] })));
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gwStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+      mainBaseUrl: `${llmStub.url}/v1`,
+    },
+    {
+      bot: { botQQ: "999999" },
+      policy: { adminQQs: ["40001"] },
+    },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "88888",
+    title: "网协大群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  // 1) Bot adminQQ (role="admin") who is only a regular QQ group member (qqGroupRole="member").
+  const msg1 = await captureText(app, {
+    kind: "group",
+    chatId: "88888",
+    id: "m-qq-role-1",
+    userId: "40001",
+    senderName: "22-记联-李周任",
+    text: "我是不是群管理？",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:88888",
+    kind: "group",
+    chatId: "88888",
+    triggerMessageIds: [msg1.message.id],
+    senderId: "40001",
+    senderName: "22-记联-李周任",
+  });
+
+  assert.equal(memberListCalls, 1);
+  assert.equal(capturedPayloads[0]?.chat?.botQqGroupRole, "admin");
+  assert.equal(capturedPayloads[0]?.speaker?.role, "admin");
+  assert.equal(capturedPayloads[0]?.speaker?.qqGroupRole, "member");
+  assert.equal(capturedPayloads[0]?.speaker?.qqGroupTitle, "老前辈");
+
+  // 2) QQ group owner (qqGroupRole="owner") who is NOT a bot/Keycloak admin (role="guest").
+  const msg2 = await captureText(app, {
+    kind: "group",
+    chatId: "88888",
+    id: "m-qq-role-2",
+    userId: "30001",
+    senderName: "群主大人",
+    text: "那我呢？",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:88888",
+    kind: "group",
+    chatId: "88888",
+    triggerMessageIds: [msg2.message.id],
+    senderId: "30001",
+    senderName: "群主大人",
+  });
+
+  // Still served from the 10-minute group member cache with zero extra gateway calls.
+  assert.equal(memberListCalls, 1);
+  assert.equal(capturedPayloads[1]?.speaker?.role, "guest");
+  assert.equal(capturedPayloads[1]?.speaker?.qqGroupRole, "owner");
+});

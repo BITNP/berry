@@ -81,6 +81,14 @@ const NAME_CACHE_TTL_MS = 10 * 60 * 1000;
 const NAME_FAILURE_COOLDOWN_MS = 30_000;
 const PLACEHOLDER_SENDER_NAMES = new Set(["临时会话"]);
 
+export type QqGroupRole = "owner" | "admin" | "member";
+
+export interface GroupMemberProfile {
+  name: string | null;
+  role: QqGroupRole;
+  title: string | null;
+}
+
 export interface StrangerInfo {
   user_id: number;
   nickname?: string;
@@ -130,9 +138,18 @@ export class MessageGatewayClient {
     { value: string | null; expiresAt: number }
   >();
 
-  #groupMemberNamesCache = new Map<
+  #groupMembersCache = new Map<
     string,
-    { members: Map<string, string>; ok: boolean; expiresAt: number }
+    {
+      members: Map<string, GroupMemberProfile>;
+      ok: boolean;
+      expiresAt: number;
+    }
+  >();
+
+  #inFlightGroupMembers = new Map<
+    string,
+    Promise<Map<string, GroupMemberProfile> | null>
   >();
 
   constructor(
@@ -242,9 +259,9 @@ export class MessageGatewayClient {
       }
     }
 
-    for (const [key, entry] of this.#groupMemberNamesCache) {
+    for (const [key, entry] of this.#groupMembersCache) {
       if (!entry.ok) {
-        this.#groupMemberNamesCache.delete(key);
+        this.#groupMembersCache.delete(key);
       }
     }
   }
@@ -360,32 +377,45 @@ export class MessageGatewayClient {
     return !this.#getSettings || isGroupAllowed(this.#getSettings(), groupId);
   }
 
-  public async getGroupMemberList(
-    groupId: string,
-  ): Promise<
-    { user_id: number; nickname: string; card?: string; role?: string }[]
+  public async getGroupMemberList(groupId: string): Promise<
+    {
+      user_id: number;
+      nickname: string;
+      card?: string;
+      role?: string;
+      title?: string;
+    }[]
   > {
     if (!this.configured) {
       return [];
     }
 
     const { body } = await this.callAction<
-      { user_id: number; nickname: string; card?: string; role?: string }[]
+      {
+        user_id: number;
+        nickname: string;
+        card?: string;
+        role?: string;
+        title?: string;
+      }[]
     >("get_group_member_list", { group_id: Number(groupId) });
     const members = body.data ?? [];
-    const nameMap = new Map<string, string>();
+    const memberMap = new Map<string, GroupMemberProfile>();
 
     for (const member of members) {
       const name =
         cleanOneBotName(member.card) ?? cleanOneBotName(member.nickname);
+      const role: QqGroupRole =
+        member.role === "owner" || member.role === "admin"
+          ? member.role
+          : "member";
+      const title = member.title?.trim() || null;
 
-      if (name) {
-        nameMap.set(String(member.user_id), name);
-      }
+      memberMap.set(String(member.user_id), { name, role, title });
     }
 
-    this.#groupMemberNamesCache.set(groupId, {
-      members: nameMap,
+    this.#groupMembersCache.set(groupId, {
+      members: memberMap,
       ok: true,
       expiresAt: Date.now() + NAME_CACHE_TTL_MS,
     });
@@ -393,33 +423,68 @@ export class MessageGatewayClient {
     return members;
   }
 
-  public async getGroupMemberName(
+  async #getCachedGroupMembers(
     groupId: string,
-    userId: string,
-  ): Promise<string | null> {
+  ): Promise<Map<string, GroupMemberProfile> | null> {
     if (!this.configured) {
       return null;
     }
 
     const now = Date.now();
-    let cached = this.#groupMemberNamesCache.get(groupId);
+    const cached = this.#groupMembersCache.get(groupId);
 
-    if (!cached || cached.expiresAt <= now) {
-      try {
-        await this.getGroupMemberList(groupId);
-        cached = this.#groupMemberNamesCache.get(groupId);
-      } catch {
-        cached = {
-          members: new Map(),
-          ok: false,
-          expiresAt: now + NAME_FAILURE_COOLDOWN_MS,
-        };
-        this.#groupMemberNamesCache.set(groupId, cached);
-      }
+    if (cached && cached.expiresAt > now) {
+      return cached.members;
     }
 
+    const existing = this.#inFlightGroupMembers.get(groupId);
+
+    if (existing) {
+      return existing;
+    }
+
+    const task = (async () => {
+      try {
+        await this.getGroupMemberList(groupId);
+
+        return this.#groupMembersCache.get(groupId)?.members ?? null;
+      } catch {
+        const empty = new Map<string, GroupMemberProfile>();
+
+        this.#groupMembersCache.set(groupId, {
+          members: empty,
+          ok: false,
+          expiresAt: Date.now() + NAME_FAILURE_COOLDOWN_MS,
+        });
+
+        return null;
+      } finally {
+        this.#inFlightGroupMembers.delete(groupId);
+      }
+    })();
+
+    this.#inFlightGroupMembers.set(groupId, task);
+
+    return task;
+  }
+
+  public async getGroupMemberProfile(
+    groupId: string,
+    userId: string,
+  ): Promise<GroupMemberProfile | null> {
+    const members = await this.#getCachedGroupMembers(groupId);
+
+    return members?.get(userId) ?? null;
+  }
+
+  public async getGroupMemberName(
+    groupId: string,
+    userId: string,
+  ): Promise<string | null> {
+    const members = await this.#getCachedGroupMembers(groupId);
+
     return (
-      cached?.members.get(userId) ?? (await this.getUserDisplayName(userId))
+      members?.get(userId)?.name ?? (await this.getUserDisplayName(userId))
     );
   }
 

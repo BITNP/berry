@@ -284,21 +284,62 @@ export class BerryAgent {
       resolvedSpeakers.map((item) => [item.userId, item.role]),
     );
 
-    const formatSpeakerProfile = (item: (typeof resolvedSpeakers)[number]) => ({
-      userRef: ids.userRef(item.userId),
-      displayName: item.displayName,
-      role: item.role,
-      keycloak: item.identity
-        ? {
-            bound: true,
-            admitted: item.identity.permissions.admitted,
-            subject: item.identity.subject,
-            name: item.identity.name,
-            departments: item.identity.permissions.accessDepartments,
-            positions: item.identity.permissions.positions.map((p) => p.label),
-          }
-        : { bound: false, admitted: false },
-    });
+    const speakerGroupProfiles = new Map<
+      string,
+      { role: "owner" | "admin" | "member"; title: string | null }
+    >();
+    let botGroupRole: "owner" | "admin" | "member" | null = null;
+
+    if (input.kind === "group" && gateway.configured) {
+      const [botProfile, ...memberProfiles] = await Promise.all([
+        settings.bot.botQQ
+          ? gateway
+              .getGroupMemberProfile(input.chatId, settings.bot.botQQ)
+              .catch(() => null)
+          : Promise.resolve(null),
+        ...resolvedSpeakers.map((item) =>
+          gateway
+            .getGroupMemberProfile(input.chatId, item.userId)
+            .catch(() => null),
+        ),
+      ]);
+
+      botGroupRole = botProfile?.role ?? null;
+      for (const [index, item] of resolvedSpeakers.entries()) {
+        const profile = memberProfiles[index];
+
+        if (profile) {
+          speakerGroupProfiles.set(item.userId, {
+            role: profile.role,
+            title: profile.title,
+          });
+        }
+      }
+    }
+
+    const formatSpeakerProfile = (item: (typeof resolvedSpeakers)[number]) => {
+      const groupProfile = speakerGroupProfiles.get(item.userId);
+
+      return {
+        userRef: ids.userRef(item.userId),
+        displayName: item.displayName,
+        role: item.role,
+        ...(groupProfile ? { qqGroupRole: groupProfile.role } : {}),
+        ...(groupProfile?.title ? { qqGroupTitle: groupProfile.title } : {}),
+        keycloak: item.identity
+          ? {
+              bound: true,
+              admitted: item.identity.permissions.admitted,
+              subject: item.identity.subject,
+              name: item.identity.name,
+              departments: item.identity.permissions.accessDepartments,
+              positions: item.identity.permissions.positions.map(
+                (p) => p.label,
+              ),
+            }
+          : { bound: false, admitted: false },
+      };
+    };
 
     // Assemble a permission-filtered Tape View:
     // admin sees the full global cross-chat Tape + structured handoff;
@@ -393,6 +434,7 @@ export class BerryAgent {
         kind: input.kind,
         targetRef: chatRef,
         title: chat?.title ?? "",
+        ...(botGroupRole ? { botQqGroupRole: botGroupRole } : {}),
       },
       speaker: singleSpeaker ? formatSpeakerProfile(singleSpeaker) : null,
       ...(multiSpeaker
