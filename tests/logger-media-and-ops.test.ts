@@ -2524,3 +2524,173 @@ test("large or HTTP-413 qq_image stickers fall back to HMAC-signed /api/media/st
   assert.equal(plainDelivery.status, "sent");
   assert.deepEqual(plainSubTypes, [0]);
 });
+
+test("inspect_media supports targeted image detail Q&A by assetId without overwriting summary and enforces chat ACL", async (t) => {
+  const { inspectMediaTool } = await import("../src/tools/media.ts");
+  const pngBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const visionCalls: { system: string; user: unknown }[] = [];
+
+  const imgServer = await startStubServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "image/png" });
+    res.end(pngBytes);
+  });
+
+  t.after(() => imgServer.close());
+
+  const visionServer = await startStubServer((req, res, body) => {
+    if (!req.url?.endsWith("/chat/completions")) {
+      res.writeHead(404);
+      res.end();
+
+      return;
+    }
+
+    const parsed = JSON.parse(body) as {
+      messages: { role: string; content: unknown }[];
+    };
+    const system = String(
+      parsed.messages.find((m) => m.role === "system")?.content ?? "",
+    );
+    const user = parsed.messages.find((m) => m.role === "user")?.content;
+
+    visionCalls.push({ system, user });
+    const isDetailCall = Array.isArray(user)
+      ? user.some(
+          (part) =>
+            typeof part === "object" &&
+            part !== null &&
+            (part as { type?: string }).type === "text",
+        )
+      : false;
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify(
+        chatReply(
+          isDetailCall
+            ? "右下角版本号为 v0.2.1，报错为 ECONNREFUSED 127.0.0.1:5432"
+            : "一张终端报错截图",
+        ),
+      ),
+    );
+  });
+
+  t.after(() => visionServer.close());
+
+  const { app } = await createTestBerryApp(
+    {
+      mainBaseUrl: `${visionServer.url}/v1`,
+      mainApiKey: "test-key",
+      mainModel: "vision-test",
+    },
+    {
+      media: {
+        autoAnalyzeImages: true,
+        visionBaseURL: `${visionServer.url}/v1`,
+        visionApiKey: "test-key",
+        visionModel: "vision-test",
+      },
+    },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "91001",
+    title: "技术群",
+    enabled: true,
+    triggerMode: "mention_only",
+  });
+
+  const captured = await app.store.messages.capture({
+    kind: "group",
+    chatId: "91001",
+    onebotMessageId: "ob-img-detail-1",
+    userId: "40001",
+    senderName: "群友",
+    text: "[图片]",
+    segments: [{ type: "image", data: { url: `${imgServer.url}/err.png` } }],
+    replyToMessageId: null,
+    isBot: false,
+    mentionedBot: false,
+    sentAt: Date.now(),
+  });
+
+  await app.media.enqueueMessageAssets(captured.message, [
+    { kind: "image", rawUrl: `${imgServer.url}/err.png`, name: "err.png" },
+  ]);
+  await app.media.waitForMessages([captured.message.id]);
+
+  const assets = await app.store.assets.listForMessage(captured.message.id);
+
+  assert.equal(assets.length, 1);
+  const asset = assets[0]!;
+
+  assert.equal(asset.status, "ready");
+  assert.equal(asset.transcript, "一张终端报错截图");
+
+  const enriched = await app.media.enrichMessagesText("group:91001", [
+    captured.message,
+  ]);
+
+  assert.match(
+    enriched.get(captured.message.id) ?? "",
+    new RegExp(`\\[图片内容 #${asset.id}: 一张终端报错截图\\]`),
+  );
+
+  const memberTool = inspectMediaTool.bind({
+    services: app.services,
+    actor: {
+      chatKey: "group:91001",
+      senderQQ: "40001",
+      actorSubject: null,
+      actorName: "群友",
+      role: "member",
+    },
+    ids: new ModelIds(),
+  });
+
+  const detailRes = (await memberTool.execute({
+    assetId: asset.id,
+    question: "帮我看清右下角版本号和具体报错端口",
+  })) as {
+    assetId: number;
+    summary: string | null;
+    detail: string;
+  };
+
+  assert.equal(detailRes.assetId, asset.id);
+  assert.equal(detailRes.summary, "一张终端报错截图");
+  assert.match(detailRes.detail, /v0\.2\.1.*5432/);
+  assert.equal(visionCalls.length, 2);
+  // Original concise summary remains intact in DB.
+  assert.equal(
+    (await app.store.assets.get(asset.id))?.transcript,
+    "一张终端报错截图",
+  );
+
+  // Non-admin in another chat cannot inspect this image asset by ID.
+  const outsiderTool = inspectMediaTool.bind({
+    services: app.services,
+    actor: {
+      chatKey: "group:99999",
+      senderQQ: "40002",
+      actorSubject: null,
+      actorName: "外群成员",
+      role: "member",
+    },
+    ids: new ModelIds(),
+  });
+
+  await assert.rejects(
+    () =>
+      outsiderTool.execute({
+        assetId: asset.id,
+        question: "看看里面写了什么",
+      }),
+    /仅管理员|无权/,
+  );
+});

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { fileTypeFromBuffer } from "file-type";
@@ -117,6 +117,88 @@ export class MediaProcessor {
     );
 
     return (await this.#store.assets.get(assetId)) ?? asset;
+  }
+
+  public async askImageDetail(
+    assetId: number,
+    question: string,
+    options?: { jobId?: number | null },
+  ): Promise<{ asset: MessageAssetRecord; detail: string }> {
+    const cleanQuestion = question.trim();
+
+    if (!cleanQuestion) {
+      throw new Error("请提供需要核对的具体读图问题或关注点");
+    }
+
+    let asset = await this.#store.assets.get(assetId);
+
+    if (!asset) {
+      throw new Error(`附件 #${assetId} 不存在`);
+    }
+
+    if (asset.kind !== "image") {
+      throw new Error(`附件 #${assetId} 不是图片，无法进行细节读图`);
+    }
+
+    await this.waitForMessages([asset.messageId]);
+    asset = (await this.#store.assets.get(assetId)) ?? asset;
+
+    const settings = this.#getSettings();
+    let bytes: Buffer | null = null;
+    let mimeType = asset.mimeType || "";
+
+    if (asset.filePath) {
+      bytes = await readFile(asset.filePath).catch(() => null);
+    }
+
+    if (!bytes && asset.rawUrl.startsWith("http")) {
+      bytes = await this.#downloadBytes(asset.rawUrl);
+      const detected = await fileTypeFromBuffer(bytes);
+
+      if (!detected || !/^image\/(?:jpeg|png|gif|webp)$/i.test(detected.mime)) {
+        throw new Error("不支持的图片格式");
+      }
+
+      mimeType = detected.mime;
+      const sha256 = createHash("sha256").update(bytes).digest("hex");
+      const filePath = join(
+        this.#store.assetsDir,
+        "images",
+        `${sha256}.${detected.ext}`,
+      );
+
+      await writeFile(filePath, bytes);
+      if (asset.status !== "ready" || !asset.filePath) {
+        await this.#store.assets.markReady(asset.id, {
+          filePath,
+          mimeType: detected.mime,
+          sha256,
+          transcript: asset.transcript ?? "图片已缓存",
+        });
+        asset = (await this.#store.assets.get(asset.id)) ?? asset;
+      }
+    }
+
+    if (!bytes) {
+      throw new Error(`图片附件 #${assetId} 原图不可用，无法进行细节读图`);
+    }
+
+    if (!mimeType) {
+      const detected = await fileTypeFromBuffer(bytes);
+
+      mimeType = detected?.mime ?? "image/png";
+    }
+
+    const detail = await this.#analyzeImage(
+      bytes,
+      mimeType,
+      asset.chatKey,
+      asset.messageId,
+      settings,
+      { question: cleanQuestion, jobId: options?.jobId ?? null },
+    );
+
+    return { asset, detail };
   }
 
   public async resolveUserNames(
@@ -596,6 +678,7 @@ export class MediaProcessor {
     chatKey: ChatKey,
     messageId: number,
     settings: RuntimeSettings,
+    options?: { question?: string; jobId?: number | null },
   ): Promise<string> {
     const apiKey = settings.media.visionApiKey || settings.mainModel.apiKey;
     const baseURL = settings.media.visionBaseURL || settings.mainModel.baseURL;
@@ -605,7 +688,18 @@ export class MediaProcessor {
       return "图片已保存（未配置视觉模型密钥，跳过识图）";
     }
 
+    const question = options?.question?.trim();
     const dataUrl = `data:${mimeType};base64,${bytes.toString("base64")}`;
+    const systemPrompt = question
+      ? "你是高精度细节读图助手。请仔细查看原图，严格围绕用户提出的问题或关注点作答，完整准确地提取相关文字、数值、代码、报错或画面细节；看不清或图中不存在的内容请如实说明，不要编造。"
+      : "用简洁中文概括图片主要内容，提取关键可见文字、报错信息、代码或界面要点（简明扼要，细节可由后续按需详查）。";
+    const userContent = question
+      ? [
+          { type: "text" as const, text: question },
+          { type: "image_url" as const, image_url: { url: dataUrl } },
+        ]
+      : [{ type: "image_url" as const, image_url: { url: dataUrl } }];
+
     const completion = await completeChat({
       apiKey,
       baseURL,
@@ -616,6 +710,7 @@ export class MediaProcessor {
       timeZone: settings.bot.timezone,
       purpose: "vision",
       chatKey,
+      jobId: options?.jobId ?? null,
       messageIds: [messageId],
       params: {
         temperature: 0.2,
@@ -623,12 +718,11 @@ export class MediaProcessor {
         messages: [
           {
             role: "system",
-            content:
-              "用简洁中文概括图片主要内容，并尽量完整提取图中可见文字、报错信息、代码或界面关键字段。",
+            content: systemPrompt,
           },
           {
             role: "user",
-            content: [{ type: "image_url", image_url: { url: dataUrl } }],
+            content: userContent,
           },
         ],
       },
