@@ -590,3 +590,276 @@ test("code_analyst subagent aggregates multi-node guild and chat data concurrent
   assert.equal(result.mutated, false);
   assert.ok(result.sidecarId);
 });
+
+test("code_analyst exposes api.qq for sequential pagination + Keycloak member join while enforcing member ACLs", async (t) => {
+  const gwStub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/api/v1/accounts/qq/get_group_member_list") {
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: [
+            {
+              user_id: 1001,
+              nickname: "硅硅草",
+              card: "24-郭逸戈",
+              role: "owner",
+            },
+            {
+              user_id: 1002,
+              nickname: "奶蛙",
+              card: "24-姚雨森",
+              role: "admin",
+            },
+            {
+              user_id: 1003,
+              nickname: "群串子",
+              card: "26-马铭辰",
+              role: "member",
+            },
+          ],
+        }),
+      );
+
+      return;
+    }
+
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: [] }));
+  }, t);
+
+  const kcStub = await startStubServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+    res.setHeader("Content-Type", "application/json");
+    if (url.pathname.endsWith("/protocol/openid-connect/token")) {
+      res.end(JSON.stringify({ access_token: "kc-tok", expires_in: 300 }));
+
+      return;
+    }
+
+    if (url.pathname.endsWith("/users")) {
+      const q = url.searchParams.get("q") ?? "";
+
+      if (q.includes("1001")) {
+        res.end(
+          JSON.stringify([
+            {
+              id: "sub-1001",
+              username: "gyg",
+              firstName: "郭逸戈",
+              enabled: true,
+              attributes: { qq_number: ["1001"] },
+            },
+          ]),
+        );
+
+        return;
+      }
+
+      if (q.includes("1002")) {
+        res.end(
+          JSON.stringify([
+            {
+              id: "sub-1002",
+              username: "yys",
+              firstName: "姚雨森",
+              enabled: true,
+              attributes: { qq_number: ["1002"] },
+            },
+          ]),
+        );
+
+        return;
+      }
+
+      res.end("[]");
+
+      return;
+    }
+
+    if (
+      url.pathname.includes("/users/sub-1001/role-mappings/realm/composite")
+    ) {
+      res.end(
+        JSON.stringify([
+          { name: "permission-management-access" },
+          { name: "permission-techdept-access" },
+          { name: "position-techdept-head" },
+        ]),
+      );
+
+      return;
+    }
+
+    if (
+      url.pathname.includes("/users/sub-1002/role-mappings/realm/composite")
+    ) {
+      res.end(
+        JSON.stringify([
+          { name: "permission-techdept-access" },
+          { name: "position-techdept-head" },
+        ]),
+      );
+
+      return;
+    }
+
+    res.end("[]");
+  }, t);
+
+  interface ScriptSummary {
+    admins: {
+      name: string;
+      role: string;
+      realName: string | null;
+      positions: string[];
+    }[];
+    groupsBlocked: boolean;
+  }
+
+  const parsedOutputs: ScriptSummary[] = [];
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const toolMsgs = reqJson.messages.filter((m) => m.role === "tool");
+
+    res.setHeader("Content-Type", "application/json");
+    if (toolMsgs.length === 0) {
+      res.end(
+        JSON.stringify(
+          chatToolCalls([
+            {
+              id: "call-code-qq-1",
+              name: "run_readonly_script",
+              args: {
+                code: `
+                  const admins = [];
+                  for (let page = 1; ; page++) {
+                    const res = await api.qq.members({ page, pageSize: 2 });
+                    admins.push(...res.items.filter(m => m.role === "owner" || m.role === "admin"));
+                    if (page * 2 >= res.total) break;
+                  }
+                  const joined = await Promise.all(
+                    admins.map(async (m) => {
+                      const kc = await api.guild.resolveMember({ userRef: m.userRef });
+                      const u = kc.matches[0] ?? null;
+                      return {
+                        name: m.name,
+                        role: m.role,
+                        realName: u ? u.name : null,
+                        positions: u ? u.positions : [],
+                      };
+                    })
+                  );
+                  let groupsBlocked = false;
+                  try {
+                    await api.qq.groups();
+                  } catch {
+                    groupsBlocked = true;
+                  }
+                  return { admins: joined, groupsBlocked };
+                `,
+              },
+            },
+          ]),
+        ),
+      );
+
+      return;
+    }
+
+    const toolRes = JSON.parse(toolMsgs[0]!.content ?? "{}") as {
+      ok: boolean;
+      result?: {
+        result?: ScriptSummary;
+      };
+    };
+
+    assert.equal(toolRes.ok, true);
+    const summary = toolRes.result?.result;
+
+    if (summary) {
+      parsedOutputs.push(summary);
+    }
+
+    res.end(
+      JSON.stringify(
+        chatReply({
+          brief: `共找到 ${summary?.admins.length ?? 0} 名群管理`,
+          references: ["qq", "keycloak"],
+        }),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gwStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+      oidcIssuer: `${kcStub.url}/realms/bitnp`,
+      keycloakAdminUrl: `${kcStub.url}/admin/realms/bitnp`,
+      keycloakClientId: "berry",
+      keycloakClientSecret: "kc-secret",
+      mainBaseUrl: `${llmStub.url}/v1`,
+    },
+    {},
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "1048169934",
+    title: "网络开拓者协会2026",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const ids = new ModelIds();
+  const result = await app.subagents.run(
+    "code_analyst",
+    "查当前群内全部群主和管理员并关联 Keycloak 姓名和职务",
+    {
+      services: {
+        store: app.store,
+        gateway: app.gateway,
+        media: app.media,
+        bunko: app.bunko,
+        shortlink: app.shortlink,
+        directory: app.directory,
+        guild: app.guild,
+        mcp: app.mcp,
+        getSettings: () => app.settings,
+      },
+      actor: {
+        chatKey: "group:1048169934",
+        senderQQ: "1003",
+        actorSubject: "sub-1003",
+        actorName: "马铭辰",
+        role: "member",
+      },
+      ids,
+    },
+  );
+
+  assert.match(result.brief, /2 名群管理/);
+  const parsedScriptOutput = parsedOutputs[0];
+
+  assert.ok(parsedScriptOutput);
+  assert.equal(parsedScriptOutput.groupsBlocked, true);
+  assert.deepEqual(
+    parsedScriptOutput.admins.map((a) => [
+      a.name,
+      a.role,
+      a.realName,
+      a.positions.length > 0,
+    ]),
+    [
+      ["24-郭逸戈", "owner", "郭逸戈", true],
+      ["24-姚雨森", "admin", "姚雨森", true],
+    ],
+  );
+});

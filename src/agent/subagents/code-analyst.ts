@@ -40,6 +40,12 @@ declare const api: {
     search(opts?: { targetRef?: string; query?: string; regex?: boolean; userRef?: string; contextLines?: number; startTimeIso?: string; endTimeIso?: string; limit?: number }): Promise<{ chatType: "group" | "private"; matchCount: number; count: number; localOldestSentAt: string | null; messages: { id: number; matched?: boolean; quoteRef: string; userRef: string; senderName: string; text: string; sentAt: string }[] }>;
     window(opts?: { targetRef?: string; beforeId?: number; limit?: number }): Promise<{ count: number; localOldestSentAt: string | null; messages: { id: number; quoteRef: string; userRef: string; senderName: string; text: string; reactions: { emojiId: string; emojiName: string; count: number; userIds: string[] }[]; sentAt: string }[] }>;
   };
+  qq: {
+    members(opts?: string | { groupRef?: string; query?: string; page?: number; pageSize?: number }): Promise<{ total: number; page: number; items: { userRef: string; name: string; role: string }[] }>;
+    groups(opts?: string | { query?: string; page?: number; pageSize?: number }): Promise<{ total: number; page: number; items: { groupRef: string; name: string; memberCount: number | null }[] }>;
+    friends(opts?: string | { query?: string; page?: number; pageSize?: number }): Promise<{ total: number; page: number; items: { userRef: string; nickname: string }[] }>;
+    users(opts?: string | { query?: string; groupRef?: string; page?: number; pageSize?: number }): Promise<{ total: number; page: number; items: { userRef: string; name: string; sources: string[]; positions?: string[]; sharedGroups?: string[] }[] }>;
+  };
   guild: {
     listTree(opts?: { rootId?: number; maxDepth?: number }): Promise<{ totalNodes: number; rootCount: number; roots: GuildTreeNode[] }>;
     getNode(nodeId: number): Promise<GuildNodeSummary & { description: string; createdBySubject: string; url: string; breadcrumb: { id: number; title: string }[]; directLeaders: GuildUserRef[]; directMembers: GuildUserRef[]; children: GuildNodeSummary[] }>;
@@ -54,17 +60,17 @@ declare const api: {
 \`\`\`
 
 执行准则：
-1. 尽量用 1 次脚本调用完成全部批量并发拉取（Promise.all）、过滤、跨源 join、分组计数与排序，最后用 return 返回精简聚合 JSON（严格 <= 16 KiB，严禁把大段原始聊天或整篇文档原样塞进返回值）。
-2. 所有接口自动遵循当前发言人的权限边界（非管理员不可跨群读、未绑定通行证不可调 api.guild、Bunko 遵循可见性 ACL）；若遇权限报错直接如实汇报，不要绕过。
+1. 尽量用 1 次脚本调用编排全部顺序依赖（await）与批量并发（Promise.all）：需要严格先后顺序的步骤按序 await（例如先分页循环拉完 api.qq.members({ page, pageSize: 60 }) 筛出 owner/admin，再 Promise.all 调用 api.guild.resolveMember({ userRef }) 联查姓名、职务与 Keycloak 权限；或先查目录/树再批量读详情），最后用 return 返回精简聚合 JSON（严格 <= 16 KiB，严禁把大段原始聊天或整篇文档原样塞进返回值）。
+2. 所有接口自动遵循当前发言人的权限边界（非管理员不可跨群读/查全部群列表、未绑定通行证不可调公会节点接口、Bunko 遵循可见性 ACL；群成员列表 api.qq.members 在当前群内可读，api.guild.resolveMember 可按 userRef 查成员身份与职务）；若遇权限报错直接如实汇报，不要绕过。
 3. 严禁虚构不存在的字段或结果，必要时用 console.log 打印中间结构排查错误。`;
 
 export const codeAnalystSubagent: SubagentDefinition = {
   kind: "code_analyst",
   title: "批量脚本分析",
   summary:
-    "在只读沙盒中用一次脚本并发读取（≥3 个对象）、分组统计、排行或跨源关联分析（聊天+公会+成员+Bunko）",
+    "Code Mode 只读沙盒：处理有调用时序/前后依赖的多步查询、分页遍历、批量读取及跨源联查（QQ成员+Keycloak+公会+聊天+Bunko）",
   describeCapability: () =>
-    "在隔离只读 QuickJS 沙盒内编写 async JS 脚本，用 Promise.all 一次并发查询多个群/节点/文档并完成过滤、join、分组统计或排行。仅用于查询网协内部数据（聊天/公会/成员/Bunko），绝不用于替用户写 C++/Python 等业务代码、做编程作业或回答通用编程题；单点少量查询、所有写操作、图片语音展开、远端历史翻页及 MCP 调用请改用对应专职子代理。",
+    "Code Mode 隔离只读 QuickJS 沙盒：编写 1 段 async JS 脚本按序编排（await）与并发聚合（Promise.all）QQ 通讯录/群成员、Keycloak 成员职务权限、公会节点、群聊记录和 Bunko 文档。凡涉及具体调用时序/前后依赖（先查列表或分页再逐个关联详情）、分页遍历、批量读取（≥2 个对象）、统计排行或跨源联查，必须优先派给 code_analyst 一次搞定。仅用于查询网协内部数据，绝不用于替用户写 C++/Python 等业务代码、做编程作业或回答通用编程题；单点简单查询、所有写操作、图片语音展开、远端历史翻页及 MCP 调用请改用对应专职子代理。",
   systemPrompt: CODE_ANALYST_PROMPT,
   tools: [runReadonlyScriptTool],
   maxRounds: 6,

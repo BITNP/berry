@@ -10,6 +10,7 @@ import {
   guildNodeProgressTool,
   guildResolveMemberTool,
 } from "../../tools/guild.ts";
+import { qqDirectoryTool } from "../../tools/qq.ts";
 import type { ToolContext } from "../../tools/types.ts";
 import type { HostBindingTree } from "./sandbox.ts";
 
@@ -22,6 +23,7 @@ export function createReadonlyBindings(ctx: ToolContext): HostBindingTree {
   const chatsList = listChatsTool.bind(ctx);
   const chatsSearch = searchChatMessagesTool.bind(ctx);
   const chatsWindow = readChatWindowTool.bind(ctx);
+  const qqDirectory = qqDirectoryTool.bind(ctx);
 
   const guildListTree = guildListTreeTool.bind(ctx);
   const guildGetNode = guildGetNodeTool.bind(ctx);
@@ -48,6 +50,32 @@ export function createReadonlyBindings(ctx: ToolContext): HostBindingTree {
       list: (opts?: unknown) => chatsList.execute(asRecord(opts)),
       search: (opts?: unknown) => chatsSearch.execute(asRecord(opts)),
       window: (opts?: unknown) => chatsWindow.execute(asRecord(opts)),
+    },
+    qq: {
+      members: (opts?: unknown) => {
+        const params =
+          typeof opts === "string" ? { groupRef: opts } : asRecord(opts);
+
+        return qqDirectory.execute({ ...params, scope: "members" });
+      },
+      groups: (opts?: unknown) => {
+        const params =
+          typeof opts === "string" ? { query: opts } : asRecord(opts);
+
+        return qqDirectory.execute({ ...params, scope: "groups" });
+      },
+      friends: (opts?: unknown) => {
+        const params =
+          typeof opts === "string" ? { query: opts } : asRecord(opts);
+
+        return qqDirectory.execute({ ...params, scope: "friends" });
+      },
+      users: (opts?: unknown) => {
+        const params =
+          typeof opts === "string" ? { query: opts } : asRecord(opts);
+
+        return qqDirectory.execute({ ...params, scope: "users" });
+      },
     },
     guild: {
       listTree: (opts?: unknown) => {
