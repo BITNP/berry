@@ -226,7 +226,8 @@ export class JobsStore {
     });
   }
 
-  // Merge pending qq_batch invoke jobs for the same chat so rapid bursts run as one turn.
+  // Merge pending qq_batch invoke jobs for the same chat and privilege tier so rapid
+  // bursts (including alternating multi-speaker chatter) run as one turn without role leakage.
   public async coalesceInvoke(payload: UnifiedInput): Promise<void> {
     if (payload.source !== "qq_batch") {
       await this.enqueue(
@@ -239,6 +240,7 @@ export class JobsStore {
       return;
     }
 
+    const MAX_BATCH_MESSAGES = 12;
     const now = Date.now();
 
     await this.#database.writeTx(async (trx) => {
@@ -254,7 +256,21 @@ export class JobsStore {
       for (const row of pendingRows) {
         const existing = JSON.parse(row.payload_json) as UnifiedInput;
 
-        if (existing.source !== "qq_batch") {
+        if (
+          existing.source !== "qq_batch" ||
+          existing.triggerMessageIds.length >= MAX_BATCH_MESSAGES
+        ) {
+          continue;
+        }
+
+        const canCoalesce =
+          existing.accessRole && payload.accessRole
+            ? existing.accessRole === payload.accessRole
+            : Boolean(
+                payload.senderId && existing.senderId === payload.senderId,
+              );
+
+        if (!canCoalesce) {
           continue;
         }
 
@@ -265,14 +281,23 @@ export class JobsStore {
           ]),
         ].sort((a, b) => a - b);
 
+        const sameSender = Boolean(
+          existing.senderId &&
+          payload.senderId &&
+          existing.senderId === payload.senderId,
+        );
+
         await trx
           .updateTable("jobs")
           .set({
             payload_json: JSON.stringify({
               ...existing,
               triggerMessageIds: mergedIds,
-              senderId: payload.senderId ?? existing.senderId,
-              senderName: payload.senderName ?? existing.senderName,
+              accessRole: payload.accessRole ?? existing.accessRole,
+              senderId: sameSender ? existing.senderId : undefined,
+              senderName: sameSender
+                ? (payload.senderName ?? existing.senderName)
+                : undefined,
             } satisfies UnifiedInput),
             updated_at: now,
           })

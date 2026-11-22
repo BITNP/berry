@@ -4,6 +4,7 @@ import type { RuntimeSettings } from "../config/settings.ts";
 import { resolveThinkingEffort } from "../config/settings.ts";
 import { resolveReactionEmojiId } from "../gateway/qface.ts";
 import { renderMessageTextForModel } from "../gateway/segments.ts";
+import type { DirectoryUser } from "../identity/keycloak.ts";
 import type { AccessRole } from "../identity/permissions.ts";
 import { resolveAccessRole } from "../identity/permissions.ts";
 import type { ToolRegistry } from "../tools/index.ts";
@@ -149,48 +150,130 @@ export class BerryAgent {
     }
 
     const quotedMessages: MessageRecord[] = [];
+    const seenQuotedIds = new Set<number>(requestMessages.map((m) => m.id));
 
     for (const reqMsg of requestMessages) {
-      if (!reqMsg.replyToMessageId) {
-        continue;
-      }
+      let currentReplyId = reqMsg.replyToMessageId;
 
-      const quoted = await store.messages.findByOnebotId(
-        input.chatKey,
-        reqMsg.replyToMessageId,
-      );
+      for (let hop = 0; hop < 2 && currentReplyId; hop++) {
+        const quoted = await store.messages.findByOnebotId(
+          input.chatKey,
+          currentReplyId,
+        );
 
-      if (quoted?.recalledAt === null) {
-        quotedMessages.push(quoted);
+        if (quoted?.recalledAt !== null) {
+          break;
+        }
+
+        if (!seenQuotedIds.has(quoted.id)) {
+          seenQuotedIds.add(quoted.id);
+          quotedMessages.push(quoted);
+        }
+
+        currentReplyId = quoted.replyToMessageId;
       }
     }
 
-    const firstId = requestMessages[0]?.id;
+    const requestIdSet = new Set(requestMessages.map((m) => m.id));
+    const lastId = requestMessages.at(-1)?.id;
 
     await gateway.warmChatHistory(input.kind, input.chatId, 100);
 
     const recentContext =
-      firstId === undefined
+      lastId === undefined
         ? await store.messages.recent(input.chatKey, 12, {
             afterId: head.afterMessageId,
           })
-        : await store.messages.recent(input.chatKey, 20, {
-            beforeId: firstId,
-            afterId: head.afterMessageId,
-          });
+        : (
+            await store.messages.recent(input.chatKey, 20 + requestIdSet.size, {
+              beforeId: lastId,
+              afterId: head.afterMessageId,
+            })
+          )
+            .filter((m) => !requestIdSet.has(m.id))
+            .slice(-20);
 
-    const speakerQQ = input.senderId ?? requestMessages.at(-1)?.userId ?? null;
-    const speakerName =
-      input.senderName ?? requestMessages.at(-1)?.senderName ?? null;
-    const identityUser = speakerQQ
-      ? await directory.byQQ(speakerQQ).catch(() => null)
-      : null;
-    const role = resolveAccessRole({
-      userId: speakerQQ,
-      adminQQs: settings.policy.adminQQs,
-      permissions: identityUser?.permissions,
-      isSystemSource:
-        input.source === "admin_inject" || input.source === "schedule",
+    const isSystemSource =
+      input.source === "admin_inject" || input.source === "schedule";
+
+    const speakerMap = new Map<string, string>();
+
+    for (const msg of requestMessages) {
+      if (!speakerMap.has(msg.userId)) {
+        speakerMap.set(msg.userId, msg.senderName);
+      }
+    }
+
+    if (speakerMap.size === 0 && input.senderId) {
+      speakerMap.set(input.senderId, input.senderName ?? input.senderId);
+    }
+
+    const resolvedSpeakers: {
+      userId: string;
+      displayName: string;
+      identity: DirectoryUser | null;
+      role: AccessRole;
+    }[] = [];
+
+    for (const [userId, displayName] of speakerMap.entries()) {
+      const identity = await directory.byQQ(userId).catch(() => null);
+      const speakerRole = resolveAccessRole({
+        userId,
+        adminQQs: settings.policy.adminQQs,
+        permissions: identity?.permissions,
+        isSystemSource,
+      });
+
+      resolvedSpeakers.push({
+        userId,
+        displayName,
+        identity,
+        role: speakerRole,
+      });
+    }
+
+    const roleRank: Record<AccessRole, number> = {
+      guest: 0,
+      member: 1,
+      admin: 2,
+    };
+    const role: AccessRole =
+      resolvedSpeakers.length === 0
+        ? resolveAccessRole({
+            userId: null,
+            adminQQs: settings.policy.adminQQs,
+            permissions: undefined,
+            isSystemSource,
+          })
+        : resolvedSpeakers.reduce<AccessRole>(
+            (lowest, item) =>
+              roleRank[item.role] < roleRank[lowest] ? item.role : lowest,
+            resolvedSpeakers[0]!.role,
+          );
+
+    const multiSpeaker = resolvedSpeakers.length > 1;
+    const singleSpeaker = multiSpeaker ? null : (resolvedSpeakers[0] ?? null);
+    const speakerQQ = singleSpeaker?.userId ?? null;
+    const speakerName = singleSpeaker?.displayName ?? null;
+    const identityUser = singleSpeaker?.identity ?? null;
+    const speakerRoleByUserId = new Map(
+      resolvedSpeakers.map((item) => [item.userId, item.role]),
+    );
+
+    const formatSpeakerProfile = (item: (typeof resolvedSpeakers)[number]) => ({
+      userRef: ids.userRef(item.userId),
+      displayName: item.displayName,
+      role: item.role,
+      keycloak: item.identity
+        ? {
+            bound: true,
+            admitted: item.identity.permissions.admitted,
+            subject: item.identity.subject,
+            name: item.identity.name,
+            departments: item.identity.permissions.accessDepartments,
+            positions: item.identity.permissions.positions.map((p) => p.label),
+          }
+        : { bound: false, admitted: false },
     });
 
     // Assemble a permission-filtered Tape View:
@@ -201,10 +284,31 @@ export class BerryAgent {
       chatKey: input.chatKey,
     });
 
-    const memoryIndex = await store.memories.index(
+    const baseMemoryIndex = await store.memories.index(
       input.chatKey,
       speakerQQ ?? undefined,
     );
+    const memoryIndex = multiSpeaker
+      ? {
+          global: baseMemoryIndex.global,
+          chat: baseMemoryIndex.chat,
+          user: (
+            await Promise.all(
+              resolvedSpeakers.map(async (item) => {
+                const idx = await store.memories.index(
+                  input.chatKey,
+                  item.userId,
+                );
+
+                return idx.user.map((entry) => ({
+                  userRef: ids.userRef(item.userId),
+                  ...entry,
+                }));
+              }),
+            )
+          ).flat(),
+        }
+      : baseMemoryIndex;
 
     await media.waitForMessages([
       ...requestMessages.map((m) => m.id),
@@ -216,11 +320,17 @@ export class BerryAgent {
       ids,
     );
 
-    const mapMessage = (msg: MessageRecord) => ({
+    const mapMessage = (msg: MessageRecord, includeRole = false) => ({
       id: msg.id,
       quoteRef: ids.messageRef(msg.onebotMessageId, msg.chatKey),
+      ...(msg.replyToMessageId
+        ? { replyToQuoteRef: ids.messageRef(msg.replyToMessageId, msg.chatKey) }
+        : {}),
       userRef: ids.userRef(msg.userId),
       senderName: msg.isBot ? "树莓娘(bot)" : msg.senderName,
+      ...(includeRole && speakerRoleByUserId.has(msg.userId)
+        ? { role: speakerRoleByUserId.get(msg.userId) }
+        : {}),
       mentionedBot: msg.mentionedBot,
       text: enrichedText.get(msg.id) ?? msg.text,
       time: formatDateTime(msg.sentAt, settings.bot.timezone),
@@ -247,28 +357,15 @@ export class BerryAgent {
         targetRef: chatRef,
         title: chat?.title ?? "",
       },
-      speaker: speakerQQ
-        ? {
-            userRef: ids.userRef(speakerQQ),
-            displayName: speakerName,
-            role,
-            keycloak: identityUser
-              ? {
-                  bound: true,
-                  admitted: identityUser.permissions.admitted,
-                  subject: identityUser.subject,
-                  name: identityUser.name,
-                  departments: identityUser.permissions.accessDepartments,
-                  positions: identityUser.permissions.positions.map(
-                    (p) => p.label,
-                  ),
-                }
-              : { bound: false, admitted: false },
-          }
-        : null,
-      requestMessages: requestMessages.map(mapMessage),
+      speaker: singleSpeaker ? formatSpeakerProfile(singleSpeaker) : null,
+      ...(multiSpeaker
+        ? { speakers: resolvedSpeakers.map(formatSpeakerProfile) }
+        : {}),
+      requestMessages: requestMessages.map((msg) =>
+        mapMessage(msg, multiSpeaker),
+      ),
       ...(quotedMessages.length > 0
-        ? { quotedMessages: quotedMessages.map(mapMessage) }
+        ? { quotedMessages: quotedMessages.map((msg) => mapMessage(msg)) }
         : {}),
       ...(input.content ? { instruction: input.content } : {}),
     };
@@ -284,7 +381,7 @@ export class BerryAgent {
             },
           }
         : {}),
-      recentContext: recentContext.map(mapMessage),
+      recentContext: recentContext.map((msg) => mapMessage(msg)),
       ...(knownGroups.length > 0 ? { knownGroups } : {}),
       memoryIndex,
     };

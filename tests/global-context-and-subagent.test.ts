@@ -883,3 +883,206 @@ test("delegate_subagent(background=true) runs asynchronously and delivers follow
   assert.equal(subagentJobs.length, 1);
   assert.equal(subagentJobs[0]?.state, "done");
 });
+
+test("same-role alternating speakers coalesce with per-speaker metadata and 2-hop replyToQuoteRef while distinct roles stay isolated", async (t) => {
+  const seenEnvelopes: {
+    speaker: { displayName: string; role: string } | null;
+    speakers?: { displayName: string; role: string }[];
+    requestMessages: {
+      senderName: string;
+      role?: string;
+      text: string;
+      replyToQuoteRef?: string;
+    }[];
+    quotedMessages?: {
+      quoteRef: string;
+      text: string;
+      replyToQuoteRef?: string;
+    }[];
+  }[] = [];
+
+  const gwStub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    const action = req.url?.split("/").pop() ?? "";
+
+    res.end(
+      JSON.stringify({
+        status: "ok",
+        data: action.includes("history") ? { messages: [] } : { message_id: 1 },
+      }),
+    );
+  }, t);
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const body = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const lastUser = body.messages.at(-1)?.content ?? "";
+    const jsonStart = lastUser.indexOf("{");
+    const parsed = JSON.parse(
+      jsonStart === -1 ? lastUser : lastUser.slice(jsonStart),
+    ) as (typeof seenEnvelopes)[number];
+
+    seenEnvelopes.push(parsed);
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        chatReply(
+          JSON.stringify({
+            units: [{ kind: "qq_reply", text: "收到" }],
+          }),
+        ),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gwStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+      mainBaseUrl: `${llmStub.url}/v1`,
+      gateBaseUrl: `${llmStub.url}/v1`,
+    },
+    { policy: { adminQQs: ["10001", "10002"] } },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "100",
+    title: "技术保障中心",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  // Original image -> Berry's reply -> IDA* quoting Berry's reply;
+  // plus Siunaus. (also admin) and 路人 (guest) speaking in the same burst.
+  const imgOriginal = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "ob-img-orig",
+    userId: "20001",
+    senderName: "硅硅草",
+    text: "[图片: ？！区区！？]",
+  });
+  const botReply = await app.store.messages.capture({
+    kind: "group",
+    chatId: "100",
+    onebotMessageId: "ob-bot-desc",
+    userId: "3173748223",
+    senderName: "树莓娘",
+    text: "配字「？！囧囧！？」",
+    segments: [],
+    replyToMessageId: imgOriginal.message.onebotMessageId,
+    isBot: true,
+    mentionedBot: false,
+    sentAt: Date.now(),
+  });
+  const siunausImg = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "ob-siunaus-img",
+    userId: "10002",
+    senderName: "Siunaus.",
+    text: "[图片: 回应了你的消息]",
+  });
+  const idaReply = await app.store.messages.capture({
+    kind: "group",
+    chatId: "100",
+    onebotMessageId: "ob-ida-quote",
+    userId: "10001",
+    senderName: "IDA*",
+    text: "@树莓娘 上面不是写的区吗",
+    segments: [],
+    replyToMessageId: botReply.message.onebotMessageId,
+    isBot: false,
+    mentionedBot: true,
+    sentAt: Date.now(),
+  });
+  const guestMsg = await captureText(app, {
+    kind: "group",
+    chatId: "100",
+    id: "ob-guest-1",
+    userId: "30009",
+    senderName: "路人甲",
+    text: "@树莓娘 你好呀",
+    mentionedBot: true,
+  });
+
+  // Two distinct admins coalesce into ONE pending invoke job; guest stays isolated in a second job.
+  await app.store.jobs.coalesceInvoke({
+    source: "qq_batch",
+    chatKey: "group:100",
+    kind: "group",
+    chatId: "100",
+    triggerMessageIds: [siunausImg.message.id],
+    accessRole: "admin",
+    senderId: "10002",
+    senderName: "Siunaus.",
+  });
+  await app.store.jobs.coalesceInvoke({
+    source: "qq_batch",
+    chatKey: "group:100",
+    kind: "group",
+    chatId: "100",
+    triggerMessageIds: [idaReply.message.id],
+    accessRole: "admin",
+    senderId: "10001",
+    senderName: "IDA*",
+  });
+  await app.store.jobs.coalesceInvoke({
+    source: "qq_batch",
+    chatKey: "group:100",
+    kind: "group",
+    chatId: "100",
+    triggerMessageIds: [guestMsg.message.id],
+    accessRole: "guest",
+    senderId: "30009",
+    senderName: "路人甲",
+  });
+
+  const pendingJobs = await app.store.jobs.list({
+    kind: "invoke",
+    state: "pending",
+  });
+
+  assert.equal(pendingJobs.length, 2);
+
+  await app.worker.drainOnce();
+
+  assert.equal(seenEnvelopes.length, 2);
+
+  const adminBatch = seenEnvelopes[0]!;
+
+  assert.equal(adminBatch.speaker, null);
+  assert.deepEqual(
+    adminBatch.speakers?.map((s) => [s.displayName, s.role]),
+    [
+      ["Siunaus.", "admin"],
+      ["IDA*", "admin"],
+    ],
+  );
+  assert.equal(adminBatch.requestMessages.length, 2);
+  assert.equal(adminBatch.requestMessages[0]?.senderName, "Siunaus.");
+  assert.equal(adminBatch.requestMessages[1]?.senderName, "IDA*");
+
+  const idaMsg = adminBatch.requestMessages[1];
+  const quotedBot = adminBatch.quotedMessages?.find((m) =>
+    m.text.includes("囧囧"),
+  );
+  const quotedOrig = adminBatch.quotedMessages?.find((m) =>
+    m.text.includes("区区"),
+  );
+
+  assert.ok(quotedBot);
+  assert.ok(quotedOrig);
+  assert.equal(idaMsg.replyToQuoteRef, quotedBot.quoteRef);
+  assert.equal(quotedBot.replyToQuoteRef, quotedOrig.quoteRef);
+
+  const guestTurn = seenEnvelopes[1]!;
+
+  assert.equal(guestTurn.speaker?.displayName, "路人甲");
+  assert.equal(guestTurn.speaker?.role, "guest");
+  assert.equal(guestTurn.speakers, undefined);
+});

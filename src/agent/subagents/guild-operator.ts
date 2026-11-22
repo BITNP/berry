@@ -8,10 +8,15 @@ export const guildOperatorSubagent: SubagentDefinition = {
   available: (services) => services.guild.enabled,
   describeCapability: () =>
     "解析网协 Keycloak 成员身份，搜索/查看/创建/更新/移动公会节点及发表进展评论。",
-  checkAvailability: (ctx) =>
-    ctx.actor.actorSubject
+  checkAvailability: (ctx) => {
+    if (ctx.actor.multiSpeaker) {
+      return "当前批次包含多位发言人，为避免混淆网协通行证身份，无法合并代理操作公会看板；请需要操作的同学单独发一条消息。";
+    }
+
+    return ctx.actor.actorSubject
       ? null
-      : "当前发言人尚未在网协通行证绑定 QQ 号，无法代理查询或操作公会看板。请先前往网协通行证绑定 QQ 号。",
+      : "当前发言人尚未在网协通行证绑定 QQ 号，无法代理查询或操作公会看板。请先前往网协通行证绑定 QQ 号。";
+  },
   systemPrompt: [
     "你是隔离运行的公会看板协作子代理。",
     "查看看板全局结构、顶层大节点或项目树时，优先调用一次 guild_list_tree 拿到完整节点树，不要逐个循环调用 guild_get_node（仅在需要某个节点的负责人、详细描述或进展评论时再针对性调用 guild_get_node / guild_node_progress）。",

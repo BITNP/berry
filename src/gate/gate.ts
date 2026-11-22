@@ -210,7 +210,7 @@ export class MessageGate {
           model: "l0-rule",
           durationMs: 0,
         });
-        await this.#enqueueInvoke([message]);
+        await this.#enqueueInvoke([message], { [message.userId]: role });
         this.#wake();
 
         return;
@@ -331,7 +331,7 @@ export class MessageGate {
     }
 
     if (replyMessages.length > 0) {
-      await this.#enqueueInvoke(replyMessages);
+      await this.#enqueueInvoke(replyMessages, senderRoles);
       this.#wake();
     }
 
@@ -343,19 +343,43 @@ export class MessageGate {
     });
   }
 
-  async #enqueueInvoke(messages: MessageRecord[]): Promise<void> {
-    const first = messages[0]!;
-    const last = messages.at(-1)!;
+  async #enqueueInvoke(
+    messages: MessageRecord[],
+    senderRoles: Record<string, AccessRole>,
+  ): Promise<void> {
+    // Coalesce rapid replies by privilege tier (admin / member / guest) so alternating
+    // multi-speaker chatter batches into one LLM turn without privilege or Tape leakage.
+    const byRole = new Map<AccessRole, MessageRecord[]>();
 
-    await this.#store.jobs.coalesceInvoke({
-      source: "qq_batch",
-      chatKey: first.chatKey,
-      kind: first.kind,
-      chatId: first.chatId,
-      triggerMessageIds: messages.map((m) => m.id),
-      senderId: last.userId,
-      senderName: last.senderName,
-    });
+    for (const msg of messages) {
+      const role = senderRoles[msg.userId] ?? "guest";
+      const bucket = byRole.get(role);
+
+      if (bucket) {
+        bucket.push(msg);
+      } else {
+        byRole.set(role, [msg]);
+      }
+    }
+
+    for (const [accessRole, group] of byRole.entries()) {
+      const first = group[0]!;
+      const last = group.at(-1)!;
+      const distinctSenders = new Set(group.map((m) => m.userId));
+      const singleSender = distinctSenders.size === 1;
+
+      await this.#store.jobs.coalesceInvoke({
+        source: "qq_batch",
+        chatKey: first.chatKey,
+        kind: first.kind,
+        chatId: first.chatId,
+        triggerMessageIds: group.map((m) => m.id),
+        accessRole,
+        ...(singleSender
+          ? { senderId: last.userId, senderName: last.senderName }
+          : {}),
+      });
+    }
   }
 
   async #enrichCandidates(

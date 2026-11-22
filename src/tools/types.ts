@@ -31,6 +31,7 @@ export interface ToolActor {
   actorSubject: string | null;
   actorName: string | null;
   role: AccessRole;
+  multiSpeaker?: boolean;
   triggerMessageId?: number | null;
 }
 

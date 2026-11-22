@@ -157,6 +157,7 @@ export interface UnifiedInput {
   kind: ChatKind;
   chatId: string;
   triggerMessageIds: number[];
+  accessRole?: "admin" | "member" | "guest";
   senderId?: string;
   senderName?: string;
   content?: string;
