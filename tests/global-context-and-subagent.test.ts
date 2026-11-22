@@ -523,7 +523,7 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
   assert.equal(globalMem.ownerId, "global");
 });
 
-test("JobWorker executes same-chat and cross-chat invokes concurrently while preserving coalescing and atomic Tape turns", async (t) => {
+test("JobWorker runs cross-chat invokes concurrently while serializing same-chat invokes so follow-ups coalesce and see prior replies", async (t) => {
   const gwStub = await startStubServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     const action = req.url?.split("/").pop() ?? "";
@@ -546,8 +546,8 @@ test("JobWorker executes same-chat and cross-chat invokes concurrently while pre
   let group100Running = 0;
   let maxGroup100Concurrent = 0;
   const group100TurnTexts: string[][] = [];
-  let sawGroup100SecondDuringFirst = false;
   let sawGroup200DuringGroup100 = false;
+  let turn2SawTurn1ReplyInTape = false;
 
   const llmStub = await startStubServer(async (_req, res, bodyText) => {
     const body = JSON.parse(bodyText) as {
@@ -568,14 +568,15 @@ test("JobWorker executes same-chat and cross-chat invokes concurrently while pre
       group100Running++;
       maxGroup100Concurrent = Math.max(maxGroup100Concurrent, group100Running);
       group100TurnTexts.push(texts);
-      if (texts.includes("群A连发1") && group100Running >= 2) {
-        sawGroup100SecondDuringFirst = true;
+      if (texts.includes("群A连发1")) {
+        turn2SawTurn1ReplyInTape = body.messages.some(
+          (m) =>
+            m.role === "assistant" &&
+            (m.content ?? "").includes("回复 群A: 群A第一条"),
+        );
       }
     } else if (group100Running > 0) {
       sawGroup200DuringGroup100 = true;
-    }
-
-    if (sawGroup100SecondDuringFirst && sawGroup200DuringGroup100) {
       releaseGroup100First();
     }
 
@@ -682,7 +683,7 @@ test("JobWorker executes same-chat and cross-chat invokes concurrently while pre
   await waitUntil(() => group100Running === 1, 3000);
 
   // While group:100's slow turn is still running, coalesce two rapid follow-up bursts
-  // for group:100 and enqueue group:200 — BOTH must execute concurrently with turn 1.
+  // for group:100 (serialized behind turn 1) and enqueue group:200 (concurrent across chats).
   await app.store.jobs.coalesceInvoke({
     source: "qq_batch",
     chatKey: "group:100",
@@ -719,10 +720,10 @@ test("JobWorker executes same-chat and cross-chat invokes concurrently while pre
   }, 5000);
   await app.worker.stop();
 
-  assert.equal(sawGroup100SecondDuringFirst, true);
   assert.equal(sawGroup200DuringGroup100, true);
   assert.ok(maxConcurrentCalls >= 2);
-  assert.ok(maxGroup100Concurrent >= 2);
+  assert.equal(maxGroup100Concurrent, 1);
+  assert.equal(turn2SawTurn1ReplyInTape, true);
   assert.deepEqual(group100TurnTexts, [
     ["群A第一条"],
     ["群A连发1", "群A连发2"],

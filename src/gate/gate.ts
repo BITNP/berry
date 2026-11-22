@@ -196,7 +196,13 @@ export class MessageGate {
       return;
     }
 
-    if (settings.policy.adminBypassGate && isDirectInvocation) {
+    const isPokeNotice = message.onebotMessageId.startsWith("poke:");
+
+    if (
+      settings.policy.adminBypassGate &&
+      isDirectInvocation &&
+      !isPokeNotice
+    ) {
       const role = await getSenderRole();
 
       if (role === "admin") {
@@ -252,7 +258,7 @@ export class MessageGate {
       return;
     }
 
-    const firstId = activeCandidates[0]!.id;
+    const activeCandidateIds = new Set(activeCandidates.map((m) => m.id));
 
     if (settings.gateModel.contextMessages > 0) {
       await this.#gateway.warmChatHistory(
@@ -264,14 +270,17 @@ export class MessageGate {
 
     const recentContext =
       settings.gateModel.contextMessages > 0
-        ? await this.#store.messages.recent(
-            chat.chatKey,
-            settings.gateModel.contextMessages,
-            {
-              beforeId: firstId,
-              afterId: conversation.afterMessageId,
-            },
+        ? (
+            await this.#store.messages.recent(
+              chat.chatKey,
+              settings.gateModel.contextMessages + activeCandidateIds.size,
+              {
+                afterId: conversation.afterMessageId,
+              },
+            )
           )
+            .filter((item) => !activeCandidateIds.has(item.id))
+            .slice(-settings.gateModel.contextMessages)
         : [];
 
     const memIndex = await this.#store.memories.index(chat.chatKey);

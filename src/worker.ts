@@ -5,9 +5,9 @@ import { Logger } from "./utils/logger.ts";
 import { errorMessage } from "./utils/time.ts";
 
 const GATE_LANE_CONCURRENCY = 6;
-const GATE_MAX_PER_CHAT = 3;
+const GATE_MAX_PER_CHAT = 1;
 const DIALOG_LANE_CONCURRENCY = 8;
-const DIALOG_MAX_PER_CHAT = 4;
+const DIALOG_MAX_PER_CHAT = 1;
 const BACKGROUND_LANE_CONCURRENCY = 6;
 
 export class JobWorker {
@@ -44,9 +44,10 @@ export class JobWorker {
       return;
     }
 
-    // Run gate, dialog, and background lanes concurrently (including same-chat
-    // parallelism capped per chatKey so one slow task never blocks a group,
-    // and one busy group never starves other chats).
+    // Run gate, dialog, and background lanes concurrently across distinct chats,
+    // while serializing gate and dialog per chatKey so bursts coalesce cleanly
+    // and each turn sees the prior turn's sent reply and Tape (preventing
+    // concurrent duplicate replies/pokes). Slow work runs in the background lane.
     this.#spawnLane(
       "gate",
       this.#registry.kindsForLane("gate"),

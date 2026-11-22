@@ -233,18 +233,16 @@ export class BerryAgent {
     }
 
     const requestIdSet = new Set(requestMessages.map((m) => m.id));
-    const lastId = requestMessages.at(-1)?.id;
 
     await gateway.warmChatHistory(input.kind, input.chatId, 100);
 
     const recentContext =
-      lastId === undefined
+      requestIdSet.size === 0
         ? await store.messages.recent(input.chatKey, 12, {
             afterId: head.afterMessageId,
           })
         : (
             await store.messages.recent(input.chatKey, 20 + requestIdSet.size, {
-              beforeId: lastId,
               afterId: head.afterMessageId,
             })
           )
