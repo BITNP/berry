@@ -223,11 +223,12 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <NLayout class="layout-root" has-sider>
+  <NLayout class="layout-root" has-sider position="absolute">
     <NLayoutSider
       v-if="!isMobile"
       bordered
-      :native-scrollbar="false"
+      class="shell-sider"
+      content-style="height: 100%;"
       :width="196"
     >
       <div class="sider-inner">
@@ -237,13 +238,15 @@ onUnmounted(() => {
           <span class="brand-sub">树莓娘</span>
         </div>
 
-        <NMenu
-          :indent="0"
-          :options="menuOptions"
-          :root-indent="16"
-          :value="activeMenuKey"
-          @update:value="handleSelectMenu"
-        />
+        <div class="sider-menu-scroll">
+          <NMenu
+            :indent="0"
+            :options="menuOptions"
+            :root-indent="16"
+            :value="activeMenuKey"
+            @update:value="handleSelectMenu"
+          />
+        </div>
 
         <div class="sider-footer">
           <div class="user-card">
@@ -308,7 +311,10 @@ onUnmounted(() => {
       </NDrawerContent>
     </NDrawer>
 
-    <NLayout class="layout-main">
+    <NLayout
+      class="layout-main"
+      content-style="display: flex; flex-direction: column; height: 100%;"
+    >
       <NLayoutHeader bordered class="shell-header">
         <div class="header-left">
           <NButton
@@ -423,7 +429,7 @@ onUnmounted(() => {
         </div>
       </NLayoutHeader>
 
-      <NLayoutContent class="shell-main" :native-scrollbar="false">
+      <NLayoutContent class="shell-main">
         <div class="content-container">
           <slot />
         </div>
@@ -434,10 +440,12 @@ onUnmounted(() => {
 
 <style scoped>
 .layout-root {
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .layout-main {
+  height: 100%;
   min-width: 0;
 }
 
@@ -449,10 +457,17 @@ onUnmounted(() => {
 }
 
 .sider-inner {
-  min-height: 100vh;
+  height: 100%;
   display: flex;
   flex-direction: column;
   padding: 10px 8px;
+  overflow: hidden;
+}
+
+.sider-menu-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .brand-header {
@@ -516,6 +531,7 @@ onUnmounted(() => {
 
 .shell-header {
   height: 48px;
+  flex-shrink: 0;
   padding: 0 18px;
   display: flex;
   align-items: center;
@@ -589,7 +605,9 @@ onUnmounted(() => {
 }
 
 .shell-main {
-  min-height: calc(100vh - 48px);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .content-container {
