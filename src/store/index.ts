@@ -17,6 +17,7 @@ import { ReactionsStore } from "./reactions.ts";
 import { SchedulesStore } from "./schedules.ts";
 import { AdminSessionsStore } from "./sessions.ts";
 import { SettingsStore } from "./settings.ts";
+import { StickersStore } from "./stickers.ts";
 import { UsageStore } from "./usage.ts";
 
 export class Store {
@@ -31,6 +32,7 @@ export class Store {
   public readonly memories: MemoriesStore;
   public readonly jargon: JargonStore;
   public readonly impressions: ImpressionsStore;
+  public readonly stickers: StickersStore;
   public readonly jobs: JobsStore;
   public readonly deliveries: DeliveriesStore;
   public readonly schedules: SchedulesStore;
@@ -52,6 +54,7 @@ export class Store {
     this.memories = new MemoriesStore(database, events);
     this.jargon = new JargonStore(database);
     this.impressions = new ImpressionsStore(database);
+    this.stickers = new StickersStore(database);
     this.jobs = new JobsStore(database, events);
     this.deliveries = new DeliveriesStore(database, events);
     this.schedules = new SchedulesStore(database, events);

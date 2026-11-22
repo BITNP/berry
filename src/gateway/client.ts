@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { $Fetch, FetchResponse } from "ofetch";
@@ -1149,6 +1150,43 @@ export class MessageGatewayClient {
           unit,
           botQQ,
         );
+      }
+
+      if (unit.kind === "qq_image") {
+        const bytes = await readFile(unit.filePath);
+        const segments: OneBotSegment[] = [
+          ...(unit.quoteMessageId
+            ? [{ type: "reply", data: { id: unit.quoteMessageId } }]
+            : []),
+          {
+            type: "image",
+            data: {
+              file: `base64://${bytes.toString("base64")}`,
+              subType: 1,
+              ...(unit.summary ? { summary: `[${unit.summary}]` } : {}),
+            },
+          },
+        ];
+        const action =
+          kind === "group" ? "send_group_msg_async" : "send_private_msg_async";
+        const params =
+          kind === "group"
+            ? { group_id: Number(chatId), message: segments }
+            : { user_id: Number(chatId), message: segments };
+        const sent = await this.#sendAsyncMessage(action, params, {
+          delivery,
+          chatKey,
+          text: unit.summary ? `[表情包: ${unit.summary}]` : "[表情包]",
+          segments: [
+            { type: "image", data: { summary: unit.summary ?? "表情包" } },
+          ],
+          replyToMessageId: unit.quoteMessageId ?? null,
+          botQQ,
+        });
+
+        await this.#store.stickers.recordUsage(unit.stickerId).catch(() => {});
+
+        return sent;
       }
 
       const segments: OneBotSegment[] = [

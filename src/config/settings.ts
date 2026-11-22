@@ -261,6 +261,13 @@ export const runtimeSettingsSchema = Type.Object(
           maximum: 200,
           default: 8,
         }),
+        stickerCollectEnabled: Type.Boolean({ default: false }),
+        stickerAutoApprove: Type.Boolean({ default: false }),
+        stickerMaxCount: Type.Integer({
+          minimum: 10,
+          maximum: 2000,
+          default: 200,
+        }),
       },
       { default: {}, additionalProperties: false },
     ),

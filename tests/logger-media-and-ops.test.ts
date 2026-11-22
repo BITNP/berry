@@ -20,7 +20,13 @@ import {
 import { memoryManageTool } from "../src/tools/memory.ts";
 import type { ToolContext } from "../src/tools/types.ts";
 import { Logger, formatPrettyLogLine } from "../src/utils/logger.ts";
-import { captureText, createTestBerryApp, startStubServer } from "./helpers.ts";
+import {
+  captureText,
+  chatReply,
+  chatToolCalls,
+  createTestBerryApp,
+  startStubServer,
+} from "./helpers.ts";
 
 test("Pino LogHub redaction, level/scope filtering, and clear endpoint", async (t) => {
   const { app } = await createTestBerryApp(
@@ -1484,4 +1490,237 @@ test("QQ poke notice ingests group/private pokes at bot, ignores others/self, an
   const privPokeCall = gatewayCalls.filter((c) => c.action === "send_poke")[1];
 
   assert.deepEqual(privPokeCall?.body, { user_id: 20_002 });
+});
+
+test("sticker library auto-collects group stickers, enforces review, searches via search_stickers, and dispatches qq_image", async (t) => {
+  // Minimal valid 1x1 PNG.
+  const pngBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2dIAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const sentPrivatePayloads: unknown[] = [];
+
+  const assetStub = await startStubServer((req, res) => {
+    if (req.url === "/sticker.png") {
+      res.setHeader("Content-Type", "image/png");
+      res.end(pngBytes);
+
+      return;
+    }
+
+    if (req.url?.includes("/send_private_msg_async")) {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
+
+      return;
+    }
+
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
+  }, t);
+
+  const gwStub = await startStubServer((req, res, bodyText) => {
+    if (req.url?.includes("/send_private_msg_async") && bodyText) {
+      sentPrivatePayloads.push(JSON.parse(bodyText));
+    }
+
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
+  }, t);
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: unknown }[];
+    };
+    const isVision = reqJson.messages.some((m) => Array.isArray(m.content));
+
+    res.setHeader("Content-Type", "application/json");
+    if (isVision) {
+      res.end(
+        JSON.stringify({
+          id: "vis-sticker",
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: "gpt-test-main",
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              message: {
+                role: "assistant",
+                content: "一只可爱的傲娇猫猫表情包，写着才不理你",
+              },
+            },
+          ],
+          usage: { prompt_tokens: 50, completion_tokens: 15, total_tokens: 65 },
+        }),
+      );
+
+      return;
+    }
+
+    const toolMsgs = reqJson.messages.filter((m) => m.role === "tool");
+
+    if (toolMsgs.length === 0) {
+      res.end(
+        JSON.stringify(
+          chatToolCalls([
+            {
+              id: "call-search-sticker",
+              name: "search_stickers",
+              args: { query: "傲娇" },
+            },
+          ]),
+        ),
+      );
+
+      return;
+    }
+
+    const toolOut = JSON.parse(String(toolMsgs[0]!.content ?? "{}")) as {
+      ok: boolean;
+      result?: { items: { stickerId: number }[] };
+    };
+    const stickerId = toolOut.result?.items[0]?.stickerId;
+
+    res.end(
+      JSON.stringify(
+        chatReply({
+          units: stickerId
+            ? [
+                { kind: "qq_reply", text: "哼" },
+                { kind: "qq_image", stickerId },
+              ]
+            : [{ kind: "qq_reply", text: "没找到图" }],
+        }),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      devAuthBypass: true,
+      gatewayUrl: gwStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+      mainBaseUrl: `${llmStub.url}/v1`,
+    },
+    {
+      media: { autoAnalyzeImages: true },
+      social: {
+        stickerCollectEnabled: true,
+        stickerAutoApprove: false,
+      },
+    },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "654321",
+    title: "斗图群",
+    enabled: true,
+    triggerMode: "mention_only",
+  });
+
+  // 1) Group sticker arrives -> downloaded, analyzed, auto-collected as pending.
+  const eventRes = await app.gatewayEvents.handleEvent({
+    post_type: "message",
+    message_type: "group",
+    group_id: 654_321,
+    user_id: 12_345,
+    message_id: "ob-sticker-in-1",
+    time: 1_700_000_100,
+    message: [
+      {
+        type: "image",
+        data: {
+          url: `${assetStub.url}/sticker.png`,
+          summary: "[动画表情]",
+          sub_type: 1,
+        },
+      },
+    ],
+    sender: { card: "群友" },
+  });
+
+  assert.equal(eventRes.accepted, true);
+  assert.ok(eventRes.messageId);
+  await app.media.waitForMessages([eventRes.messageId]);
+
+  const { url } = await app.listen();
+  const { csrfToken } = (await (
+    await fetch(`${url}/api/auth/status`)
+  ).json()) as { csrfToken: string };
+  const listed = (await (await fetch(`${url}/api/admin/stickers`)).json()) as {
+    items: {
+      id: number;
+      status: string;
+      enabled: boolean;
+      tags: string[];
+      meaning: string;
+    }[];
+  };
+
+  assert.equal(listed.items.length, 1);
+  const collected = listed.items[0]!;
+
+  assert.equal(collected.status, "pending");
+  assert.ok(collected.tags.includes("傲娇"));
+
+  // Pending stickers are hidden from searchApproved until approved.
+  assert.equal((await app.store.stickers.searchApproved("傲娇")).total, 0);
+
+  // 2) Approve sticker via admin API and verify thumbnail streaming works.
+  await fetch(`${url}/api/admin/stickers/${collected.id}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRF-Token": csrfToken,
+    },
+    body: JSON.stringify({ status: "approved", enabled: true }),
+  });
+
+  const fileRes = await fetch(`${url}/api/admin/stickers/${collected.id}/file`);
+
+  assert.equal(fileRes.status, 200);
+  assert.equal(fileRes.headers.get("content-type"), "image/png");
+
+  // 3) Private chat turn searches stickers and dispatches qq_image as base64 OneBot image.
+  await app.store.chats.upsert({
+    kind: "private",
+    chatId: "20009",
+    title: "私聊测试",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+  const dm = await captureText(app, {
+    kind: "private",
+    chatId: "20009",
+    id: "ob-dm-sticker-req",
+    userId: "20009",
+    senderName: "呆唯",
+    text: "发个傲娇表情包看看",
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "private:20009",
+    kind: "private",
+    chatId: "20009",
+    triggerMessageIds: [dm.message.id],
+    senderId: "20009",
+    senderName: "呆唯",
+  });
+
+  assert.equal(sentPrivatePayloads.length, 2);
+  const imagePayload = sentPrivatePayloads[1] as {
+    message?: { type: string; data: { file?: string; subType?: number } }[];
+  };
+  const imgSeg = imagePayload.message?.find((s) => s.type === "image");
+
+  assert.ok(imgSeg);
+  assert.ok(imgSeg.data.file?.startsWith("base64://"));
+  assert.equal(imgSeg.data.subType, 1);
+  assert.equal((await app.store.stickers.get(collected.id))?.useCount, 1);
 });

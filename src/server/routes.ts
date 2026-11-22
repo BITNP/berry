@@ -1083,6 +1083,145 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     }),
   );
 
+  router.get(
+    "/api/admin/stickers",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const query = await parseQuery(
+        event,
+        Type.Object({
+          status: Type.Optional(
+            Type.Union([Type.Literal("approved"), Type.Literal("pending")]),
+          ),
+          enabled: Type.Optional(Type.Boolean()),
+          search: Type.Optional(Type.String()),
+        }),
+      );
+
+      return {
+        items: await berry.store.stickers.list(query),
+      };
+    }),
+  );
+
+  router.get(
+    "/api/admin/stickers/:id/file",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const { id } = await parseParams(
+        event,
+        Type.Object({ id: Type.Number({ minimum: 1 }) }),
+        "无效的表情包 ID",
+      );
+      const sticker = await berry.store.stickers.get(id);
+
+      if (!sticker?.filePath) {
+        throw createError({ statusCode: 404, statusMessage: "表情包不存在" });
+      }
+
+      const root = resolve(berry.store.assetsDir);
+      const resolvedFile = resolve(sticker.filePath);
+
+      if (!resolvedFile.startsWith(`${root}${sep}`)) {
+        throw createError({ statusCode: 403, statusMessage: "非法文件路径" });
+      }
+
+      try {
+        await stat(resolvedFile);
+      } catch {
+        throw createError({ statusCode: 404, statusMessage: "文件已不存在" });
+      }
+
+      setHeader(
+        event,
+        "Content-Type",
+        sticker.mimeType || lookup(resolvedFile) || "application/octet-stream",
+      );
+      setHeader(event, "Cache-Control", "private, max-age=3600");
+
+      return createReadStream(resolvedFile);
+    }),
+  );
+
+  router.patch(
+    "/api/admin/stickers/:id",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const { id } = await parseParams(
+        event,
+        Type.Object({ id: Type.Number({ minimum: 1 }) }),
+        "无效的表情包 ID",
+      );
+      const body = await parseBody(
+        event,
+        Type.Object({
+          meaning: Type.Optional(Type.String({ maxLength: 200 })),
+          tags: Type.Optional(Type.Array(Type.String())),
+          status: Type.Optional(
+            Type.Union([Type.Literal("approved"), Type.Literal("pending")]),
+          ),
+          enabled: Type.Optional(Type.Boolean()),
+        }),
+      );
+      const updated = await berry.store.stickers.update(id, body);
+
+      if (!updated) {
+        throw createError({ statusCode: 404, statusMessage: "表情包不存在" });
+      }
+
+      return updated;
+    }),
+  );
+
+  router.delete(
+    "/api/admin/stickers/:id",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const { id } = await parseParams(
+        event,
+        Type.Object({ id: Type.Number({ minimum: 1 }) }),
+        "无效的表情包 ID",
+      );
+
+      return {
+        deleted: await berry.store.stickers.remove(id),
+      };
+    }),
+  );
+
+  router.post(
+    "/api/admin/stickers/from-asset/:assetId",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const { assetId } = await parseParams(
+        event,
+        Type.Object({ assetId: Type.Number({ minimum: 1 }) }),
+        "无效的附件 ID",
+      );
+      const asset = await berry.store.assets.get(assetId);
+
+      if (asset?.kind !== "image" || !asset.filePath || !asset.sha256) {
+        throw createError({
+          statusCode: 404,
+          statusMessage: "未找到已缓存的图片附件",
+        });
+      }
+
+      const { record, created } = await berry.store.stickers.collectIfAbsent({
+        sha256: asset.sha256,
+        filePath: asset.filePath,
+        mimeType: asset.mimeType || "image/png",
+        meaning: (asset.transcript || "表情包").slice(0, 180),
+        tags: ["表情包"],
+        sourceChatKey: asset.chatKey,
+        status: "approved",
+        enabled: true,
+      });
+
+      return { ok: true, created, item: record };
+    }),
+  );
+
   router.post(
     "/api/admin/guild/trigger/:task",
     defineEventHandler(async (event) => {

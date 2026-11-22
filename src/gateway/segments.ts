@@ -6,6 +6,7 @@ export interface ExtractedAttachment {
   kind: "image" | "audio" | "forward" | "file";
   rawUrl: string;
   name: string;
+  isSticker?: boolean;
   embeddedForward?: unknown[];
 }
 
@@ -338,8 +339,16 @@ export function parseOneBotSegments(
           seg.data.url ?? seg.data.file ?? seg.data.file_id ?? "",
         ).trim();
         const name = String(seg.data.summary ?? seg.data.file ?? "").trim();
+        const subType = String(seg.data.sub_type ?? seg.data.subType ?? "");
+        const isSticker =
+          subType === "1" || /动画表情|表情包|\[表情\]/.test(name);
 
-        attachments.push({ kind: "image", rawUrl, name });
+        attachments.push({
+          kind: "image",
+          rawUrl,
+          name,
+          ...(isSticker ? { isSticker: true } : {}),
+        });
         parts.push(name ? `[图片: ${name}]` : "[图片]");
 
         break;

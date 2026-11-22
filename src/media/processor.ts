@@ -391,17 +391,43 @@ export class MediaProcessor {
           sha256,
           transcript: cached.transcript,
         });
+        await this.#maybeCollectSticker(
+          record,
+          attachment,
+          {
+            sha256,
+            filePath,
+            mimeType: detected.mime,
+            bytesLength: bytes.length,
+          },
+          cached.transcript,
+          settings,
+        );
 
         return;
       }
 
       if (!settings.media.autoAnalyzeImages && !forceAnalyze) {
+        const fallbackDesc = attachment.name || "图片已缓存";
+
         await this.#store.assets.markReady(record.id, {
           filePath,
           mimeType: detected.mime,
           sha256,
-          transcript: attachment.name || "图片已缓存",
+          transcript: fallbackDesc,
         });
+        await this.#maybeCollectSticker(
+          record,
+          attachment,
+          {
+            sha256,
+            filePath,
+            mimeType: detected.mime,
+            bytesLength: bytes.length,
+          },
+          fallbackDesc,
+          settings,
+        );
 
         return;
       }
@@ -420,6 +446,18 @@ export class MediaProcessor {
         sha256,
         transcript: description,
       });
+      await this.#maybeCollectSticker(
+        record,
+        attachment,
+        {
+          sha256,
+          filePath,
+          mimeType: detected.mime,
+          bytesLength: bytes.length,
+        },
+        description,
+        settings,
+      );
 
       return;
     }
@@ -644,5 +682,92 @@ export class MediaProcessor {
     });
 
     return res.text.trim() || "空白语音";
+  }
+
+  async #maybeCollectSticker(
+    record: MessageAssetRecord,
+    attachment: ExtractedAttachment,
+    file: {
+      sha256: string;
+      filePath: string;
+      mimeType: string;
+      bytesLength: number;
+    },
+    description: string,
+    settings: RuntimeSettings,
+  ): Promise<void> {
+    if (
+      !settings.social.stickerCollectEnabled ||
+      !record.chatKey.startsWith("group:")
+    ) {
+      return;
+    }
+
+    const isLikelySticker =
+      Boolean(attachment.isSticker) ||
+      (file.mimeType === "image/gif" && file.bytesLength <= 2 * 1024 * 1024);
+
+    if (!isLikelySticker) {
+      return;
+    }
+
+    const existing = await this.#store.stickers.getBySha256(file.sha256);
+
+    if (existing) {
+      return;
+    }
+
+    const total = await this.#store.stickers.count();
+
+    if (total >= settings.social.stickerMaxCount) {
+      return;
+    }
+
+    const cleanMeaning = description
+      .replace(/\*\*[^*]+\*\*/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180);
+    const emotionKeywords = [
+      "开心",
+      "笑",
+      "好笑",
+      "无语",
+      "惊讶",
+      "震惊",
+      "委屈",
+      "哭",
+      "生气",
+      "傲娇",
+      "可爱",
+      "猫",
+      "狗",
+      "贴贴",
+      "吃瓜",
+      "疑问",
+      "点赞",
+      "赞",
+      "摸鱼",
+      "害羞",
+      "吐槽",
+      "害怕",
+      "加油",
+      "晚安",
+      "早安",
+    ];
+    const tags = emotionKeywords
+      .filter((kw) => cleanMeaning.includes(kw))
+      .slice(0, 6);
+
+    await this.#store.stickers.collectIfAbsent({
+      sha256: file.sha256,
+      filePath: file.filePath,
+      mimeType: file.mimeType,
+      meaning: cleanMeaning || attachment.name || "表情包",
+      tags: tags.length > 0 ? tags : ["表情包"],
+      sourceChatKey: record.chatKey,
+      status: settings.social.stickerAutoApprove ? "approved" : "pending",
+      enabled: true,
+    });
   }
 }

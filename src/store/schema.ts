@@ -213,6 +213,20 @@ export interface BerryTables {
     locked: number;
     updated_at: number;
   };
+  stickers: {
+    id: Generated<number>;
+    sha256: string;
+    file_path: string;
+    mime_type: string;
+    meaning: string;
+    tags_json: string;
+    source_chat_key: string;
+    status: string;
+    enabled: number;
+    use_count: number;
+    created_at: number;
+    updated_at: number;
+  };
 }
 
 export type BerryDb = Kysely<BerryTables>;
@@ -805,6 +819,33 @@ const migrations: Record<string, Migration> = {
         .addColumn("source", "text", (c) => c.notNull().defaultTo("manual"))
         .addColumn("locked", "integer", (c) => c.notNull().defaultTo(0))
         .addColumn("updated_at", "integer", (c) => c.notNull())
+        .execute();
+    },
+  },
+  "011_stickers": {
+    async up(db) {
+      await db.schema
+        .createTable("stickers")
+        .ifNotExists()
+        .addColumn("id", "integer", (c) => c.primaryKey().autoIncrement())
+        .addColumn("sha256", "text", (c) => c.notNull().unique())
+        .addColumn("file_path", "text", (c) => c.notNull())
+        .addColumn("mime_type", "text", (c) => c.notNull())
+        .addColumn("meaning", "text", (c) => c.notNull().defaultTo(""))
+        .addColumn("tags_json", "text", (c) => c.notNull().defaultTo("[]"))
+        .addColumn("source_chat_key", "text", (c) => c.notNull().defaultTo(""))
+        .addColumn("status", "text", (c) => c.notNull().defaultTo("pending"))
+        .addColumn("enabled", "integer", (c) => c.notNull().defaultTo(1))
+        .addColumn("use_count", "integer", (c) => c.notNull().defaultTo(0))
+        .addColumn("created_at", "integer", (c) => c.notNull())
+        .addColumn("updated_at", "integer", (c) => c.notNull())
+        .execute();
+
+      await db.schema
+        .createIndex("idx_stickers_status_enabled")
+        .ifNotExists()
+        .on("stickers")
+        .columns(["status", "enabled"])
         .execute();
     },
   },

@@ -32,6 +32,7 @@ export interface ToolLoopResult<T> {
 
 const OUTPUT_UNIT_KINDS = new Set([
   "qq_forward",
+  "qq_image",
   "qq_poke",
   "qq_reaction",
   "qq_reply",

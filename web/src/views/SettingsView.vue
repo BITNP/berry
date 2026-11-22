@@ -143,6 +143,9 @@ interface RuntimeSettingsView {
     impressionUpdateEnabled: boolean;
     impressionIntervalHours: number;
     impressionMinMessages: number;
+    stickerCollectEnabled: boolean;
+    stickerAutoApprove: boolean;
+    stickerMaxCount: number;
   };
 }
 
@@ -1461,6 +1464,27 @@ onMounted(() => {
                     class="w-full"
                     :max="200"
                     :min="3"
+                  />
+                </NFormItem>
+              </div>
+            </NCard>
+
+            <NCard class="mb-md" size="small" title="表情包库自动收集">
+              <div class="form-grid-2">
+                <NFormItem label="自动收集群内表情包">
+                  <NSwitch
+                    v-model:value="settings.social.stickerCollectEnabled"
+                  />
+                </NFormItem>
+                <NFormItem label="自动审核通过（关闭则需人工审核）">
+                  <NSwitch v-model:value="settings.social.stickerAutoApprove" />
+                </NFormItem>
+                <NFormItem label="自动收集上限（张）">
+                  <NInputNumber
+                    v-model:value="settings.social.stickerMaxCount"
+                    class="w-full"
+                    :max="2000"
+                    :min="10"
                   />
                 </NFormItem>
               </div>

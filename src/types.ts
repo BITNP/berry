@@ -155,6 +155,14 @@ export type OutputUnit =
       kind: "qq_poke";
       userId: string;
       targetRef?: string;
+    }
+  | {
+      kind: "qq_image";
+      stickerId: number;
+      filePath: string;
+      summary?: string;
+      quoteMessageId?: string;
+      targetRef?: string;
     };
 
 export interface UnifiedInput {
@@ -313,6 +321,23 @@ export interface MemberImpressionRecord {
   impression: string;
   source: "manual" | "auto";
   locked: boolean;
+  updatedAt: number;
+}
+
+export type StickerStatus = "approved" | "pending";
+
+export interface StickerRecord {
+  id: number;
+  sha256: string;
+  filePath: string;
+  mimeType: string;
+  meaning: string;
+  tags: string[];
+  sourceChatKey: string;
+  status: StickerStatus;
+  enabled: boolean;
+  useCount: number;
+  createdAt: number;
   updatedAt: number;
 }
 

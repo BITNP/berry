@@ -81,6 +81,15 @@ const outputUnitSchema = Type.Union([
     },
     { additionalProperties: false },
   ),
+  Type.Object(
+    {
+      kind: Type.Literal("qq_image"),
+      stickerId: Type.Integer({ minimum: 1 }),
+      quoteMessageId: Type.Optional(Type.String({ minLength: 1 })),
+      targetRef: Type.Optional(Type.String({ minLength: 1 })),
+    },
+    { additionalProperties: false },
+  ),
 ]);
 
 type RawOutputUnit = Static<typeof outputUnitSchema>;
@@ -596,9 +605,9 @@ export class BerryAgent {
       },
     });
 
-    // Resolve opaque quote, reaction, poke, and optional targetRef handles back to real OneBot IDs.
+    // Resolve opaque quote, reaction, poke, sticker, and optional targetRef handles back to real OneBot IDs.
     const { dispatches: plannedDispatches, errors: dispatchErrors } =
-      this.#resolveDispatches(result.structured.units, {
+      await this.#resolveDispatches(result.structured.units, {
         ids,
         input,
         requestMessages,
@@ -620,11 +629,16 @@ export class BerryAgent {
 
     for (const dispatch of plannedDispatches) {
       if (
-        dispatch.unit.kind === "qq_reply" &&
+        (dispatch.unit.kind === "qq_reply" ||
+          dispatch.unit.kind === "qq_image") &&
         pacedChats.has(dispatch.targetChatKey)
       ) {
+        const paceText =
+          dispatch.unit.kind === "qq_reply"
+            ? dispatch.unit.text
+            : (dispatch.unit.summary ?? "");
         const waitMs = computeReplyPaceDelayMs(
-          dispatch.unit.text,
+          paceText,
           settings.bot.replyPaceMinMs,
           settings.bot.replyPaceMaxMs,
         );
@@ -640,7 +654,10 @@ export class BerryAgent {
         settings.bot.botQQ,
       );
 
-      if (dispatch.unit.kind === "qq_reply") {
+      if (
+        dispatch.unit.kind === "qq_reply" ||
+        dispatch.unit.kind === "qq_image"
+      ) {
         pacedChats.add(dispatch.targetChatKey);
       }
     }
@@ -1337,7 +1354,7 @@ export class BerryAgent {
     }
   }
 
-  #resolveDispatches(
+  async #resolveDispatches(
     rawUnits: RawOutputUnit[],
     ctx: {
       ids: ModelIds;
@@ -1347,10 +1364,10 @@ export class BerryAgent {
       role: AccessRole;
       botQQ: string;
     },
-  ): {
+  ): Promise<{
     dispatches: { targetChatKey: ChatKey; unit: OutputUnit }[];
     errors: string[];
-  } {
+  }> {
     const logger = this.#logger;
     const { ids, input, requestMessages, speakerQQ, role, botQQ } = ctx;
 
@@ -1516,6 +1533,46 @@ export class BerryAgent {
           unit: {
             kind: "qq_poke",
             userId: resolvedUserId,
+          },
+        });
+
+        continue;
+      }
+
+      if (unit.kind === "qq_image") {
+        const targetChatKey = resolveUnitTarget(unit.targetRef);
+
+        if (!targetChatKey) {
+          continue;
+        }
+
+        const sticker = await this.#services.store.stickers.get(unit.stickerId);
+
+        if (sticker?.status !== "approved" || !sticker.enabled) {
+          errors.push(
+            `表情包 #${unit.stickerId} 不存在或未启用，请先调用 search_stickers 获取可用 stickerId`,
+          );
+
+          continue;
+        }
+
+        const resolvedQuote = unit.quoteMessageId
+          ? resolveMsgHandle(unit.quoteMessageId)
+          : null;
+        const rawQuote =
+          resolvedQuote?.chatKey === targetChatKey
+            ? resolvedQuote.rawId
+            : undefined;
+
+        dispatches.push({
+          targetChatKey,
+          unit: {
+            kind: "qq_image",
+            stickerId: sticker.id,
+            filePath: sticker.filePath,
+            summary:
+              sticker.tags[0] || sticker.meaning.slice(0, 12) || "表情包",
+            ...(rawQuote ? { quoteMessageId: rawQuote } : {}),
           },
         });
 

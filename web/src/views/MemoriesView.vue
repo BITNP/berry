@@ -24,6 +24,7 @@ import { computed, h, onMounted, ref, watch } from "vue";
 import { apiFetch } from "../api/client.ts";
 import ImpressionsPane from "../components/ImpressionsPane.vue";
 import JargonPane from "../components/JargonPane.vue";
+import StickersPane from "../components/StickersPane.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useLiveRefresh } from "../composables/useEventStream.ts";
 import { formatTime } from "../utils/format.ts";
@@ -466,6 +467,10 @@ onMounted(() => {
 
       <NTabPane name="impressions" tab="成员印象">
         <ImpressionsPane />
+      </NTabPane>
+
+      <NTabPane name="stickers" tab="表情包库">
+        <StickersPane />
       </NTabPane>
     </NTabs>
 
