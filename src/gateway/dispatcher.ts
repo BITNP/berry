@@ -3,6 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type { $Fetch, FetchResponse } from "ofetch";
 
+import { buildSignedStickerUrl } from "../media/sticker-url.ts";
 import type { Store } from "../store/index.ts";
 import type {
   ChatKey,
@@ -40,6 +41,7 @@ interface SentMessageContext {
 
 const DEFAULT_POLL_DELAYS_MS = [350, 700, 1200, 2000, 3000, 4000, 5000];
 const DEFAULT_MAX_TRACK_MS = 10 * 60 * 1000;
+const MAX_INLINE_IMAGE_BYTES = 512 * 1024;
 
 export class GatewayDispatcher {
   #transport: GatewayTransport;
@@ -47,6 +49,8 @@ export class GatewayDispatcher {
   #store: Store;
   #api: $Fetch;
   #account: string;
+  #publicUrl?: string;
+  #mediaSignSecret?: string;
   #logger = new Logger("gateway");
   #pendingTracks = new Set<Promise<void>>();
   #abort = new AbortController();
@@ -59,6 +63,8 @@ export class GatewayDispatcher {
     store: Store;
     api: $Fetch;
     account: string;
+    publicUrl?: string;
+    mediaSignSecret?: string;
     pollDelaysMs?: number[];
     maxTrackMs?: number;
   }) {
@@ -67,6 +73,8 @@ export class GatewayDispatcher {
     this.#store = options.store;
     this.#api = options.api;
     this.#account = options.account;
+    this.#publicUrl = options.publicUrl;
+    this.#mediaSignSecret = options.mediaSignSecret;
     this.#pollDelaysMs = options.pollDelaysMs?.length
       ? options.pollDelaysMs
       : DEFAULT_POLL_DELAYS_MS;
@@ -168,36 +176,80 @@ export class GatewayDispatcher {
       }
 
       if (unit.kind === "qq_image") {
+        const { stickerId, quoteMessageId, summary } = unit;
         const bytes = await readFile(unit.filePath);
-        const segments: OneBotSegment[] = [
-          ...(unit.quoteMessageId
-            ? [{ type: "reply", data: { id: unit.quoteMessageId } }]
-            : []),
-          {
-            type: "image",
-            data: {
-              file: `base64://${bytes.toString("base64")}`,
-              subType: 1,
-              ...(unit.summary ? { summary: `[${unit.summary}]` } : {}),
-            },
-          },
-        ];
+        const signedUrl = buildSignedStickerUrl({
+          publicUrl: this.#publicUrl,
+          secret: this.#mediaSignSecret,
+          stickerId,
+        });
         const action =
           kind === "group" ? "send_group_msg_async" : "send_private_msg_async";
-        const params =
-          kind === "group"
+
+        function buildParams(fileRef: string) {
+          const segments: OneBotSegment[] = [
+            ...(quoteMessageId
+              ? [{ type: "reply", data: { id: quoteMessageId } }]
+              : []),
+            {
+              type: "image",
+              data: {
+                file: fileRef,
+                subType: 1,
+                ...(summary ? { summary: `[${summary}]` } : {}),
+              },
+            },
+          ];
+
+          return kind === "group"
             ? { group_id: Number(chatId), message: segments }
             : { user_id: Number(chatId), message: segments };
-        const sent = await this.#sendAsyncMessage(action, params, {
+        }
+
+        const sentCtx: SentMessageContext = {
           delivery,
           chatKey,
-          text: unit.summary ? `[表情包: ${unit.summary}]` : "[表情包]",
-          segments: [
-            { type: "image", data: { summary: unit.summary ?? "表情包" } },
-          ],
-          replyToMessageId: unit.quoteMessageId ?? null,
+          text: summary ? `[表情包: ${summary}]` : "[表情包]",
+          segments: [{ type: "image", data: { summary: summary ?? "表情包" } }],
+          replyToMessageId: quoteMessageId ?? null,
           botQQ,
-        });
+        };
+
+        let sent: DeliveryRecord;
+
+        if (bytes.length > MAX_INLINE_IMAGE_BYTES && signedUrl) {
+          sent = await this.#sendAsyncMessage(
+            action,
+            buildParams(signedUrl),
+            sentCtx,
+          );
+        } else {
+          try {
+            sent = await this.#sendAsyncMessage(
+              action,
+              buildParams(`base64://${bytes.toString("base64")}`),
+              sentCtx,
+            );
+          } catch (error) {
+            if (signedUrl && /\(HTTP 413\)/.test(errorMessage(error))) {
+              this.#logger.warn(
+                "Inline base64 sticker hit HTTP 413; retrying with signed media URL",
+                {
+                  deliveryId: delivery.id,
+                  stickerId: unit.stickerId,
+                  bytes: bytes.length,
+                },
+              );
+              sent = await this.#sendAsyncMessage(
+                action,
+                buildParams(signedUrl),
+                sentCtx,
+              );
+            } else {
+              throw error;
+            }
+          }
+        }
 
         await this.#store.stickers.recordUsage(unit.stickerId).catch(() => {});
 

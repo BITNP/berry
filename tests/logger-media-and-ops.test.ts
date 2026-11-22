@@ -2081,3 +2081,397 @@ test("recall_message calls OneBot delete_msg, updates recalledAt, and enforces r
   assert.deepEqual(deletedIds, [90_003, 90_001, 90_002]);
   assert.notEqual((await app.store.messages.get(botMsg1.id))?.recalledAt, null);
 });
+
+test("qq_image pre-dispatch validation self-corrects stale stickerId before sending cross-chat", async (t) => {
+  const { writeFile, mkdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+
+  const sentGroupPayloads: Record<string, unknown>[] = [];
+  let llmRound = 0;
+
+  const gw = await startStubServer((req, res, body) => {
+    if (req.url?.includes("/send_group_msg_async")) {
+      sentGroupPayloads.push(JSON.parse(body) as Record<string, unknown>);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: { message_id: `grp-${sentGroupPayloads.length}` },
+        }),
+      );
+
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: [] }));
+  });
+
+  t.after(() => gw.close());
+
+  const llm = await startStubServer((req, res, body) => {
+    if (!req.url?.endsWith("/chat/completions")) {
+      res.writeHead(404);
+      res.end();
+
+      return;
+    }
+
+    const parsed = JSON.parse(body) as {
+      messages: { role: string; content?: string }[];
+    };
+
+    llmRound++;
+
+    if (llmRound === 1) {
+      // Model mistakenly reuses a deleted stickerId=1 from history without calling search_stickers.
+      const userMsg =
+        parsed.messages.findLast((m) => m.role === "user")?.content ?? "";
+      const groupRefMatch = /"targetRef":"(g_[a-z0-9]+)"/.exec(userMsg);
+      const groupRef = groupRefMatch?.[1] ?? "g_missing";
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify(
+          chatReply(
+            JSON.stringify({
+              units: [
+                { kind: "qq_image", stickerId: 1, targetRef: groupRef },
+                {
+                  kind: "qq_reply",
+                  text: "我最喜欢这张回应了你的消息",
+                  targetRef: groupRef,
+                },
+              ],
+            }),
+          ),
+        ),
+      );
+
+      return;
+    }
+
+    if (llmRound === 2) {
+      const correction = parsed.messages.at(-1)?.content ?? "";
+
+      assert.match(correction, /表情包 #1/);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify(
+          chatToolCalls([
+            {
+              id: "call_search_live_sticker",
+              name: "search_stickers",
+              args: { query: "回应了你的消息" },
+            },
+          ]),
+        ),
+      );
+
+      return;
+    }
+
+    const toolTurn = parsed.messages.findLast((m) => m.role === "tool");
+    const toolResult = JSON.parse(toolTurn?.content ?? "{}") as {
+      result?: { items?: { stickerId: number }[] };
+    };
+    const liveStickerId = toolResult.result?.items?.[0]?.stickerId;
+    const firstUserMsg =
+      parsed.messages.find((m) => m.role === "user")?.content ?? "";
+    const groupRef =
+      /"targetRef":"(g_[a-z0-9]+)"/.exec(firstUserMsg)?.[1] ?? "";
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify(
+        chatReply(
+          JSON.stringify({
+            units: [
+              {
+                kind: "qq_image",
+                stickerId: liveStickerId,
+                targetRef: groupRef,
+              },
+              {
+                kind: "qq_reply",
+                text: "我最喜欢这张回应了你的消息",
+                targetRef: groupRef,
+              },
+            ],
+          }),
+        ),
+      ),
+    );
+  });
+
+  t.after(() => llm.close());
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gw.url,
+      gatewayToken: "gw-test-token",
+      mainBaseUrl: `${llm.url}/v1`,
+      mainApiKey: "test-main-key",
+      mainModel: "test-main",
+    },
+    {
+      policy: { adminQQs: ["10001"] },
+      bot: { replyPaceMinMs: 0, replyPaceMaxMs: 0 },
+    },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "66001",
+    title: "测试大群",
+    enabled: true,
+    triggerMode: "mention_only",
+  });
+  await app.store.chats.upsert({
+    kind: "private",
+    chatId: "10001",
+    title: "管理员私聊",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const stickerDir = join(app.store.assetsDir, "stickers");
+
+  await mkdir(stickerDir, { recursive: true });
+  const pngBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const stickerPath = join(stickerDir, "live-sticker.png");
+
+  await writeFile(stickerPath, pngBytes);
+
+  // Create and delete #1 so the surviving approved sticker gets id=2.
+  const first = await app.store.stickers.collectIfAbsent({
+    sha256: "sha-deleted-1",
+    filePath: stickerPath,
+    mimeType: "image/png",
+    meaning: "旧重复图",
+    tags: ["旧"],
+    sourceChatKey: "group:66001",
+    status: "approved",
+    enabled: true,
+  });
+
+  await app.store.stickers.remove(first.record.id);
+
+  const live = await app.store.stickers.collectIfAbsent({
+    sha256: "sha-live-2",
+    filePath: stickerPath,
+    mimeType: "image/png",
+    meaning: "回应了你的消息（Q版举牌）",
+    tags: ["回应", "树莓娘"],
+    sourceChatKey: "group:66001",
+    status: "approved",
+    enabled: true,
+  });
+
+  assert.notEqual(live.record.id, 1);
+
+  const dm = await captureText(app, {
+    kind: "private",
+    chatId: "10001",
+    id: "ob-dm-cross-sticker",
+    userId: "10001",
+    senderName: "Kat",
+    text: "到大群里发一个你最喜欢的表情包",
+  });
+
+  const result = await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "private:10001",
+    kind: "private",
+    chatId: "10001",
+    triggerMessageIds: [dm.message.id],
+    senderId: "10001",
+    senderName: "Kat",
+  });
+
+  assert.equal(llmRound, 3);
+  assert.equal(result.units.length, 2);
+  assert.equal(sentGroupPayloads.length, 2);
+
+  const firstMsg = sentGroupPayloads[0] as {
+    group_id: number;
+    message: { type: string; data: { file?: string } }[];
+  };
+  const secondMsg = sentGroupPayloads[1] as {
+    group_id: number;
+    message: { type: string; data: { text?: string } }[];
+  };
+
+  assert.equal(firstMsg.group_id, 66_001);
+  assert.equal(firstMsg.message[0]?.type, "image");
+  assert.ok(firstMsg.message[0]?.data.file?.startsWith("base64://"));
+  assert.equal(secondMsg.group_id, 66_001);
+  assert.equal(secondMsg.message[0]?.type, "text");
+  assert.equal((await app.store.stickers.get(live.record.id))?.useCount, 1);
+});
+
+test("large or HTTP-413 qq_image stickers fall back to HMAC-signed /api/media/stickers/:id URL", async (t) => {
+  const { writeFile, mkdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const { buildSignedStickerUrl } = await import("../src/media/sticker-url.ts");
+
+  const sentFiles: string[] = [];
+  let rejectBase64With413 = false;
+
+  const gw = await startStubServer((req, res, body) => {
+    if (req.url?.includes("/send_group_msg_async")) {
+      const payload = JSON.parse(body) as {
+        message: { type: string; data: { file?: string } }[];
+      };
+      const file =
+        payload.message.find((s) => s.type === "image")?.data.file ?? "";
+
+      if (rejectBase64With413 && file.startsWith("base64://")) {
+        res.writeHead(413, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ message: "request body too large" }));
+
+        return;
+      }
+
+      sentFiles.push(file);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: { message_id: `img-${sentFiles.length}` },
+        }),
+      );
+
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
+  });
+
+  t.after(() => gw.close());
+
+  const { app } = await createTestBerryApp(
+    {
+      publicUrl: "https://berry.example.test",
+      gatewayUrl: gw.url,
+      gatewayToken: "gw-hmac-secret",
+    },
+    {},
+    t,
+  );
+  const { url } = await app.listen();
+
+  const stickerDir = join(app.store.assetsDir, "stickers");
+
+  await mkdir(stickerDir, { recursive: true });
+  const bigBytes = Buffer.alloc(600 * 1024, 0x42);
+  const bigPath = join(stickerDir, "big-sticker.png");
+  const smallBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const smallPath = join(stickerDir, "small-sticker.png");
+
+  await writeFile(bigPath, bigBytes);
+  await writeFile(smallPath, smallBytes);
+
+  const { record: bigSticker } = await app.store.stickers.collectIfAbsent({
+    sha256: "sha-big-sticker",
+    filePath: bigPath,
+    mimeType: "image/png",
+    meaning: "超大高清表情包",
+    tags: ["高清"],
+    sourceChatKey: "group:77001",
+    status: "approved",
+    enabled: true,
+  });
+  const { record: smallSticker } = await app.store.stickers.collectIfAbsent({
+    sha256: "sha-small-sticker",
+    filePath: smallPath,
+    mimeType: "image/png",
+    meaning: "小表情包",
+    tags: ["小图"],
+    sourceChatKey: "group:77001",
+    status: "approved",
+    enabled: true,
+  });
+
+  // 1) Sticker > 512 KB uses signed HTTPS URL directly instead of base64://.
+  const bigDelivery = await app.gateway.dispatchUnit(
+    "group:77001",
+    {
+      kind: "qq_image",
+      stickerId: bigSticker.id,
+      filePath: bigPath,
+      summary: "高清",
+    },
+    "999000",
+  );
+
+  assert.equal(bigDelivery.status, "sent");
+  assert.equal(sentFiles.length, 1);
+  assert.ok(
+    sentFiles[0]!.startsWith(
+      `https://berry.example.test/api/media/stickers/${bigSticker.id}?exp=`,
+    ),
+  );
+
+  // 2) Small sticker retries automatically with signed URL if gateway returns HTTP 413.
+  rejectBase64With413 = true;
+  const smallDelivery = await app.gateway.dispatchUnit(
+    "group:77001",
+    {
+      kind: "qq_image",
+      stickerId: smallSticker.id,
+      filePath: smallPath,
+      summary: "小图",
+    },
+    "999000",
+  );
+
+  assert.equal(smallDelivery.status, "sent");
+  assert.equal(sentFiles.length, 2);
+  assert.ok(
+    sentFiles[1]!.startsWith(
+      `https://berry.example.test/api/media/stickers/${smallSticker.id}?exp=`,
+    ),
+  );
+
+  // 3) /api/media/stickers/:id verifies HMAC signature & expiry and streams approved bytes without admin session.
+  const signedPath =
+    new URL(sentFiles[1]!).pathname + new URL(sentFiles[1]!).search;
+  const okRes = await fetch(`${url}${signedPath}`);
+
+  assert.equal(okRes.status, 200);
+  assert.equal(okRes.headers.get("content-type"), "image/png");
+  assert.deepEqual(Buffer.from(await okRes.arrayBuffer()), smallBytes);
+
+  const badSigRes = await fetch(
+    `${url}/api/media/stickers/${smallSticker.id}?exp=${Date.now() + 60_000}&sig=tampered`,
+  );
+
+  assert.equal(badSigRes.status, 403);
+
+  const expiredUrl = buildSignedStickerUrl({
+    publicUrl: "https://berry.example.test",
+    secret: "gw-hmac-secret",
+    stickerId: smallSticker.id,
+    ttlMs: -1000,
+  })!;
+  const expiredPath = new URL(expiredUrl).pathname + new URL(expiredUrl).search;
+  const expiredRes = await fetch(`${url}${expiredPath}`);
+
+  assert.equal(expiredRes.status, 403);
+
+  await app.store.stickers.update(smallSticker.id, { enabled: false });
+  const disabledRes = await fetch(`${url}${signedPath}`);
+
+  assert.equal(disabledRes.status, 404);
+});

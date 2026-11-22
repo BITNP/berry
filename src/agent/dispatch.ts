@@ -303,6 +303,11 @@ export async function resolveOutputDispatches(
       const sticker = await store.stickers.get(unit.stickerId);
 
       if (sticker?.status !== "approved" || !sticker.enabled) {
+        logger.warn("Dropped qq_image with unavailable sticker", {
+          fromChatKey: input.chatKey,
+          targetChatKey,
+          stickerId: unit.stickerId,
+        });
         errors.push(
           `表情包 #${unit.stickerId} 不存在或未启用，请先调用 search_stickers 获取可用 stickerId`,
         );

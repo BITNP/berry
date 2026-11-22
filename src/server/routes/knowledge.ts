@@ -4,13 +4,14 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import { basename, extname, join, resolve, sep } from "node:path";
 
 import { fileTypeFromBuffer } from "file-type";
-import type { Router } from "h3";
+import type { H3Event, Router } from "h3";
 import { createError, defineEventHandler, setHeader } from "h3";
 import { lookup } from "mrmime";
 import { Type } from "typebox";
 
 import type { BerryApp } from "../../app.ts";
-import type { ChatKey } from "../../types.ts";
+import { verifySignedStickerParams } from "../../media/sticker-url.ts";
+import type { ChatKey, StickerRecord } from "../../types.ts";
 import { idParamSchema, parseBody, parseParams, parseQuery } from "../http.ts";
 
 const memoryScopeSchema = Type.Union([
@@ -274,6 +275,75 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
     }),
   );
 
+  async function serveStickerFile(
+    event: H3Event,
+    sticker: StickerRecord,
+    cacheControl: string,
+  ) {
+    const root = resolve(berry.store.assetsDir);
+    const resolvedFile = resolve(sticker.filePath);
+
+    if (!resolvedFile.startsWith(`${root}${sep}`)) {
+      throw createError({ statusCode: 403, statusMessage: "非法文件路径" });
+    }
+
+    try {
+      await stat(resolvedFile);
+    } catch {
+      throw createError({ statusCode: 404, statusMessage: "文件已不存在" });
+    }
+
+    setHeader(
+      event,
+      "Content-Type",
+      sticker.mimeType || lookup(resolvedFile) || "application/octet-stream",
+    );
+    setHeader(event, "Cache-Control", cacheControl);
+
+    return createReadStream(resolvedFile);
+  }
+
+  // Signed short-lived sticker media route for OneBot/NapCat image fetch (avoids gateway HTTP 413 on large base64 payloads).
+  router.get(
+    "/api/media/stickers/:id",
+    defineEventHandler(async (event) => {
+      const { id } = await parseParams(event, idParamSchema, "无效的表情包 ID");
+      const query = await parseQuery(
+        event,
+        Type.Object({
+          exp: Type.Integer({ minimum: 1 }),
+          sig: Type.String({ minLength: 1 }),
+        }),
+      );
+
+      if (
+        !verifySignedStickerParams({
+          secret: berry.env.gatewayToken,
+          stickerId: id,
+          exp: query.exp,
+          sig: query.sig,
+        })
+      ) {
+        throw createError({
+          statusCode: 403,
+          message: "表情包签名无效或已过期",
+        });
+      }
+
+      const sticker = await berry.store.stickers.get(id);
+
+      if (
+        sticker?.status !== "approved" ||
+        !sticker.enabled ||
+        !sticker.filePath
+      ) {
+        throw createError({ statusCode: 404, message: "表情包不存在" });
+      }
+
+      return serveStickerFile(event, sticker, "private, max-age=300");
+    }),
+  );
+
   router.get(
     "/api/admin/stickers/:id/file",
     defineEventHandler(async (event) => {
@@ -285,27 +355,7 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
         throw createError({ statusCode: 404, statusMessage: "表情包不存在" });
       }
 
-      const root = resolve(berry.store.assetsDir);
-      const resolvedFile = resolve(sticker.filePath);
-
-      if (!resolvedFile.startsWith(`${root}${sep}`)) {
-        throw createError({ statusCode: 403, statusMessage: "非法文件路径" });
-      }
-
-      try {
-        await stat(resolvedFile);
-      } catch {
-        throw createError({ statusCode: 404, statusMessage: "文件已不存在" });
-      }
-
-      setHeader(
-        event,
-        "Content-Type",
-        sticker.mimeType || lookup(resolvedFile) || "application/octet-stream",
-      );
-      setHeader(event, "Cache-Control", "private, max-age=3600");
-
-      return createReadStream(resolvedFile);
+      return serveStickerFile(event, sticker, "private, max-age=3600");
     }),
   );
 

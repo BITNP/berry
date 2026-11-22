@@ -57,7 +57,8 @@ export class MessageGatewayClient {
   #dispatcher: GatewayDispatcher;
 
   constructor(
-    env: Pick<EnvConfig, "gatewayUrl" | "gatewayAccount" | "gatewayToken">,
+    env: Pick<EnvConfig, "gatewayUrl" | "gatewayAccount" | "gatewayToken"> &
+      Partial<Pick<EnvConfig, "publicUrl">>,
     store: Store,
     options: GatewayClientOptions = {},
   ) {
@@ -88,6 +89,8 @@ export class MessageGatewayClient {
       store,
       api: this.#api,
       account: this.#account,
+      publicUrl: env.publicUrl,
+      mediaSignSecret: env.gatewayToken,
       pollDelaysMs: options.pollDelaysMs,
       maxTrackMs: options.maxTrackMs,
     });

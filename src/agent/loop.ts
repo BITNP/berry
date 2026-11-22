@@ -53,6 +53,7 @@ export async function runChatToolLoop<S extends TSchema>(options: {
   maxRounds: number;
   maxDurationMs?: number;
   outputSchema?: S;
+  validateOutput?: (value: Static<S>) => Promise<string | null> | string | null;
   maxTokens?: number;
   temperature?: number;
   thinkingEffort?: ThinkingEffort;
@@ -281,7 +282,15 @@ export async function runChatToolLoop<S extends TSchema>(options: {
       ? validateModelJson(options.outputSchema, assistantText)
       : { ok: true as const, value: undefined as Static<S> };
 
-    if (validation.ok) {
+    let validationIssue: string | null = validation.ok
+      ? null
+      : validation.issue;
+
+    if (validation.ok && options.validateOutput) {
+      validationIssue = await options.validateOutput(validation.value);
+    }
+
+    if (validation.ok && !validationIssue) {
       turnMessages.push({ role: "assistant", content: assistantText });
 
       return {
@@ -294,14 +303,21 @@ export async function runChatToolLoop<S extends TSchema>(options: {
     }
 
     if (corrections >= 2) {
-      throw new Error(`模型输出连续两次校验失败：${validation.issue}`);
+      throw new Error(`模型输出连续两次校验失败：${validationIssue}`);
     }
 
     corrections++;
-    const truncatedByLength = choice.finish_reason === "length";
-    const correctionPrompt = truncatedByLength
-      ? `上一次输出因达到最大输出长度被截断导致 JSON 不完整（第 ${corrections}/2 次纠正）。请大幅精简回复内容（不要输出大段代码或冗长全文），只输出简短合法的纯 JSON 对象。`
-      : `上一次输出未通过格式校验（第 ${corrections}/2 次纠正）：${validation.issue}。请只输出符合协议的纯 JSON 对象，不要附加额外说明或代码围栏。`;
+    const truncatedByLength =
+      !validation.ok && choice.finish_reason === "length";
+    let correctionPrompt: string;
+
+    if (truncatedByLength) {
+      correctionPrompt = `上一次输出因达到最大输出长度被截断导致 JSON 不完整（第 ${corrections}/2 次纠正）。请大幅精简回复内容（不要输出大段代码或冗长全文），只输出简短合法的纯 JSON 对象。`;
+    } else if (validation.ok) {
+      correctionPrompt = `上一次输出未通过发送前校验（第 ${corrections}/2 次纠正）：${validationIssue}。请先调用必要工具（如 search_stickers）获取最新有效数据后再重新输出合法 JSON，或移除无效输出单元。`;
+    } else {
+      correctionPrompt = `上一次输出未通过格式校验（第 ${corrections}/2 次纠正）：${validationIssue}。请只输出符合协议的纯 JSON 对象，不要附加额外说明或代码围栏。`;
+    }
 
     messages.push(
       { role: "assistant", content: assistantText },

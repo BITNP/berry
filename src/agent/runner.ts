@@ -452,6 +452,31 @@ export class BerryAgent {
       tools: this.#mainTools.resolve(toolContext),
       maxRounds: 12,
       outputSchema: agentOutputSchema,
+      validateOutput: async (output) => {
+        const missingIds: number[] = [];
+
+        for (const unit of output.units) {
+          if (unit.kind !== "qq_image") {
+            continue;
+          }
+
+          const sticker = await store.stickers.get(unit.stickerId);
+
+          if (sticker?.status !== "approved" || !sticker.enabled) {
+            missingIds.push(unit.stickerId);
+          }
+        }
+
+        if (missingIds.length === 0) {
+          return null;
+        }
+
+        const uniqueIds = [...new Set(missingIds)]
+          .map((id) => `#${id}`)
+          .join("、");
+
+        return `表情包 ${uniqueIds} 不存在、已删除或未启用（不要直接复用历史对话中的旧 stickerId），请先调用 search_stickers 查询当前可用表情包`;
+      },
       thinkingEffort: resolveThinkingEffort(settings, "dialog"),
       cacheGuard: this.#cacheGuard,
       cacheSessionKey: makeCacheSessionKey(
@@ -476,8 +501,12 @@ export class BerryAgent {
       });
 
     for (const detail of dispatchErrors) {
+      this.#logger.warn("Dropped output unit during dispatch", {
+        chatKey: input.chatKey,
+        detail,
+      });
       await store.conversations.pushOutputResult({
-        module: "qq_reaction",
+        module: "qq_gateway",
         status: "error",
         detail,
         createdAt: Date.now(),
