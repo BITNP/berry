@@ -253,6 +253,12 @@ function summarizeCallOutput(call: LlmCallRow): string {
     }
   }
 
+  if (call.purpose === "memory_update") {
+    return call.toolCalls.length > 0
+      ? `更新记忆（${call.toolCalls.length} 次操作）`
+      : "检查记忆，无需写入";
+  }
+
   if (call.purpose.startsWith("subagent")) {
     const sub = parseSubagentOutput(call.responseText);
 
