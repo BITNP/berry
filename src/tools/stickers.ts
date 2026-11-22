@@ -1,5 +1,8 @@
+import { readFile } from "node:fs/promises";
+
 import { Type } from "typebox";
 
+import { checkStickerEligibility } from "../media/sticker-filter.ts";
 import type { MessageAssetRecord } from "../types.ts";
 import { isAdmin } from "./access.ts";
 import { defineTool, defineToolProvider } from "./define.ts";
@@ -105,7 +108,7 @@ async function resolveImageAsset(
 const saveStickerTool = defineTool({
   name: "save_sticker",
   description:
-    "仅管理员可用：把聊天中某条消息的图片附件直接收录并上架到表情包库（立即审核通过并启用，随后可用 search_stickers 搜到并用 qq_image 发送）。优先传上下文中的 assetId（[附件 #N]）或 messageRef（m_* 句柄）；均省略时自动取当前会话最近一张图片。",
+    "仅管理员可用：把聊天中真正的表情包/梗图/Q版反应图收录并上架到表情包库（立即审核通过并启用，随后可用 search_stickers 搜到并用 qq_image 发送）。严禁收录聊天截图、通知横条截图、后台/网页界面截图、代码报错图或普通照片；批量收录前请先确认每张图的识图描述确实是表情包且未重复。优先传上下文中的 assetId（[附件 #N]）或 messageRef（m_* 句柄）；均省略时自动取当前会话最近一张图片。",
   mutating: true,
   parameters: Type.Object(
     {
@@ -123,11 +126,44 @@ const saveStickerTool = defineTool({
 
     const asset = await resolveImageAsset(ctx, args);
     const cleanMeaning = args.meaning.trim().slice(0, 180);
+    const bytes = await readFile(asset.filePath!).catch(() => undefined);
+    const eligibility = checkStickerEligibility({
+      bytes,
+      meaning: cleanMeaning,
+      transcript: asset.transcript,
+    });
+
+    if (!eligibility.ok) {
+      throw new Error(eligibility.reason);
+    }
+
     const cleanTags = (args.tags ?? [])
       .map((t) => t.trim())
       .filter(Boolean)
       .slice(0, 8);
     const tags = cleanTags.length > 0 ? cleanTags : ["表情包"];
+
+    const existingBySha = await ctx.services.store.stickers.getBySha256(
+      asset.sha256,
+    );
+
+    if (!existingBySha) {
+      const existingByMeaning =
+        await ctx.services.store.stickers.findByNormalizedMeaning(cleanMeaning);
+
+      if (existingByMeaning) {
+        return {
+          ok: true,
+          stickerId: existingByMeaning.id,
+          created: false,
+          deduplicated: true,
+          meaning: existingByMeaning.meaning,
+          tags: existingByMeaning.tags,
+          status: existingByMeaning.status,
+          enabled: existingByMeaning.enabled,
+        };
+      }
+    }
 
     const { record, created } =
       await ctx.services.store.stickers.collectIfAbsent({

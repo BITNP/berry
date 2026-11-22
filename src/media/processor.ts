@@ -20,6 +20,7 @@ import type { ChatKey, MessageAssetRecord, MessageRecord } from "../types.ts";
 import { parseChatKey } from "../utils/chat-key.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
+import { checkStickerEligibility } from "./sticker-filter.ts";
 
 const MAX_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_FORWARD_CHARS = 8000;
@@ -399,7 +400,7 @@ export class MediaProcessor {
             sha256,
             filePath,
             mimeType: detected.mime,
-            bytesLength: bytes.length,
+            bytes,
           },
           cached.transcript,
           settings,
@@ -424,7 +425,7 @@ export class MediaProcessor {
             sha256,
             filePath,
             mimeType: detected.mime,
-            bytesLength: bytes.length,
+            bytes,
           },
           fallbackDesc,
           settings,
@@ -454,7 +455,7 @@ export class MediaProcessor {
           sha256,
           filePath,
           mimeType: detected.mime,
-          bytesLength: bytes.length,
+          bytes,
         },
         description,
         settings,
@@ -692,7 +693,7 @@ export class MediaProcessor {
       sha256: string;
       filePath: string;
       mimeType: string;
-      bytesLength: number;
+      bytes: Buffer;
     },
     description: string,
     settings: RuntimeSettings,
@@ -706,9 +707,18 @@ export class MediaProcessor {
 
     const isLikelySticker =
       Boolean(attachment.isSticker) ||
-      (file.mimeType === "image/gif" && file.bytesLength <= 2 * 1024 * 1024);
+      (file.mimeType === "image/gif" && file.bytes.length <= 2 * 1024 * 1024);
 
     if (!isLikelySticker) {
+      return;
+    }
+
+    const eligibility = checkStickerEligibility({
+      bytes: file.bytes,
+      transcript: description,
+    });
+
+    if (!eligibility.ok) {
       return;
     }
 

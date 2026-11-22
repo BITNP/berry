@@ -1817,4 +1817,85 @@ test("sticker library auto-collects group stickers, enforces review, searches vi
   assert.equal(savedViaTool.stickerId, collected.id);
   assert.equal(savedViaTool.meaning, "管理员钦定傲娇猫猫图");
   assert.equal(savedViaTool.status, "approved");
+
+  // 6) save_sticker rejects screenshots / extreme aspect ratios and deduplicates re-encoded copies by meaning.
+  const { checkStickerEligibility, readImageDimensions } =
+    await import("../src/media/sticker-filter.ts");
+
+  function makePngHeader(w: number, h: number) {
+    const buf = Buffer.alloc(24);
+
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(buf, 0);
+    buf.writeUInt32BE(13, 8);
+    buf.write("IHDR", 12, "ascii");
+    buf.writeUInt32BE(w, 16);
+    buf.writeUInt32BE(h, 20);
+
+    return buf;
+  }
+
+  assert.deepEqual(readImageDimensions(makePngHeader(256, 256)), {
+    width: 256,
+    height: 256,
+  });
+  assert.equal(
+    checkStickerEligibility({
+      bytes: makePngHeader(600, 60),
+      meaning: "回应通知",
+    }).ok,
+    false,
+  );
+  assert.equal(
+    checkStickerEligibility({
+      bytes: makePngHeader(400, 900),
+      meaning: "聊天记录",
+    }).ok,
+    false,
+  );
+  assert.equal(
+    checkStickerEligibility({
+      bytes: makePngHeader(256, 256),
+      meaning: "好树莓…（兔耳女孩树莓娘表情包）",
+    }).ok,
+    true,
+  );
+
+  await assert.rejects(
+    () =>
+      adminTools[0]!.execute({
+        assetId: cachedAsset.id,
+        meaning: "树莓娘AI工作流截图",
+        tags: ["截图"],
+      }),
+    /不是表情包/,
+  );
+
+  // Re-encoded sticker with different sha256 but same meaning deduplicates instead of creating a duplicate row.
+  const { writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  const dupPath = join(app.store.assetsDir, "images", "dup-reencoded.png");
+
+  await writeFile(dupPath, pngBytes);
+  const dupAsset = await app.store.assets.create({
+    messageId: eventRes.messageId,
+    chatKey: "group:654321",
+    kind: "image",
+    rawUrl: "https://example.invalid/dup.png",
+    filePath: dupPath,
+    mimeType: "image/png",
+    sha256: "different-sha256-after-qq-reencode",
+    transcript: "树莓娘举牌表情包",
+    status: "ready",
+  });
+  const countBefore = await app.store.stickers.count();
+  const dedupRes = (await adminTools[0]!.execute({
+    assetId: dupAsset.id,
+    meaning: "回应了你的消息整活图",
+    tags: ["回应"],
+  })) as { ok: boolean; created: boolean; stickerId: number };
+
+  assert.equal(dedupRes.ok, true);
+  assert.equal(dedupRes.created, false);
+  assert.equal(dedupRes.stickerId, uploaded.item.id);
+  assert.equal(await app.store.stickers.count(), countBefore);
 });

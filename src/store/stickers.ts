@@ -90,6 +90,30 @@ export class StickersStore {
     return row ? decodeSticker(row) : null;
   }
 
+  public async findByNormalizedMeaning(
+    meaning: string,
+  ): Promise<StickerRecord | null> {
+    const target = meaning.replaceAll(/\s+/g, "").toLowerCase();
+
+    if (target.length < 2) {
+      return null;
+    }
+
+    const rows = await this.#database.db
+      .selectFrom("stickers")
+      .selectAll()
+      .orderBy("updated_at", "desc")
+      .execute();
+
+    for (const row of rows) {
+      if (row.meaning.replaceAll(/\s+/g, "").toLowerCase() === target) {
+        return decodeSticker(row);
+      }
+    }
+
+    return null;
+  }
+
   public async list(filters?: {
     status?: StickerStatus;
     enabled?: boolean;
