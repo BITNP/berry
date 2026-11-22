@@ -7,6 +7,7 @@ import { computeReplyPaceDelayMs } from "../src/agent/dispatch.ts";
 import { ModelIds } from "../src/agent/model-ids.ts";
 import {
   parseSettings,
+  resolveMaxOutputTokens,
   resolveThinkingEffort,
 } from "../src/config/settings.ts";
 import { defineTool } from "../src/tools/define.ts";
@@ -540,13 +541,35 @@ test("per-task thinkingEffort resolves defaults, category fallback, and exact ov
   const baseMedium = parseSettings({
     mainModel: {
       thinkingEffort: "medium",
+      maxOutputTokens: 4096,
       taskThinkingEffort: {
         "subagent": "high",
         "subagent:chat_analyst": "none",
         "compaction": "low",
       },
+      taskMaxOutputTokens: {
+        "subagent": 3072,
+        "subagent:chat_analyst": 6144,
+        "impression_update": 1024,
+      },
     },
   });
+
+  assert.equal(resolveMaxOutputTokens(baseNone, "dialog"), 4096);
+  assert.equal(resolveMaxOutputTokens(baseNone, "impression_update"), 2048);
+  assert.equal(resolveMaxOutputTokens(baseNone, "jargon_distill"), 2048);
+  assert.equal(resolveMaxOutputTokens(baseNone, "style_distill"), 2048);
+  assert.equal(resolveMaxOutputTokens(baseNone, "gate"), 2048);
+  assert.equal(resolveMaxOutputTokens(baseNone, "vision"), 2048);
+  assert.equal(resolveMaxOutputTokens(baseMedium, "impression_update"), 1024);
+  assert.equal(
+    resolveMaxOutputTokens(baseMedium, "subagent:guild_operator"),
+    3072,
+  );
+  assert.equal(
+    resolveMaxOutputTokens(baseMedium, "subagent:chat_analyst"),
+    6144,
+  );
 
   assert.equal(resolveThinkingEffort(baseMedium, "dialog"), "medium");
   assert.equal(resolveThinkingEffort(baseMedium, "report"), "medium");
@@ -571,6 +594,7 @@ test("per-task thinkingEffort resolves defaults, category fallback, and exact ov
 
   // End-to-end verification via /api/admin/settings and live LLM calls.
   const observed: Record<string, string | undefined> = {};
+  const observedMaxTokens: Record<string, number | undefined> = {};
   const llmStub = await startStubServer((req, res, bodyText) => {
     res.setHeader("Content-Type", "application/json");
     if (req.url !== "/v1/chat/completions") {
@@ -583,18 +607,21 @@ test("per-task thinkingEffort resolves defaults, category fallback, and exact ov
     const reqJson = JSON.parse(bodyText) as {
       messages: { role: string; content: string | null }[];
       reasoning_effort?: string;
+      max_tokens?: number;
     };
     const sys = reqJson.messages[0]?.content ?? "";
     const toolMsgs = reqJson.messages.filter((m) => m.role === "tool");
 
     if (sys.includes("专项排查子代理")) {
       observed.subagent = reqJson.reasoning_effort;
+      observedMaxTokens.subagent = reqJson.max_tokens;
       res.end(JSON.stringify(chatReply({ brief: "排查完成", references: [] })));
 
       return;
     }
 
     observed.dialog = reqJson.reasoning_effort;
+    observedMaxTokens.dialog = reqJson.max_tokens;
     if (toolMsgs.length === 0) {
       res.end(
         JSON.stringify(
@@ -653,6 +680,17 @@ test("per-task thinkingEffort resolves defaults, category fallback, and exact ov
 
   assert.ok(initialRes.thinkingTasks.some((item) => item.key === "dialog"));
   assert.ok(
+    initialRes.thinkingTasks.some((item) => item.key === "impression_update"),
+  );
+  assert.ok(
+    initialRes.thinkingTasks.some((item) => item.key === "jargon_distill"),
+  );
+  assert.ok(
+    initialRes.thinkingTasks.some((item) => item.key === "style_distill"),
+  );
+  assert.ok(initialRes.thinkingTasks.some((item) => item.key === "gate"));
+  assert.ok(initialRes.thinkingTasks.some((item) => item.key === "vision"));
+  assert.ok(
     initialRes.thinkingTasks.some(
       (item) =>
         item.key === "subagent:deep_checker" &&
@@ -678,6 +716,10 @@ test("per-task thinkingEffort resolves defaults, category fallback, and exact ov
           "dialog": "none",
           "subagent:deep_checker": "high",
         },
+        taskMaxOutputTokens: {
+          "dialog": 3200,
+          "subagent:deep_checker": 5120,
+        },
       },
     }),
   });
@@ -695,6 +737,8 @@ test("per-task thinkingEffort resolves defaults, category fallback, and exact ov
 
   assert.equal(observed.dialog, undefined);
   assert.equal(observed.subagent, "high");
+  assert.equal(observedMaxTokens.dialog, 3200);
+  assert.equal(observedMaxTokens.subagent, 5120);
 
   // excludePurpose=gate keeps core LLM calls separated from gate classifier calls.
   await app.store.usage.record({

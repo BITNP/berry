@@ -40,6 +40,8 @@ interface ThinkingTaskOption {
   key: string;
   label: string;
   fallback?: ThinkingEffort;
+  supportsThinking?: boolean;
+  defaultMaxOutputTokens?: number;
 }
 
 interface WeeklySchedule {
@@ -68,6 +70,7 @@ interface RuntimeSettingsView {
     timeoutMs: number;
     thinkingEffort: ThinkingEffort;
     taskThinkingEffort: Record<string, ThinkingEffort>;
+    taskMaxOutputTokens: Record<string, number>;
   };
   gateModel: {
     baseURL: string;
@@ -229,8 +232,18 @@ const THINKING_SHORT_LABEL: Record<ThinkingEffort, string> = {
 };
 
 const taskOverrideCount = computed(
-  () => Object.keys(settings.value?.mainModel.taskThinkingEffort ?? {}).length,
+  () =>
+    Object.keys(settings.value?.mainModel.taskThinkingEffort ?? {}).length +
+    Object.keys(settings.value?.mainModel.taskMaxOutputTokens ?? {}).length,
 );
+
+const NONE_DEFAULT_THINKING_TASKS = new Set([
+  "compaction",
+  "impression_update",
+  "jargon_distill",
+  "memory_update",
+  "style_distill",
+]);
 
 function defaultThinkingForTask(task: ThinkingTaskOption): ThinkingEffort {
   const base = settings.value?.mainModel.thinkingEffort ?? "none";
@@ -244,7 +257,7 @@ function defaultThinkingForTask(task: ThinkingTaskOption): ThinkingEffort {
     return task.fallback;
   }
 
-  if (task.key === "memory_update" || task.key === "compaction") {
+  if (NONE_DEFAULT_THINKING_TASKS.has(task.key)) {
     return "none";
   }
 
@@ -253,6 +266,20 @@ function defaultThinkingForTask(task: ThinkingTaskOption): ThinkingEffort {
   }
 
   return base;
+}
+
+function defaultMaxOutputForTask(task: ThinkingTaskOption): number {
+  const overrides = settings.value?.mainModel.taskMaxOutputTokens ?? {};
+
+  if (task.key.startsWith("subagent:") && overrides.subagent !== undefined) {
+    return overrides.subagent;
+  }
+
+  return (
+    task.defaultMaxOutputTokens ??
+    settings.value?.mainModel.maxOutputTokens ??
+    4096
+  );
 }
 
 function setTaskThinking(key: string, value: ThinkingEffort | null) {
@@ -271,12 +298,29 @@ function setTaskThinking(key: string, value: ThinkingEffort | null) {
   settings.value.mainModel.taskThinkingEffort = next;
 }
 
-function resetAllTaskThinking() {
+function setTaskMaxOutputTokens(key: string, value: number | null) {
+  if (!settings.value) {
+    return;
+  }
+
+  const next = { ...settings.value.mainModel.taskMaxOutputTokens };
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    next[key] = Math.round(value);
+  } else {
+    delete next[key];
+  }
+
+  settings.value.mainModel.taskMaxOutputTokens = next;
+}
+
+function resetAllTaskOverrides() {
   if (!settings.value) {
     return;
   }
 
   settings.value.mainModel.taskThinkingEffort = {};
+  settings.value.mainModel.taskMaxOutputTokens = {};
 }
 
 async function loadSettings() {
@@ -358,17 +402,24 @@ async function triggerGuildTask(task: "due" | "assignments" | "weekly") {
 }
 
 watch(activeTab, (tab) => {
-  if (route.query.tab !== tab) {
-    void router.replace({ query: { ...route.query, tab } });
+  const next = { ...route.query };
+
+  if (tab === "bot") {
+    delete next.tab;
+  } else {
+    next.tab = tab;
+  }
+
+  if (route.query.tab !== next.tab) {
+    void router.replace({ query: next });
   }
 });
 
 watch(
   () => route.query.tab,
   (tab) => {
-    if (typeof tab === "string" && VALID_TABS.has(tab)) {
-      activeTab.value = tab;
-    }
+    activeTab.value =
+      typeof tab === "string" && VALID_TABS.has(tab) ? tab : "bot";
   },
 );
 
@@ -604,53 +655,6 @@ onMounted(() => {
                   />
                 </NFormItem>
               </div>
-
-              <NCollapse
-                v-if="thinkingTasks.length > 0"
-                class="task-thinking-collapse"
-              >
-                <NCollapseItem name="task-thinking" title="按任务覆盖思考强度">
-                  <template #header-extra>
-                    <NTag v-if="taskOverrideCount > 0" size="small" type="info">
-                      已覆盖 {{ taskOverrideCount }} 项
-                    </NTag>
-                    <NText v-else class="sub-note" depth="3">全部默认</NText>
-                  </template>
-                  <div class="task-thinking-grid">
-                    <div
-                      v-for="task in thinkingTasks"
-                      :key="task.key"
-                      class="task-thinking-row"
-                    >
-                      <span class="task-thinking-label">{{ task.label }}</span>
-                      <NSelect
-                        class="w-145"
-                        clearable
-                        :options="THINKING_EFFORT_OPTIONS"
-                        :placeholder="`默认 (${THINKING_SHORT_LABEL[defaultThinkingForTask(task)]})`"
-                        size="small"
-                        :value="
-                          settings.mainModel.taskThinkingEffort[task.key] ??
-                          null
-                        "
-                        @update:value="
-                          (val: ThinkingEffort | null) =>
-                            setTaskThinking(task.key, val)
-                        "
-                      />
-                    </div>
-                  </div>
-                  <div v-if="taskOverrideCount > 0" class="task-thinking-foot">
-                    <NButton
-                      quaternary
-                      size="tiny"
-                      @click="resetAllTaskThinking"
-                    >
-                      全部恢复默认
-                    </NButton>
-                  </div>
-                </NCollapseItem>
-              </NCollapse>
             </NCard>
 
             <NCard size="small" title="分流小模型（无 @ 微批消息判定）">
@@ -730,6 +734,79 @@ onMounted(() => {
                 <NFormItem label="异常时 Fail-Closed（报错时默认忽略而非乱回）">
                   <NSwitch v-model:value="settings.gateModel.failClosed" />
                 </NFormItem>
+              </div>
+            </NCard>
+
+            <NCard
+              v-if="thinkingTasks.length > 0"
+              size="small"
+              title="按任务覆盖参数（思考强度 / 输出上限）"
+            >
+              <template #header-extra>
+                <NSpace align="center" :size="8">
+                  <NTag v-if="taskOverrideCount > 0" size="small" type="info">
+                    已覆盖 {{ taskOverrideCount }} 项
+                  </NTag>
+                  <NText v-else class="sub-note" depth="3">全部默认</NText>
+                  <NButton
+                    v-if="taskOverrideCount > 0"
+                    quaternary
+                    size="tiny"
+                    @click="resetAllTaskOverrides"
+                  >
+                    全部恢复默认
+                  </NButton>
+                </NSpace>
+              </template>
+              <div class="task-override-table">
+                <div class="task-override-head">
+                  <span>任务</span>
+                  <span>思考强度</span>
+                  <span>最大输出（Tokens）</span>
+                </div>
+                <div
+                  v-for="task in thinkingTasks"
+                  :key="task.key"
+                  class="task-override-row"
+                >
+                  <div class="task-override-name">
+                    <span class="task-override-label">{{ task.label }}</span>
+                    <span class="mono task-override-key">{{ task.key }}</span>
+                  </div>
+                  <NSelect
+                    v-if="task.supportsThinking !== false"
+                    class="w-150"
+                    clearable
+                    :options="THINKING_EFFORT_OPTIONS"
+                    :placeholder="`默认 (${THINKING_SHORT_LABEL[defaultThinkingForTask(task)]})`"
+                    size="small"
+                    :value="
+                      settings.mainModel.taskThinkingEffort[task.key] ?? null
+                    "
+                    @update:value="
+                      (val: ThinkingEffort | null) =>
+                        setTaskThinking(task.key, val)
+                    "
+                  />
+                  <NText v-else class="sub-note" depth="3">—</NText>
+                  <NInputNumber
+                    class="w-165"
+                    clearable
+                    :max="65536"
+                    :min="64"
+                    :placeholder="`默认 (${defaultMaxOutputForTask(task)})`"
+                    :show-button="false"
+                    size="small"
+                    :step="256"
+                    :value="
+                      settings.mainModel.taskMaxOutputTokens[task.key] ?? null
+                    "
+                    @update:value="
+                      (val: number | null) =>
+                        setTaskMaxOutputTokens(task.key, val)
+                    "
+                  />
+                </div>
               </div>
             </NCard>
           </NSpace>
@@ -1190,26 +1267,43 @@ onMounted(() => {
   gap: 0 14px;
 }
 
-.task-thinking-collapse {
-  margin-top: 4px;
-  padding-top: 8px;
-  border-top: 1px solid var(--berry-border);
-}
-
-.task-thinking-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px 18px;
-}
-
-.task-thinking-row {
+.task-override-table {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
 }
 
-.task-thinking-label {
+.task-override-head,
+.task-override-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px 165px;
+  align-items: center;
+  gap: 12px;
+}
+
+.task-override-head {
+  padding: 0 4px 8px;
+  border-bottom: 1px solid var(--berry-border);
+  font-size: 12px;
+  color: var(--berry-muted);
+}
+
+.task-override-row {
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--berry-border);
+}
+
+.task-override-row:last-child {
+  border-bottom: none;
+}
+
+.task-override-name {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.task-override-label {
   font-size: 13px;
   color: var(--berry-text);
   white-space: nowrap;
@@ -1217,16 +1311,26 @@ onMounted(() => {
   text-overflow: ellipsis;
 }
 
-.task-thinking-foot {
-  margin-top: 8px;
-  display: flex;
-  justify-content: flex-end;
+.task-override-key {
+  font-size: 11px;
+  color: var(--berry-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 @media (max-width: 700px) {
-  .form-grid-2,
-  .task-thinking-grid {
+  .form-grid-2 {
     grid-template-columns: 1fr;
+  }
+
+  .task-override-head {
+    display: none;
+  }
+
+  .task-override-row {
+    grid-template-columns: 1fr;
+    gap: 6px;
   }
 }
 </style>

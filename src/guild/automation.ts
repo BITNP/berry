@@ -7,7 +7,10 @@ import { completeChat } from "../agent/llm.ts";
 import type { BunkoClient } from "../bunko/client.ts";
 import type { EnvConfig } from "../config/env.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
-import { resolveThinkingEffort } from "../config/settings.ts";
+import {
+  resolveMaxOutputTokens,
+  resolveThinkingEffort,
+} from "../config/settings.ts";
 import type { MessageGatewayClient } from "../gateway/client.ts";
 import type { IdentityDirectory } from "../identity/keycloak.ts";
 import type { Store } from "../store/index.ts";
@@ -305,7 +308,7 @@ export class GuildAutomationRunner {
         purpose: "report",
         params: {
           temperature: 0.2,
-          max_tokens: 2048,
+          max_tokens: resolveMaxOutputTokens(settings, "report"),
           ...(reportThinking === "none"
             ? {}
             : { reasoning_effort: reportThinking }),

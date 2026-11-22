@@ -2,6 +2,7 @@ import { Type } from "typebox";
 
 import { completeChat, validateModelJson } from "../agent/llm.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
+import { resolveMaxOutputTokens } from "../config/settings.ts";
 import type { AccessRole } from "../identity/permissions.ts";
 import { resolveAccessRole } from "../identity/permissions.ts";
 import type { Store } from "../store/index.ts";
@@ -197,7 +198,7 @@ export class SmallModelClassifier {
         messageIds: candidates.map((item) => item.id),
         params: {
           temperature: 0,
-          max_tokens: 2048,
+          max_tokens: resolveMaxOutputTokens(settings, "gate"),
           response_format: { type: "json_object" },
           messages: [
             { role: "system", content: GATE_SYSTEM_PROMPT },

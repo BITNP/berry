@@ -12,7 +12,10 @@ import {
 import { Type } from "typebox";
 
 import type { BerryApp } from "../../app.ts";
-import { parseSettings } from "../../config/settings.ts";
+import {
+  DEFAULT_TASK_MAX_OUTPUT_TOKENS,
+  parseSettings,
+} from "../../config/settings.ts";
 import { errorMessage } from "../../utils/time.ts";
 import { idParamSchema, parseBody, parseParams, parseQuery } from "../http.ts";
 
@@ -301,9 +304,43 @@ export function registerSystemRoutes(router: Router, berry: BerryApp): void {
             label: `子代理：${sub.title}`,
             ...(sub.thinkingEffort ? { fallback: sub.thinkingEffort } : {}),
           })),
-          { key: "report", label: "公会周报" },
+          {
+            key: "gate",
+            label: "分流小模型",
+            supportsThinking: false,
+            defaultMaxOutputTokens: DEFAULT_TASK_MAX_OUTPUT_TOKENS.gate,
+          },
+          {
+            key: "vision",
+            label: "图像识别",
+            supportsThinking: false,
+            defaultMaxOutputTokens: DEFAULT_TASK_MAX_OUTPUT_TOKENS.vision,
+          },
+          {
+            key: "report",
+            label: "公会周报",
+            defaultMaxOutputTokens: DEFAULT_TASK_MAX_OUTPUT_TOKENS.report,
+          },
           { key: "memory_update", label: "记忆提炼" },
           { key: "compaction", label: "摘要压缩" },
+          {
+            key: "style_distill",
+            label: "群风提炼",
+            defaultMaxOutputTokens:
+              DEFAULT_TASK_MAX_OUTPUT_TOKENS.style_distill,
+          },
+          {
+            key: "jargon_distill",
+            label: "黑话提炼",
+            defaultMaxOutputTokens:
+              DEFAULT_TASK_MAX_OUTPUT_TOKENS.jargon_distill,
+          },
+          {
+            key: "impression_update",
+            label: "成员印象",
+            defaultMaxOutputTokens:
+              DEFAULT_TASK_MAX_OUTPUT_TOKENS.impression_update,
+          },
         ],
         envSummary: {
           gatewayUrl: berry.env.gatewayUrl,

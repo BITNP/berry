@@ -1,7 +1,10 @@
 import { Type } from "typebox";
 
 import type { RuntimeSettings } from "../config/settings.ts";
-import { resolveThinkingEffort } from "../config/settings.ts";
+import {
+  resolveMaxOutputTokens,
+  resolveThinkingEffort,
+} from "../config/settings.ts";
 import type { Store } from "../store/index.ts";
 import type { ChatConfig, ChatKey, MemberImpressionRecord } from "../types.ts";
 import { completeChat, validateModelJson } from "./llm.ts";
@@ -55,7 +58,7 @@ export class SocialDistiller {
       jobId: options?.jobId ?? null,
       params: {
         temperature: 0.2,
-        max_tokens: 400,
+        max_tokens: resolveMaxOutputTokens(settings, "style_distill"),
         ...(thinkingEffort === "none"
           ? {}
           : { reasoning_effort: thinkingEffort }),
@@ -118,7 +121,7 @@ export class SocialDistiller {
       jobId: options?.jobId ?? null,
       params: {
         temperature: 0.2,
-        max_tokens: 900,
+        max_tokens: resolveMaxOutputTokens(settings, "jargon_distill"),
         response_format: { type: "json_object" },
         ...(thinkingEffort === "none"
           ? {}
@@ -225,7 +228,7 @@ export class SocialDistiller {
       jobId: options?.jobId ?? null,
       params: {
         temperature: 0.2,
-        max_tokens: 140,
+        max_tokens: resolveMaxOutputTokens(settings, "impression_update"),
         ...(thinkingEffort === "none"
           ? {}
           : { reasoning_effort: thinkingEffort }),

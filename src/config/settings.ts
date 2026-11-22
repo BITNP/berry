@@ -112,6 +112,11 @@ export const runtimeSettingsSchema = Type.Object(
         taskThinkingEffort: Type.Record(Type.String(), thinkingEffortSchema, {
           default: {},
         }),
+        taskMaxOutputTokens: Type.Record(
+          Type.String(),
+          Type.Integer({ minimum: 64, maximum: 65_536 }),
+          { default: {} },
+        ),
       },
       { default: {}, additionalProperties: false },
     ),
@@ -378,6 +383,36 @@ export function resolveThinkingEffort(
   }
 
   return base;
+}
+
+export const DEFAULT_TASK_MAX_OUTPUT_TOKENS: Record<string, number> = {
+  gate: 2048,
+  vision: 2048,
+  report: 2048,
+  style_distill: 2048,
+  jargon_distill: 2048,
+  impression_update: 2048,
+};
+
+export function resolveMaxOutputTokens(
+  settings: RuntimeSettings,
+  purpose: string,
+): number {
+  const overrides = settings.mainModel.taskMaxOutputTokens;
+  const exact = overrides[purpose];
+
+  if (exact !== undefined) {
+    return exact;
+  }
+
+  if (purpose.startsWith("subagent:") && overrides.subagent !== undefined) {
+    return overrides.subagent;
+  }
+
+  return (
+    DEFAULT_TASK_MAX_OUTPUT_TOKENS[purpose] ??
+    settings.mainModel.maxOutputTokens
+  );
 }
 
 export function isGroupAllowed(

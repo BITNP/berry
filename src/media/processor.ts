@@ -8,6 +8,7 @@ import OpenAI from "openai";
 import { completeChat } from "../agent/llm.ts";
 import type { ModelIds } from "../agent/model-ids.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
+import { resolveMaxOutputTokens } from "../config/settings.ts";
 import type { MessageGatewayClient } from "../gateway/client.ts";
 import type { ExtractedAttachment } from "../gateway/segments.ts";
 import {
@@ -617,7 +618,7 @@ export class MediaProcessor {
       messageIds: [messageId],
       params: {
         temperature: 0.2,
-        max_tokens: 2048,
+        max_tokens: resolveMaxOutputTokens(settings, "vision"),
         messages: [
           {
             role: "system",

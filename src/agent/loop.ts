@@ -5,6 +5,7 @@ import type {
 import type { Static, TSchema } from "typebox";
 
 import type { RuntimeSettings, ThinkingEffort } from "../config/settings.ts";
+import { resolveMaxOutputTokens } from "../config/settings.ts";
 import type { Store } from "../store/index.ts";
 import type { LlmToolCallSummary, TurnMessage } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
@@ -155,7 +156,9 @@ export async function runChatToolLoop<S extends TSchema>(options: {
       params: {
         messages,
         temperature: options.temperature ?? cfg.temperature,
-        max_tokens: options.maxTokens ?? cfg.maxOutputTokens,
+        max_tokens:
+          options.maxTokens ??
+          resolveMaxOutputTokens(options.settings, options.purpose),
         ...(toolsForRound ? { tools: toolsForRound } : {}),
         ...(thinkingEffort === "none"
           ? {}
