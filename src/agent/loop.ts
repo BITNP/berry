@@ -30,6 +30,13 @@ export interface ToolLoopResult<T> {
   lastPromptTokens: number;
 }
 
+const OUTPUT_UNIT_KINDS = new Set([
+  "qq_forward",
+  "qq_poke",
+  "qq_reaction",
+  "qq_reply",
+]);
+
 export async function runChatToolLoop<S extends TSchema>(options: {
   purpose: string;
   chatKey: string | null;
@@ -218,7 +225,9 @@ export async function runChatToolLoop<S extends TSchema>(options: {
           } else {
             resultPayload = {
               ok: false,
-              error: `Unknown tool: ${call.function.name}`,
+              error: OUTPUT_UNIT_KINDS.has(call.function.name)
+                ? `${call.function.name} 不是函数工具，而是最终回复 JSON 中 units 数组里的输出单元（该功能正常可用）。请不要再通过 tool_call 调用它，直接结束工具调用并在最终回复文本输出 {"units":[{"kind":"${call.function.name}", ...}]}。`
+                : `Unknown tool: ${call.function.name}`,
             };
           }
 

@@ -38,7 +38,7 @@ declare const api: {
   chats: {
     list(opts?: { includeGatewayGroups?: boolean }): Promise<{ total: number; chats: { targetRef: string; kind: "group" | "private"; title: string; enabled: boolean; triggerMode: string }[] }>;
     search(opts?: { targetRef?: string; query?: string; regex?: boolean; userRef?: string; contextLines?: number; startTimeIso?: string; endTimeIso?: string; limit?: number }): Promise<{ chatType: "group" | "private"; matchCount: number; count: number; localOldestSentAt: string | null; messages: { id: number; matched?: boolean; quoteRef: string; userRef: string; senderName: string; text: string; sentAt: string }[] }>;
-    window(opts?: { targetRef?: string; beforeId?: number; limit?: number }): Promise<{ count: number; localOldestSentAt: string | null; messages: { id: number; quoteRef: string; userRef: string; senderName: string; text: string; reactions: { emojiId: string; emojiName: string; count: number; userIds: string[] }[]; sentAt: string }[] }>;
+    window(opts?: { targetRef?: string; beforeId?: number; limit?: number }): Promise<{ count: number; localOldestSentAt: string | null; messages: { id: number; quoteRef: string; userRef: string; senderName: string; text: string; reactions: { emojiId: string; emojiName: string; count: number; users: { userRef: string | null; name: string | null }[] }[]; sentAt: string }[] }>;
   };
   qq: {
     members(opts?: string | { groupRef?: string; query?: string; page?: number; pageSize?: number }): Promise<{ total: number; page: number; items: { userRef: string; name: string; role: string }[] }>;

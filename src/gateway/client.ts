@@ -19,7 +19,7 @@ import type {
 import { makeChatKey, parseChatKey } from "../utils/chat-key.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
-import { resolveReactionEmojiId } from "./qface.ts";
+import { qfaceName, resolveReactionEmojiId } from "./qface.ts";
 import { parseOneBotSegments } from "./segments.ts";
 
 interface GatewayEnvelope<T = unknown> {
@@ -1024,12 +1024,28 @@ export class MessageGatewayClient {
           set: !unit.remove,
         });
 
-        return (
-          (await this.#store.deliveries.updateStatus(delivery.id, {
-            status: "sent",
-            onebotMessageId: unit.messageId,
-          })) ?? delivery
-        );
+        await this.#store.reactions.apply({
+          chatKey,
+          onebotMessageId: unit.messageId,
+          emojiId: resolvedEmojiId,
+          emojiName: qfaceName(resolvedEmojiId),
+          userId: botQQ || "bot",
+          set: !unit.remove,
+        });
+
+        const updated = await this.#store.deliveries.updateStatus(delivery.id, {
+          status: "sent",
+          onebotMessageId: unit.messageId,
+        });
+
+        await this.#store.conversations.pushOutputResult({
+          module: "qq_gateway",
+          status: "ok",
+          detail: unit.remove ? "qq_reaction removed" : "qq_reaction sent",
+          createdAt: Date.now(),
+        });
+
+        return updated ?? delivery;
       }
 
       if (unit.kind === "qq_poke") {
@@ -1052,7 +1068,7 @@ export class MessageGatewayClient {
         await this.#store.conversations.pushOutputResult({
           module: "qq_gateway",
           status: "ok",
-          detail: "sent",
+          detail: "qq_poke sent",
           createdAt: Date.now(),
         });
 

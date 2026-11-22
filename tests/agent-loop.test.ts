@@ -1081,3 +1081,95 @@ test("append-only Tape anchors, structured handoff, permission-filtered Views, f
 
   assert.ok(sidecarHttpRes.entries.length >= 2);
 });
+
+test("tool loop guides models back to output units when qq_poke/qq_reaction are called as tools", async (t) => {
+  const toolErrorMessages: string[] = [];
+  const gatewayCalls: { path: string; body: unknown }[] = [];
+
+  const gwStub = await startStubServer((req, res, bodyText) => {
+    gatewayCalls.push({
+      path: req.url ?? "",
+      body: bodyText ? JSON.parse(bodyText) : null,
+    });
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
+  }, t);
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const toolMsgs = reqJson.messages.filter((m) => m.role === "tool");
+
+    res.setHeader("Content-Type", "application/json");
+    if (toolMsgs.length === 0) {
+      res.end(
+        JSON.stringify(
+          chatToolCalls([
+            {
+              id: "call-mistaken-poke",
+              name: "qq_poke",
+              args: {},
+            },
+          ]),
+        ),
+      );
+
+      return;
+    }
+
+    toolErrorMessages.push(toolMsgs[0]!.content ?? "");
+    res.end(
+      JSON.stringify(
+        chatReply({
+          units: [{ kind: "qq_poke" }],
+        }),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gwStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+      mainBaseUrl: `${llmStub.url}/v1`,
+    },
+    {},
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "8881",
+    title: "测试群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const captured = await captureText(app, {
+    kind: "group",
+    chatId: "8881",
+    id: "ob-poke-1",
+    userId: "12345",
+    senderName: "呆唯",
+    text: "[戳了戳树莓娘]",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:8881",
+    kind: "group",
+    chatId: "8881",
+    triggerMessageIds: [captured.message.id],
+    senderId: "12345",
+    senderName: "呆唯",
+  });
+
+  assert.equal(toolErrorMessages.length, 1);
+  assert.match(toolErrorMessages[0]!, /不是函数工具/);
+  assert.match(toolErrorMessages[0]!, /正常可用/);
+  assert.doesNotMatch(toolErrorMessages[0]!, /Unknown tool/);
+  assert.ok(gatewayCalls.some((c) => c.path.endsWith("/send_poke")));
+});

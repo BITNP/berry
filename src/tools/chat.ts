@@ -245,6 +245,21 @@ export const readChatWindowTool = defineTool({
       ),
       store.messages.oldest(targetChatKey),
     ]);
+    const reactorIds = new Set<string>();
+
+    for (const list of reactionMap.values()) {
+      for (const r of list) {
+        for (const uid of r.userIds) {
+          reactorIds.add(uid);
+        }
+      }
+    }
+
+    const reactorNames =
+      reactorIds.size > 0
+        ? await media.resolveUserNames(targetChatKey, reactorIds, rows)
+        : new Map<string, string>();
+    const botQQ = ctx.services.getSettings().bot.botQQ;
 
     return {
       count: rows.length,
@@ -257,7 +272,23 @@ export const readChatWindowTool = defineTool({
         userRef: ids.userRef(row.userId),
         senderName: row.isBot ? "树莓娘(bot)" : row.senderName,
         text: (enriched.get(row.id) ?? row.text).slice(0, 800),
-        reactions: reactionMap.get(row.onebotMessageId) ?? [],
+        reactions: (reactionMap.get(row.onebotMessageId) ?? []).map((r) => ({
+          emojiId: r.emojiId,
+          emojiName: r.emojiName,
+          count: r.count,
+          users: r.userIds.map((uid) => {
+            const isSelf = uid === "bot" || (Boolean(botQQ) && uid === botQQ);
+
+            return {
+              userRef:
+                !isSelf && uid && uid !== "unknown" ? ids.userRef(uid) : null,
+              name: isSelf
+                ? "树莓娘"
+                : (reactorNames.get(uid) ??
+                  (uid === "unknown" ? "未知用户" : null)),
+            };
+          }),
+        })),
         sentAt: new Date(row.sentAt).toISOString(),
       })),
     };

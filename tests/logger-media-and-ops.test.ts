@@ -13,7 +13,10 @@ import {
 } from "../src/gateway/segments.ts";
 import { previousNaturalWeek } from "../src/guild/automation.ts";
 import { computeNextRunAt } from "../src/store/schedules.ts";
-import { searchChatMessagesTool } from "../src/tools/chat.ts";
+import {
+  readChatWindowTool,
+  searchChatMessagesTool,
+} from "../src/tools/chat.ts";
 import { memoryManageTool } from "../src/tools/memory.ts";
 import type { ToolContext } from "../src/tools/types.ts";
 import { Logger, formatPrettyLogLine } from "../src/utils/logger.ts";
@@ -305,6 +308,15 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   await captureText(app, {
     kind: "group",
     chatId: "555666",
+    id: "ob-react-speaker",
+    userId: "20001",
+    senderName: "李哲",
+    text: "围观一下",
+  });
+
+  const reactMsg = await captureText(app, {
+    kind: "group",
+    chatId: "555666",
     id: "ob-react-1",
     userId: "10001",
     senderName: "测试君",
@@ -350,6 +362,30 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   assert.equal((reactionCall.body as { emoji_id?: string }).emoji_id, "12951");
   assert.equal((reactionCall.body as { set?: boolean }).set, true);
 
+  // Bot's own reaction is stored and an explicit OutputResult receipt is pushed for the next turn.
+  const pendingAfterReact = await app.store.conversations.drainPendingResults();
+
+  assert.ok(
+    pendingAfterReact.some(
+      (item) => item.status === "ok" && item.detail === "qq_reaction sent",
+    ),
+  );
+
+  const reactIds = new ModelIds();
+  const enrichedReactMap = await app.media.enrichMessagesText(
+    "group:555666",
+    [reactMsg.message],
+    reactIds,
+  );
+  const enrichedReactText = enrichedReactMap.get(reactMsg.message.id) ?? "";
+
+  assert.match(
+    enrichedReactText,
+    new RegExp(`赞×1\\(李哲\\(${reactIds.userRef("20001")}\\)\\)`),
+  );
+  assert.match(enrichedReactText, /㊗️×1\(树莓娘\)/);
+  assert.equal(enrichedReactText.includes("20001"), false);
+
   const removeDelivery = await app.gateway.dispatchUnit(
     "group:555666",
     {
@@ -369,6 +405,16 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   assert.ok(removeCall);
   assert.equal((removeCall.body as { emoji_id?: string }).emoji_id, "12951");
   assert.equal((removeCall.body as { set?: boolean }).set, false);
+
+  const afterRemoveMap = await app.store.reactions.aggregateForMessages(
+    "group:555666",
+    ["ob-react-1"],
+  );
+
+  assert.deepEqual(
+    (afterRemoveMap.get("ob-react-1") ?? []).map((r) => r.emojiName),
+    ["赞"],
+  );
 
   const privReactionDelivery = await app.gateway.dispatchUnit(
     "private:12345",
@@ -491,6 +537,46 @@ test("QFace, JSON card parsing, emoji_like notice, qq_reaction dispatch, pause, 
   ).json()) as { imported: number };
 
   assert.equal(repeat.imported, 0);
+
+  const windowRes = (await readChatWindowTool
+    .bind({
+      services: {
+        store: app.store,
+        gateway: app.gateway,
+        media: app.media,
+        bunko: app.bunko,
+        shortlink: app.shortlink,
+        directory: app.directory,
+        guild: app.guild,
+        mcp: app.mcp,
+        getSettings: () => app.settings,
+      },
+      actor: {
+        chatKey: "group:555666",
+        senderQQ: "10001",
+        actorSubject: null,
+        actorName: "测试君",
+        role: "member",
+      },
+      ids: reactIds,
+    })
+    .execute({ limit: 10 })) as {
+    messages: {
+      text: string;
+      reactions: {
+        emojiName: string;
+        count: number;
+        users: { userRef: string | null; name: string | null }[];
+      }[];
+    }[];
+  };
+  const winReactMsg = windowRes.messages.find((m) => m.text.includes("好耶"));
+
+  assert.ok(winReactMsg);
+  assert.deepEqual(
+    winReactMsg.reactions.map((r) => [r.emojiName, r.users]),
+    [["赞", [{ userRef: reactIds.userRef("20001"), name: "李哲" }]]],
+  );
 });
 
 test("MaintenanceStore.purgeOldData preserves memory-referenced messages", async (t) => {

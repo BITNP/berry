@@ -16,6 +16,7 @@ import {
 } from "../gateway/segments.ts";
 import type { Store } from "../store/index.ts";
 import type { ChatKey, MessageAssetRecord, MessageRecord } from "../types.ts";
+import { parseChatKey } from "../utils/chat-key.ts";
 import { Logger } from "../utils/logger.ts";
 import { errorMessage } from "../utils/time.ts";
 
@@ -116,6 +117,87 @@ export class MediaProcessor {
     return (await this.#store.assets.get(assetId)) ?? asset;
   }
 
+  public async resolveUserNames(
+    chatKey: ChatKey,
+    userIds: Iterable<string>,
+    seedMessages?: readonly MessageRecord[],
+  ): Promise<Map<string, string>> {
+    const settings = this.#getSettings();
+    const botQQ = settings.bot.botQQ;
+    const botLabel = settings.bot.names[0] || "树莓娘";
+    const resolved = new Map<string, string>();
+    const requested = new Set<string>();
+
+    for (const uid of userIds) {
+      if (!uid || uid === "unknown") {
+        continue;
+      }
+
+      if (uid === "bot" || (botQQ && uid === botQQ)) {
+        resolved.set(uid, botLabel);
+
+        continue;
+      }
+
+      requested.add(uid);
+    }
+
+    if (requested.size === 0) {
+      return resolved;
+    }
+
+    if (seedMessages) {
+      for (const msg of seedMessages) {
+        if (
+          !msg.isBot &&
+          requested.has(msg.userId) &&
+          !resolved.has(msg.userId) &&
+          msg.senderName.trim()
+        ) {
+          resolved.set(msg.userId, msg.senderName.trim());
+        }
+      }
+    }
+
+    const missingForStore = [...requested].filter((id) => !resolved.has(id));
+
+    if (missingForStore.length > 0) {
+      const fromStore = await this.#store.messages.latestSenderNames(
+        chatKey,
+        missingForStore,
+      );
+
+      for (const [uid, name] of fromStore) {
+        resolved.set(uid, name);
+      }
+    }
+
+    const missingForGateway = [...requested].filter((id) => !resolved.has(id));
+
+    if (missingForGateway.length > 0 && this.#gateway.configured) {
+      const parsed = parseChatKey(chatKey);
+
+      if (parsed.kind === "group") {
+        const fetched = await Promise.all(
+          missingForGateway.map(async (uid) => ({
+            uid,
+            name: await this.#gateway
+              .getGroupMemberName(parsed.chatId, uid)
+              .catch(() => null),
+          })),
+        );
+
+        for (const item of fetched) {
+          if (item.name) {
+            resolved.set(item.uid, item.name);
+          }
+        }
+      }
+    }
+
+    return resolved;
+  }
+
   public async enrichMessagesText(
     chatKey: ChatKey,
     messages: MessageRecord[],
@@ -134,6 +216,44 @@ export class MediaProcessor {
       this.#store.assets.listForMessages(messageIds),
       this.#store.reactions.aggregateForMessages(chatKey, onebotIds),
     ]);
+
+    const reactorIds = new Set<string>();
+
+    for (const list of reactionMap.values()) {
+      for (const r of list) {
+        for (const uid of r.userIds) {
+          reactorIds.add(uid);
+        }
+      }
+    }
+
+    const reactorNames =
+      reactorIds.size > 0
+        ? await this.resolveUserNames(chatKey, reactorIds, messages)
+        : new Map<string, string>();
+    const botLabel = settings.bot.names[0] || "树莓娘";
+    const formatReactor = (uid: string): string => {
+      if (
+        uid === "bot" ||
+        (Boolean(settings.bot.botQQ) && uid === settings.bot.botQQ)
+      ) {
+        return botLabel;
+      }
+
+      if (!uid || uid === "unknown") {
+        return "未知用户";
+      }
+
+      const name = reactorNames.get(uid);
+
+      if (ids) {
+        const ref = ids.userRef(uid);
+
+        return name ? `${name}(${ref})` : ref;
+      }
+
+      return name ?? uid;
+    };
 
     for (const msg of messages) {
       const baseText = renderMessageTextForModel(msg, {
@@ -162,8 +282,21 @@ export class MediaProcessor {
       const reactions = reactionMap.get(msg.onebotMessageId) ?? [];
 
       if (reactions.length > 0) {
+        const MAX_NAMED_REACTORS = 8;
         const badge = reactions
-          .map((r) => `${r.emojiName}×${r.count}`)
+          .map((r) => {
+            const names = r.userIds
+              .slice(0, MAX_NAMED_REACTORS)
+              .map(formatReactor);
+            const suffix =
+              r.userIds.length > MAX_NAMED_REACTORS
+                ? `等${r.userIds.length}人`
+                : "";
+
+            return names.length > 0
+              ? `${r.emojiName}×${r.count}(${names.join("、")}${suffix})`
+              : `${r.emojiName}×${r.count}`;
+          })
           .join("、");
 
         extra.push(`[表情回应: ${badge}]`);

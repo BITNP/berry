@@ -458,6 +458,54 @@ export class MessagesStore {
     }));
   }
 
+  public async latestSenderNames(
+    chatKey: string,
+    userIds: string[],
+  ): Promise<Map<string, string>> {
+    const unique = [...new Set(userIds.filter((id) => id && id !== "unknown"))];
+    const names = new Map<string, string>();
+
+    if (unique.length === 0) {
+      return names;
+    }
+
+    const db = this.#database.db;
+    const sameChatRows = await db
+      .selectFrom("messages")
+      .select(["user_id", "sender_name"])
+      .where("chat_key", "=", chatKey)
+      .where("is_bot", "=", 0)
+      .where("user_id", "in", unique)
+      .orderBy("id", "desc")
+      .execute();
+
+    for (const row of sameChatRows) {
+      if (!names.has(row.user_id) && row.sender_name.trim()) {
+        names.set(row.user_id, row.sender_name.trim());
+      }
+    }
+
+    const missing = unique.filter((id) => !names.has(id));
+
+    if (missing.length > 0) {
+      const globalRows = await db
+        .selectFrom("messages")
+        .select(["user_id", "sender_name"])
+        .where("is_bot", "=", 0)
+        .where("user_id", "in", missing)
+        .orderBy("id", "desc")
+        .execute();
+
+      for (const row of globalRows) {
+        if (!names.has(row.user_id) && row.sender_name.trim()) {
+          names.set(row.user_id, row.sender_name.trim());
+        }
+      }
+    }
+
+    return names;
+  }
+
   public async findBotRepliesTo(
     chatKey: string,
     onebotMessageIds: string[],
