@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { Selectable } from "kysely";
+import { sql } from "kysely";
 
 import type {
   ChatKey,
@@ -331,7 +332,7 @@ export class JobsStore {
   public async claim(
     kinds: JobKind[],
     now = Date.now(),
-    options: { serializeByChatKey?: boolean } = {},
+    options: { maxPerChatKey?: number } = {},
   ): Promise<JobRecord | null> {
     if (kinds.length === 0) {
       return null;
@@ -345,13 +346,17 @@ export class JobsStore {
         .where("kind", "in", kinds)
         .where("run_after", "<=", now);
 
-      if (options.serializeByChatKey) {
+      if (options.maxPerChatKey && options.maxPerChatKey > 0) {
+        const cap = options.maxPerChatKey;
+
         query = query.where("chat_key", "not in", (eb) =>
           eb
             .selectFrom("jobs")
             .select("chat_key")
             .where("state", "=", "running")
-            .where("kind", "in", kinds),
+            .where("kind", "in", kinds)
+            .groupBy("chat_key")
+            .having(sql<number>`count(*)`, ">=", cap),
         );
       }
 

@@ -66,7 +66,7 @@ export class GatewayEventSubscriber {
   #started = false;
   #connected = false;
   #socket: ReconnectingWebSocket | null = null;
-  #eventQueue: Promise<unknown> = Promise.resolve();
+  #chatQueues = new Map<string, Promise<unknown>>();
 
   constructor(
     env: Pick<EnvConfig, "gatewayUrl" | "gatewayAccount" | "gatewayToken">,
@@ -184,7 +184,7 @@ export class GatewayEventSubscriber {
     this.#socket = null;
     socket?.close(1000, "shutdown");
 
-    await this.#eventQueue;
+    await Promise.allSettled(this.#chatQueues.values());
   }
 
   public async handleEvent(payload: OneBotEvent): Promise<{
@@ -536,8 +536,20 @@ export class GatewayEventSubscriber {
     };
   }
 
+  #eventQueueKey(event: OneBotEvent): string {
+    if (event.group_id !== undefined && String(event.group_id).trim()) {
+      return `group:${String(event.group_id).trim()}`;
+    }
+
+    const userId = String(event.user_id ?? event.sender_id ?? "").trim();
+
+    return userId ? `private:${userId}` : "__global__";
+  }
+
   #enqueueEvent(event: OneBotEvent): void {
-    this.#eventQueue = this.#eventQueue.then(async () => {
+    const key = this.#eventQueueKey(event);
+    const prev = this.#chatQueues.get(key) ?? Promise.resolve();
+    const next = prev.then(async () => {
       if (!this.#started) {
         return;
       }
@@ -549,6 +561,13 @@ export class GatewayEventSubscriber {
           postType: event.post_type ?? "unknown",
           error: errorMessage(error),
         });
+      }
+    });
+
+    this.#chatQueues.set(key, next);
+    void next.finally(() => {
+      if (this.#chatQueues.get(key) === next) {
+        this.#chatQueues.delete(key);
       }
     });
   }

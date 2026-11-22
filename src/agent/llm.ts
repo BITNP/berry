@@ -80,6 +80,23 @@ export function parseModelJson(raw: string): unknown {
   try {
     return JSON.parse(raw);
   } catch {
+    const firstBrace = raw.indexOf("{");
+    const lastBrace = raw.lastIndexOf("}");
+
+    if (firstBrace > 0 && lastBrace > firstBrace) {
+      const sliced = raw.slice(firstBrace, lastBrace + 1);
+
+      try {
+        return JSON.parse(sliced);
+      } catch {
+        try {
+          return JSON.parse(jsonrepair(sliced));
+        } catch {
+          // Fall through to full-string jsonrepair below.
+        }
+      }
+    }
+
     return JSON.parse(jsonrepair(raw));
   }
 }

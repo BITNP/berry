@@ -4,9 +4,11 @@ import type { JobKind, JobRecord } from "./types.ts";
 import { Logger } from "./utils/logger.ts";
 import { errorMessage } from "./utils/time.ts";
 
-const GATE_LANE_CONCURRENCY = 4;
-const DIALOG_LANE_CONCURRENCY = 4;
-const BACKGROUND_LANE_CONCURRENCY = 3;
+const GATE_LANE_CONCURRENCY = 6;
+const GATE_MAX_PER_CHAT = 3;
+const DIALOG_LANE_CONCURRENCY = 8;
+const DIALOG_MAX_PER_CHAT = 4;
+const BACKGROUND_LANE_CONCURRENCY = 6;
 
 export class JobWorker {
   #store: Store;
@@ -42,25 +44,26 @@ export class JobWorker {
       return;
     }
 
-    // Serialize per chatKey while allowing distinct chats to execute concurrently
-    // against the shared global timeline.
+    // Run gate, dialog, and background lanes concurrently (including same-chat
+    // parallelism capped per chatKey so one slow task never blocks a group,
+    // and one busy group never starves other chats).
     this.#spawnLane(
       "gate",
       this.#registry.kindsForLane("gate"),
       GATE_LANE_CONCURRENCY,
-      true,
+      GATE_MAX_PER_CHAT,
     );
     this.#spawnLane(
       "dialog",
       this.#registry.kindsForLane("dialog"),
       DIALOG_LANE_CONCURRENCY,
-      true,
+      DIALOG_MAX_PER_CHAT,
     );
     this.#spawnLane(
       "background",
       this.#registry.kindsForLane("background"),
       BACKGROUND_LANE_CONCURRENCY,
-      false,
+      undefined,
     );
   }
 
@@ -94,7 +97,7 @@ export class JobWorker {
     lane: string,
     kinds: JobKind[],
     concurrency: number,
-    serializeByChatKey: boolean,
+    maxPerChatKey?: number,
   ): void {
     if (kinds.length === 0) {
       return;
@@ -102,7 +105,7 @@ export class JobWorker {
 
     while ((this.#running.get(lane) ?? 0) < concurrency && !this.#stopped) {
       this.#running.set(lane, (this.#running.get(lane) ?? 0) + 1);
-      const task = this.#drainLane(kinds, serializeByChatKey)
+      const task = this.#drainLane(kinds, maxPerChatKey)
         .catch((error) => {
           this.#logger.warn("Worker lane error", {
             lane,
@@ -118,13 +121,10 @@ export class JobWorker {
     }
   }
 
-  async #drainLane(
-    kinds: JobKind[],
-    serializeByChatKey: boolean,
-  ): Promise<void> {
+  async #drainLane(kinds: JobKind[], maxPerChatKey?: number): Promise<void> {
     while (!this.#stopped) {
       const job = await this.#store.jobs.claim(kinds, Date.now(), {
-        serializeByChatKey,
+        maxPerChatKey,
       });
 
       if (!job) {

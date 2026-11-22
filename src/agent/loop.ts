@@ -184,61 +184,75 @@ export async function runChatToolLoop<S extends TSchema>(options: {
       messages.push(assistantTurn);
       turnMessages.push(assistantTurn);
 
+      const results = await Promise.all(
+        functionCalls.map(async (call) => {
+          const tool = toolMap.get(call.function.name);
+          const toolStarted = performance.now();
+          let toolOk = false;
+          let toolMutated = false;
+          let resultPayload: unknown;
+
+          if (tool) {
+            try {
+              const parsedArgs = parseToolArguments(call.function.arguments);
+              const result = await tool.execute(parsedArgs);
+
+              if (
+                tool.mutating ||
+                (result &&
+                  typeof result === "object" &&
+                  (result as { mutated?: unknown }).mutated === true)
+              ) {
+                toolMutated = true;
+              }
+
+              toolOk = true;
+              resultPayload = { ok: true, result };
+            } catch (error) {
+              resultPayload = { ok: false, error: errorMessage(error) };
+              logger.warn("Tool execution failed", {
+                tool: call.function.name,
+                error: errorMessage(error),
+              });
+            }
+          } else {
+            resultPayload = {
+              ok: false,
+              error: `Unknown tool: ${call.function.name}`,
+            };
+          }
+
+          const resultText = JSON.stringify(resultPayload);
+
+          return {
+            toolMutated,
+            summary: {
+              id: call.id,
+              name: call.function.name,
+              arguments: call.function.arguments,
+              ok: toolOk,
+              result: resultText,
+              durationMs: Math.round(performance.now() - toolStarted),
+            } satisfies LlmToolCallSummary,
+            turn: {
+              role: "tool",
+              tool_call_id: call.id,
+              content: resultText,
+            } satisfies TurnMessage,
+          };
+        }),
+      );
+
       const executedToolCalls: LlmToolCallSummary[] = [];
 
-      for (const call of functionCalls) {
-        const tool = toolMap.get(call.function.name);
-        const toolStarted = performance.now();
-        let toolOk = false;
-        let resultPayload: unknown;
-
-        if (tool) {
-          try {
-            const parsedArgs = parseToolArguments(call.function.arguments);
-            const result = await tool.execute(parsedArgs);
-
-            if (
-              tool.mutating ||
-              (result &&
-                typeof result === "object" &&
-                (result as { mutated?: unknown }).mutated === true)
-            ) {
-              mutated = true;
-            }
-
-            toolOk = true;
-            resultPayload = { ok: true, result };
-          } catch (error) {
-            resultPayload = { ok: false, error: errorMessage(error) };
-            logger.warn("Tool execution failed", {
-              tool: call.function.name,
-              error: errorMessage(error),
-            });
-          }
-        } else {
-          resultPayload = {
-            ok: false,
-            error: `Unknown tool: ${call.function.name}`,
-          };
+      for (const item of results) {
+        if (item.toolMutated) {
+          mutated = true;
         }
 
-        const resultText = JSON.stringify(resultPayload);
-        const toolTurn: TurnMessage = {
-          role: "tool",
-          tool_call_id: call.id,
-          content: resultText,
-        };
-
-        executedToolCalls.push({
-          id: call.id,
-          name: call.function.name,
-          arguments: call.function.arguments,
-          ok: toolOk,
-          result: resultText,
-          durationMs: Math.round(performance.now() - toolStarted),
-        });
-        messages.push(toolTurn);
-        turnMessages.push(toolTurn);
+        executedToolCalls.push(item.summary);
+        messages.push(item.turn);
+        turnMessages.push(item.turn);
       }
 
       if (recordedCallId !== null) {
@@ -271,11 +285,16 @@ export async function runChatToolLoop<S extends TSchema>(options: {
     }
 
     corrections++;
+    const truncatedByLength = choice.finish_reason === "length";
+    const correctionPrompt = truncatedByLength
+      ? `上一次输出因达到最大输出长度被截断导致 JSON 不完整（第 ${corrections}/2 次纠正）。请大幅精简回复内容（不要输出大段代码或冗长全文），只输出简短合法的纯 JSON 对象。`
+      : `上一次输出未通过格式校验（第 ${corrections}/2 次纠正）：${validation.issue}。请只输出符合协议的纯 JSON 对象，不要附加额外说明或代码围栏。`;
+
     messages.push(
       { role: "assistant", content: assistantText },
       {
         role: "user",
-        content: `上一次输出未通过格式校验（第 ${corrections}/2 次纠正）：${validation.issue}。请只输出符合协议的纯 JSON 对象，不要附加额外说明或代码围栏。`,
+        content: correctionPrompt,
       },
     );
   }

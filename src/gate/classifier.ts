@@ -163,7 +163,10 @@ export class SmallModelClassifier {
         mentionedOthers: hasAtOther(item),
         quotedBot: item.quotedBot,
         replyToOther: Boolean(item.replyToMessageId) && !item.quotedBot,
-        text: item.text.slice(0, 2000),
+        text:
+          item.text.length > 2000
+            ? `${item.text.slice(0, 2000)}…[原长 ${item.text.length} 字，已截断前 2000 字]`
+            : item.text,
       })),
     };
 

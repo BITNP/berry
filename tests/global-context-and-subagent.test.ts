@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { parseModelJson } from "../src/agent/llm.ts";
 import { ModelIds } from "../src/agent/model-ids.ts";
 import {
   captureText,
@@ -522,7 +523,7 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
   assert.equal(globalMem.ownerId, "global");
 });
 
-test("JobWorker executes distinct chats concurrently on the shared global timeline while serializing and coalescing same-chat invokes", async (t) => {
+test("JobWorker executes same-chat and cross-chat invokes concurrently while preserving coalescing and atomic Tape turns", async (t) => {
   const gwStub = await startStubServer((req, res) => {
     res.setHeader("Content-Type", "application/json");
     const action = req.url?.split("/").pop() ?? "";
@@ -545,6 +546,7 @@ test("JobWorker executes distinct chats concurrently on the shared global timeli
   let group100Running = 0;
   let maxGroup100Concurrent = 0;
   const group100TurnTexts: string[][] = [];
+  let sawGroup100SecondDuringFirst = false;
   let sawGroup200DuringGroup100 = false;
 
   const llmStub = await startStubServer(async (_req, res, bodyText) => {
@@ -566,8 +568,14 @@ test("JobWorker executes distinct chats concurrently on the shared global timeli
       group100Running++;
       maxGroup100Concurrent = Math.max(maxGroup100Concurrent, group100Running);
       group100TurnTexts.push(texts);
+      if (texts.includes("群A连发1") && group100Running >= 2) {
+        sawGroup100SecondDuringFirst = true;
+      }
     } else if (group100Running > 0) {
       sawGroup200DuringGroup100 = true;
+    }
+
+    if (sawGroup100SecondDuringFirst && sawGroup200DuringGroup100) {
       releaseGroup100First();
     }
 
@@ -659,7 +667,7 @@ test("JobWorker executes distinct chats concurrently on the shared global timeli
     text: "群B同时发言",
   });
 
-  // Start group:100's first turn and group:200 concurrently.
+  // Start group:100's slow first turn.
   await app.store.jobs.coalesceInvoke({
     source: "qq_batch",
     chatKey: "group:100",
@@ -673,8 +681,8 @@ test("JobWorker executes distinct chats concurrently on the shared global timeli
 
   await waitUntil(() => group100Running === 1, 3000);
 
-  // While group:100 is still running, coalesce two rapid follow-up bursts for group:100
-  // and enqueue group:200 to prove cross-chat parallelism + same-chat coalescing.
+  // While group:100's slow turn is still running, coalesce two rapid follow-up bursts
+  // for group:100 and enqueue group:200 — BOTH must execute concurrently with turn 1.
   await app.store.jobs.coalesceInvoke({
     source: "qq_batch",
     chatKey: "group:100",
@@ -711,9 +719,10 @@ test("JobWorker executes distinct chats concurrently on the shared global timeli
   }, 5000);
   await app.worker.stop();
 
+  assert.equal(sawGroup100SecondDuringFirst, true);
   assert.equal(sawGroup200DuringGroup100, true);
   assert.ok(maxConcurrentCalls >= 2);
-  assert.equal(maxGroup100Concurrent, 1);
+  assert.ok(maxGroup100Concurrent >= 2);
   assert.deepEqual(group100TurnTexts, [
     ["群A第一条"],
     ["群A连发1", "群A连发2"],
@@ -725,6 +734,81 @@ test("JobWorker executes distinct chats concurrently on the shared global timeli
   assert.match(serialized, /回复 群A: 群A第一条/);
   assert.match(serialized, /回复 群B: 群B同时发言/);
   assert.match(serialized, /回复 群A: 群A连发1 \+ 群A连发2/);
+});
+
+test("model input truncates oversized messages to 3000 chars while preserving raw SQLite text, and parseModelJson handles leading prose", async (t) => {
+  assert.deepEqual(
+    parseModelJson(
+      '代码写好了，直接发你。\n\n{"units":[{"kind":"qq_reply","text":"ok"}]}',
+    ),
+    { units: [{ kind: "qq_reply", text: "ok" }] },
+  );
+
+  let seenRequestText = "";
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const body = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const payload = JSON.parse(body.messages.at(-1)!.content!) as {
+      requestMessages: { text: string }[];
+    };
+
+    seenRequestText = payload.requestMessages[0]?.text ?? "";
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        chatReply(
+          '收到啦\n\n{"units":[{"kind":"qq_reply","text":"太长不看"}]}',
+        ),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      mainBaseUrl: `${llmStub.url}/v1`,
+      gateBaseUrl: `${llmStub.url}/v1`,
+    },
+    {},
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "301",
+    title: "长文测试群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const hugeText = "甲".repeat(3500);
+  const captured = await captureText(app, {
+    kind: "group",
+    chatId: "301",
+    id: "ob-huge-1",
+    userId: "2001",
+    senderName: "测试同学",
+    text: hugeText,
+  });
+
+  const stored = await app.store.messages.get(captured.message.id);
+
+  assert.equal(stored?.text.length, 3500);
+
+  const result = await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:301",
+    kind: "group",
+    chatId: "301",
+    triggerMessageIds: [captured.message.id],
+    senderId: "2001",
+    senderName: "测试同学",
+  });
+
+  assert.ok(seenRequestText.length < 3100);
+  assert.match(seenRequestText, /原长 3500 字，已截断前 3000 字/);
+  assert.equal(result.units.length, 1);
+  assert.equal(result.units[0]?.kind, "qq_reply");
 });
 
 test("delegate_subagent(background=true) runs asynchronously and delivers follow-up via subagent_result", async (t) => {

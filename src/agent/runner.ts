@@ -99,6 +99,16 @@ const compactionOutputSchema = Type.Object(
 
 const COMPACTION_MAX_MESSAGES = 100;
 const COMPACTION_KEEP_RECENT_TURNS = 12;
+const MAX_REQUEST_MESSAGE_CHARS = 3000;
+const MAX_CONTEXT_MESSAGE_CHARS = 600;
+
+function truncateForModel(text: string, limit: number): string {
+  if (text.length <= limit) {
+    return text;
+  }
+
+  return `${text.slice(0, limit)}…[消息过长，原长 ${text.length} 字，已截断前 ${limit} 字]`;
+}
 
 export class BerryAgent {
   #services: AgentServices;
@@ -334,21 +344,34 @@ export class BerryAgent {
       ids,
     );
 
-    const mapMessage = (msg: MessageRecord, includeRole = false) => ({
-      id: msg.id,
-      quoteRef: ids.messageRef(msg.onebotMessageId, msg.chatKey),
-      ...(msg.replyToMessageId
-        ? { replyToQuoteRef: ids.messageRef(msg.replyToMessageId, msg.chatKey) }
-        : {}),
-      userRef: ids.userRef(msg.userId),
-      senderName: msg.isBot ? "树莓娘(bot)" : msg.senderName,
-      ...(includeRole && speakerRoleByUserId.has(msg.userId)
-        ? { role: speakerRoleByUserId.get(msg.userId) }
-        : {}),
-      mentionedBot: msg.mentionedBot,
-      text: enrichedText.get(msg.id) ?? msg.text,
-      time: formatDateTime(msg.sentAt, settings.bot.timezone),
-    });
+    const mapMessage = (
+      msg: MessageRecord,
+      options: { includeRole?: boolean; maxChars?: number } = {},
+    ) => {
+      const rawText = enrichedText.get(msg.id) ?? msg.text;
+      const limit = options.maxChars ?? MAX_REQUEST_MESSAGE_CHARS;
+
+      return {
+        id: msg.id,
+        quoteRef: ids.messageRef(msg.onebotMessageId, msg.chatKey),
+        ...(msg.replyToMessageId
+          ? {
+              replyToQuoteRef: ids.messageRef(
+                msg.replyToMessageId,
+                msg.chatKey,
+              ),
+            }
+          : {}),
+        userRef: ids.userRef(msg.userId),
+        senderName: msg.isBot ? "树莓娘(bot)" : msg.senderName,
+        ...(options.includeRole && speakerRoleByUserId.has(msg.userId)
+          ? { role: speakerRoleByUserId.get(msg.userId) }
+          : {}),
+        mentionedBot: msg.mentionedBot,
+        text: truncateForModel(rawText, limit),
+        time: formatDateTime(msg.sentAt, settings.bot.timezone),
+      };
+    };
 
     const knownGroups = allChats
       .filter((c) => {
@@ -376,7 +399,7 @@ export class BerryAgent {
         ? { speakers: resolvedSpeakers.map(formatSpeakerProfile) }
         : {}),
       requestMessages: requestMessages.map((msg) =>
-        mapMessage(msg, multiSpeaker),
+        mapMessage(msg, { includeRole: multiSpeaker }),
       ),
       ...(quotedMessages.length > 0
         ? { quotedMessages: quotedMessages.map((msg) => mapMessage(msg)) }
@@ -395,7 +418,9 @@ export class BerryAgent {
             },
           }
         : {}),
-      recentContext: recentContext.map((msg) => mapMessage(msg)),
+      recentContext: recentContext.map((msg) =>
+        mapMessage(msg, { maxChars: MAX_CONTEXT_MESSAGE_CHARS }),
+      ),
       ...(knownGroups.length > 0 ? { knownGroups } : {}),
       memoryIndex,
     };

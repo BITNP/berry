@@ -64,7 +64,7 @@ export const codeAnalystSubagent: SubagentDefinition = {
   summary:
     "在只读沙盒中用一次脚本并发读取（≥3 个对象）、分组统计、排行或跨源关联分析（聊天+公会+成员+Bunko）",
   describeCapability: () =>
-    "在隔离只读 QuickJS 沙盒内编写 async JS 脚本，用 Promise.all 一次并发查询多个群/节点/文档并完成过滤、join、分组统计或排行。适用于需循环读取 ≥3 个对象、统计计数或跨源关联的分析任务；单点少量查询、所有写操作、图片语音展开、远端历史翻页及 MCP 调用请改用对应专职子代理。",
+    "在隔离只读 QuickJS 沙盒内编写 async JS 脚本，用 Promise.all 一次并发查询多个群/节点/文档并完成过滤、join、分组统计或排行。仅用于查询网协内部数据（聊天/公会/成员/Bunko），绝不用于替用户写 C++/Python 等业务代码、做编程作业或回答通用编程题；单点少量查询、所有写操作、图片语音展开、远端历史翻页及 MCP 调用请改用对应专职子代理。",
   systemPrompt: CODE_ANALYST_PROMPT,
   tools: [runReadonlyScriptTool],
   maxRounds: 6,
