@@ -20,10 +20,14 @@ import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
+import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useLiveRefresh } from "../composables/useEventStream.ts";
 import type { LlmCallRow } from "../utils/ai.ts";
 import {
   formatToolArguments,
+  parseDialogUnits,
+  parseGateDecisionsFromResponse,
+  parseSubagentOutput,
   prettyMaybeJson,
   purposeMeta,
 } from "../utils/ai.ts";
@@ -92,6 +96,9 @@ interface DeliveryRow {
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
+const { chatTitle } = useChatOptions();
+
+const RECENT_FEED_LIMIT = 8;
 
 const loading = ref(false);
 const retryingAll = ref(false);
@@ -131,14 +138,18 @@ async function loadAll() {
   try {
     const [ov, callRes, delRes, jobRes] = await Promise.all([
       apiFetch<OverviewResponse>("/api/admin/overview"),
-      apiFetch<{ items: LlmCallRow[] }>("/api/admin/llm-calls?limit=8"),
-      apiFetch<{ items: DeliveryRow[] }>("/api/admin/deliveries?limit=8"),
+      apiFetch<{ items: LlmCallRow[] }>(
+        `/api/admin/llm-calls?limit=${RECENT_FEED_LIMIT}`,
+      ),
+      apiFetch<{ items: DeliveryRow[] }>(
+        `/api/admin/deliveries?limit=${RECENT_FEED_LIMIT}`,
+      ),
       apiFetch<{ items: JobRow[] }>("/api/admin/jobs?limit=30"),
     ]);
 
     overview.value = ov;
-    recentCalls.value = callRes.items;
-    recentDeliveries.value = delRes.items;
+    recentCalls.value = callRes.items.slice(0, RECENT_FEED_LIMIT);
+    recentDeliveries.value = delRes.items.slice(0, RECENT_FEED_LIMIT);
     jobs.value = jobRes.items;
   } catch (err) {
     message.error(err instanceof Error ? err.message : "加载概览数据失败");
@@ -192,7 +203,78 @@ function summarizePayload(
     return `${verb} #${String(payload.emojiId ?? "")}`;
   }
 
+  if (kind === "qq_poke") {
+    return `戳了戳 ${String(payload.userId ?? "")}`;
+  }
+
   return JSON.stringify(payload);
+}
+
+function summarizeCallOutput(call: LlmCallRow): string {
+  if (call.purpose === "dialog") {
+    const units = parseDialogUnits(call.responseText);
+
+    if (units) {
+      if (units.length === 0) {
+        return "静默（无需发言）";
+      }
+
+      const first = units[0];
+
+      if (first.kind === "qq_reply") {
+        return first.text?.replaceAll(/\s+/g, " ").trim() || "发送回复";
+      }
+
+      if (first.kind === "qq_reaction") {
+        return `${first.remove ? "取消表情" : "贴表情"} ${first.emojiId ?? ""}`.trim();
+      }
+
+      if (first.kind === "qq_poke") {
+        return first.userRef ? `戳了戳 ${first.userRef}` : "戳一戳";
+      }
+
+      return `合并转发：${first.title ?? ""}`.trim();
+    }
+  }
+
+  if (call.purpose === "gate") {
+    const decisions = parseGateDecisionsFromResponse(call.responseText);
+
+    if (decisions && decisions.length > 0) {
+      const first = decisions[0];
+      const act =
+        first.action === "reply"
+          ? "回复"
+          : first.action === "memory"
+            ? "记忆"
+            : "忽略";
+
+      return `${act}：${first.reason ?? ""}`.trim();
+    }
+  }
+
+  if (call.purpose.startsWith("subagent")) {
+    const sub = parseSubagentOutput(call.responseText);
+
+    if (sub?.brief) {
+      return sub.brief.replaceAll(/\s+/g, " ").trim();
+    }
+  }
+
+  const plain = (call.responseText ?? "")
+    .replaceAll(/\*\*([^*]+)\*\*/g, "$1")
+    .replaceAll(/\s+/g, " ")
+    .trim();
+
+  if (plain) {
+    return plain;
+  }
+
+  if (call.toolCalls.length > 0) {
+    return `调用工具：${call.toolCalls.map((t) => t.name).join("、")}`;
+  }
+
+  return call.chatKey ? chatTitle(call.chatKey) : "—";
 }
 
 const deliveryStatusLabel: Record<
@@ -521,12 +603,7 @@ onMounted(() => {
             <div class="feed-row-body">
               <NText v-if="call.error" type="error">{{ call.error }}</NText>
               <template v-else>
-                {{
-                  (call.responseText ?? "").replaceAll(/\s+/g, " ").trim() ||
-                  (call.toolCalls.length > 0
-                    ? `调用工具：${call.toolCalls.map((t) => t.name).join("、")}`
-                    : call.chatKey || "—")
-                }}
+                {{ summarizeCallOutput(call) }}
               </template>
             </div>
           </div>
@@ -560,7 +637,7 @@ onMounted(() => {
                 <NTag size="tiny" :type="deliveryStatusLabel[item.status].type">
                   {{ deliveryStatusLabel[item.status].text }}
                 </NTag>
-                <span class="mono sub-note">{{ item.chatKey }}</span>
+                <span class="sub-note">{{ chatTitle(item.chatKey) }}</span>
               </div>
               <span class="tabular turn-time sub-note">
                 {{ formatTime(item.updatedAt) }}

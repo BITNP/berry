@@ -121,6 +121,10 @@ const messagesQuerySchema = Type.Object({
   beforeId: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 
+const deliveriesQuerySchema = Type.Object({
+  limit: Type.Integer({ minimum: 1, maximum: 200, default: 100 }),
+});
+
 const aiTracesQuerySchema = Type.Object({
   chatKey: Type.Optional(Type.String()),
   status: Type.Optional(
@@ -1189,8 +1193,9 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     "/api/admin/deliveries",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
+      const query = await parseQuery(event, deliveriesQuerySchema);
 
-      return { items: await berry.store.deliveries.list(100) };
+      return { items: await berry.store.deliveries.list(query.limit) };
     }),
   );
 
