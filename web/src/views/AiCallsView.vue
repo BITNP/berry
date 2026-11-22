@@ -10,19 +10,22 @@ import {
 } from "@lucide/vue";
 import type { DataTableColumns } from "naive-ui";
 import {
+  NAlert,
   NButton,
   NCard,
   NDataTable,
-  NDrawer,
-  NDrawerContent,
   NEmpty,
+  NForm,
+  NFormItem,
   NInput,
+  NModal,
   NPopconfirm,
   NRadioButton,
   NRadioGroup,
   NSelect,
   NSpace,
   NSpin,
+  NSwitch,
   NTabPane,
   NTabs,
   NTag,
@@ -34,10 +37,6 @@ import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
 import ChronoVirtualList from "../components/ChronoVirtualList.vue";
-import DeliveriesPane from "../components/DeliveriesPane.vue";
-import GateMonitorPane from "../components/GateMonitorPane.vue";
-import type { JobCounts } from "../components/RuntimeJobsPane.vue";
-import RuntimeJobsPane from "../components/RuntimeJobsPane.vue";
 import TraceInspector from "../components/TraceInspector.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useLiveRefresh } from "../composables/useEventStream.ts";
@@ -113,64 +112,124 @@ interface ConversationView {
   }[];
 }
 
+interface DryRunResponse {
+  result: {
+    messageId: number;
+    action: "reply" | "memory" | "ignore";
+    confidence: number;
+    reason: string;
+  };
+  model: string;
+  durationMs: number;
+}
+
+interface JobCountsSummary {
+  pending: number;
+  running: number;
+  failed: number;
+}
+
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
 const { chatOptions } = useChatOptions();
 
-type AiTab = "calls" | "gate" | "jobs" | "deliveries" | "context" | "usage";
+type AiTab = "calls" | "context" | "usage";
 type TraceScope = "active" | "all" | "error";
 
-function initialTab(): AiTab {
-  const q = route.query.tab;
-
-  if (
-    q === "gate" ||
-    q === "jobs" ||
-    q === "deliveries" ||
-    q === "context" ||
-    q === "usage"
-  ) {
-    return q;
+function resolveTab(rawTab: unknown): AiTab {
+  if (rawTab === "context" || rawTab === "usage") {
+    return rawTab;
   }
 
   return "calls";
 }
 
-const activeTab = ref<AiTab>(initialTab());
+function resolveScope(
+  rawScope: unknown,
+  rawStatus: unknown,
+  rawTab: unknown,
+  purpose: string | null,
+): TraceScope {
+  if (rawScope === "active" || rawScope === "all" || rawScope === "error") {
+    return rawScope;
+  }
+
+  if (rawStatus === "error") {
+    return "error";
+  }
+
+  if (purpose === "gate" || rawTab === "gate") {
+    return "all";
+  }
+
+  return "active";
+}
+
+const activeTab = ref<AiTab>(resolveTab(route.query.tab));
 const loadingTraces = ref(false);
 const loadingMeta = ref(false);
 const traces = ref<AiTraceView[]>([]);
 const totalTraces = ref(0);
 const selectedTraceId = ref<string | null>(null);
-const gateTotal = ref<number | null>(null);
-const jobsSummary = ref<{ total: number; counts: JobCounts } | null>(null);
-const deliveriesSummary = ref<{ total: number; failed: number } | null>(null);
-const gatePaneRef = ref<InstanceType<typeof GateMonitorPane> | null>(null);
-const jobsPaneRef = ref<InstanceType<typeof RuntimeJobsPane> | null>(null);
-const deliveriesPaneRef = ref<InstanceType<typeof DeliveriesPane> | null>(null);
+const jobCounts = ref<JobCountsSummary>({ pending: 0, running: 0, failed: 0 });
+const retryingJobs = ref(false);
 const usageBuckets = ref<UsageBucket[]>([]);
 const conversation = ref<ConversationView | null>(null);
 const contextMode = ref<"active" | "full">("active");
 const fullTapeEntries = ref<TapeEntryView[]>([]);
 const loadingTape = ref(false);
-const sidecarDrawerOpen = ref(false);
+const sidecarModalOpen = ref(false);
 const sidecarIdActive = ref<string | null>(null);
 const sidecarEntries = ref<TapeEntryView[]>([]);
 const loadingSidecar = ref(false);
 const resettingContext = ref(false);
 
-const filterPurpose = ref<string | null>(
+const dryRunOpen = ref(false);
+const dryRunBusy = ref(false);
+const dryRunForm = ref({
+  chatKey: "group:10248888",
+  triggerMode: "smart_observe",
+  senderName: "测试群友",
+  userId: "10001",
+  mentionedBot: false,
+  quotedBot: false,
+  text: "树莓娘，能帮忙查一下上周公会看板上还有哪些没做完吗？",
+  recentContextText: "硅草: 今天服务器刚部署完\n王润泽: 周末例会定在周日晚上",
+});
+const dryRunResult = ref<DryRunResponse | null>(null);
+
+const dryRunActionMap: Record<
+  DryRunResponse["result"]["action"],
+  { text: string; type: "success" | "info" | "default" }
+> = {
+  reply: { text: "回复", type: "success" },
+  memory: { text: "记入记忆", type: "info" },
+  ignore: { text: "忽略", type: "default" },
+};
+
+const hasJobBanner = computed(
+  () =>
+    jobCounts.value.running > 0 ||
+    jobCounts.value.pending > 0 ||
+    jobCounts.value.failed > 0,
+);
+
+const initialPurpose =
   typeof route.query.purpose === "string" && route.query.purpose
     ? route.query.purpose
-    : null,
-);
+    : route.query.tab === "gate"
+      ? "gate"
+      : null;
+
+const filterPurpose = ref<string | null>(initialPurpose);
 const traceScope = ref<TraceScope>(
-  route.query.status === "error"
-    ? "error"
-    : filterPurpose.value === "gate"
-      ? "all"
-      : "active",
+  resolveScope(
+    route.query.scope,
+    route.query.status,
+    route.query.tab,
+    initialPurpose,
+  ),
 );
 const filterChatKey = ref<string | null>(
   typeof route.query.chatKey === "string" && route.query.chatKey
@@ -495,9 +554,80 @@ async function loadMeta() {
       await loadFullTape();
     }
   } catch (err) {
-    message.error(err instanceof Error ? err.message : "加载上下文与用量失败");
+    message.error(err instanceof Error ? err.message : "加载上下文和用量失败");
   } finally {
     loadingMeta.value = false;
+  }
+}
+
+async function loadJobStatus() {
+  try {
+    const res = await apiFetch<{ counts?: Partial<JobCountsSummary> }>(
+      "/api/admin/jobs?limit=1",
+    );
+
+    jobCounts.value = {
+      pending: res.counts?.pending ?? 0,
+      running: res.counts?.running ?? 0,
+      failed: res.counts?.failed ?? 0,
+    };
+  } catch {
+    // Non-critical live strip; keep previous counts silently.
+  }
+}
+
+async function handleRetryAllFailed() {
+  retryingJobs.value = true;
+
+  try {
+    const res = await apiFetch<{ retried: number }>(
+      "/api/admin/jobs/retry-failed",
+      { method: "POST" },
+    );
+
+    message.success(`已重新入队 ${res.retried} 个失败任务`);
+    await Promise.all([loadJobStatus(), loadTraces()]);
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : "批量重试失败");
+  } finally {
+    retryingJobs.value = false;
+  }
+}
+
+async function handleDryRun() {
+  if (!dryRunForm.value.text.trim()) {
+    message.warning("请输入待测试的消息内容");
+
+    return;
+  }
+
+  dryRunBusy.value = true;
+
+  try {
+    dryRunResult.value = await apiFetch<DryRunResponse>(
+      "/api/admin/gate-decisions/dry-run",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          chatKey: dryRunForm.value.chatKey.trim() || "group:100000",
+          triggerMode: dryRunForm.value.triggerMode,
+          senderName: dryRunForm.value.senderName.trim() || "测试群友",
+          userId: dryRunForm.value.userId.trim() || "10001",
+          mentionedBot: dryRunForm.value.mentionedBot,
+          quotedBot: dryRunForm.value.quotedBot,
+          text: dryRunForm.value.text.trim(),
+          recentContext: dryRunForm.value.recentContextText
+            .split("\n")
+            .map((s) => s.trim())
+            .filter(Boolean),
+        }),
+      },
+    );
+    await loadTraces();
+  } catch (err) {
+    message.error(err instanceof Error ? err.message : "分流试跑失败");
+  } finally {
+    dryRunBusy.value = false;
   }
 }
 
@@ -519,7 +649,7 @@ async function loadFullTape() {
 
 async function openSidecar(sidecarId: string) {
   sidecarIdActive.value = sidecarId;
-  sidecarDrawerOpen.value = true;
+  sidecarModalOpen.value = true;
   loadingSidecar.value = true;
   sidecarEntries.value = [];
 
@@ -537,26 +667,9 @@ async function openSidecar(sidecarId: string) {
 }
 
 async function refreshAll() {
-  if (activeTab.value === "gate") {
-    await gatePaneRef.value?.loadDecisions();
-
-    return;
-  }
-
-  if (activeTab.value === "jobs") {
-    await jobsPaneRef.value?.refresh();
-
-    return;
-  }
-
-  if (activeTab.value === "deliveries") {
-    await deliveriesPaneRef.value?.refresh();
-
-    return;
-  }
-
   await Promise.all([
     loadTraces(),
+    loadJobStatus(),
     activeTab.value === "context" || activeTab.value === "usage"
       ? loadMeta()
       : Promise.resolve(),
@@ -577,11 +690,6 @@ async function handleResetConversation() {
   }
 }
 
-function inspectChatCalls(chatKey: string) {
-  filterChatKey.value = chatKey;
-  activeTab.value = "calls";
-}
-
 const streamPaused = ref(false);
 
 function togglePause() {
@@ -598,6 +706,15 @@ useLiveRefresh({
     } else if (activeTab.value === "usage") {
       void loadMeta();
     }
+  },
+});
+
+useLiveRefresh({
+  events: ["job_update"],
+  paused: streamPaused,
+  debounceMs: 400,
+  refresh: () => {
+    void loadJobStatus();
   },
 });
 
@@ -629,8 +746,16 @@ watch(filterSearch, () => {
 });
 
 watch(activeTab, (tab) => {
-  if (route.query.tab !== tab) {
-    void router.replace({ query: { ...route.query, tab } });
+  const nextQuery = { ...route.query };
+
+  if (tab === "calls") {
+    delete nextQuery.tab;
+  } else {
+    nextQuery.tab = tab;
+  }
+
+  if (route.query.tab !== nextQuery.tab) {
+    void router.replace({ query: nextQuery });
   }
 
   if (tab === "context" || tab === "usage") {
@@ -641,25 +766,28 @@ watch(activeTab, (tab) => {
 watch(
   () => route.query,
   (q) => {
-    if (
-      q.tab === "calls" ||
-      q.tab === "gate" ||
-      q.tab === "jobs" ||
-      q.tab === "deliveries" ||
-      q.tab === "context" ||
-      q.tab === "usage"
-    ) {
-      activeTab.value = q.tab;
-    } else if (!q.tab) {
-      activeTab.value = "calls";
+    activeTab.value = resolveTab(q.tab);
+
+    const nextChatKey =
+      typeof q.chatKey === "string" && q.chatKey ? q.chatKey : null;
+
+    if (nextChatKey !== filterChatKey.value) {
+      filterChatKey.value = nextChatKey;
     }
 
-    if (typeof q.chatKey === "string" && q.chatKey !== filterChatKey.value) {
-      filterChatKey.value = q.chatKey || null;
+    const nextPurpose =
+      typeof q.purpose === "string" && q.purpose
+        ? q.purpose
+        : q.tab === "gate"
+          ? "gate"
+          : null;
+
+    if (nextPurpose !== filterPurpose.value) {
+      filterPurpose.value = nextPurpose;
     }
 
-    if (typeof q.purpose === "string" && q.purpose !== filterPurpose.value) {
-      filterPurpose.value = q.purpose || null;
+    if (q.scope || q.status || q.tab === "gate") {
+      traceScope.value = resolveScope(q.scope, q.status, q.tab, nextPurpose);
     }
   },
 );
@@ -736,7 +864,25 @@ onMounted(() => {
   mediaQuery = window.matchMedia("(max-width: 960px)");
   handleViewportChange(mediaQuery);
   mediaQuery.addEventListener("change", handleViewportChange);
+
+  if (
+    route.query.tab === "gate" ||
+    route.query.tab === "jobs" ||
+    route.query.tab === "deliveries"
+  ) {
+    const cleaned = { ...route.query };
+
+    delete cleaned.tab;
+    if (route.query.tab === "gate") {
+      cleaned.scope = "all";
+      cleaned.purpose = "gate";
+    }
+
+    void router.replace({ query: cleaned });
+  }
+
   void loadTraces();
+  void loadJobStatus();
   if (activeTab.value === "context" || activeTab.value === "usage") {
     void loadMeta();
   }
@@ -755,45 +901,17 @@ onUnmounted(() => {
         <NText v-if="activeTab === 'calls'" class="sub-note tabular" depth="3">
           {{ totalTraces }} 条链路
         </NText>
-        <NText
-          v-else-if="activeTab === 'gate' && gateTotal !== null"
-          class="sub-note tabular"
-          depth="3"
-        >
-          {{ gateTotal }} 条分流
-        </NText>
-        <NText
-          v-else-if="activeTab === 'jobs' && jobsSummary"
-          class="sub-note tabular"
-          depth="3"
-        >
-          {{ jobsSummary.total }} 个任务
-          <template v-if="jobsSummary.counts.failed > 0">
-            · {{ jobsSummary.counts.failed }} 失败
-          </template>
-        </NText>
-        <NText
-          v-else-if="activeTab === 'deliveries' && deliveriesSummary"
-          class="sub-note tabular"
-          depth="3"
-        >
-          {{ deliveriesSummary.total }} 条投递
-          <template v-if="deliveriesSummary.failed > 0">
-            · {{ deliveriesSummary.failed }} 失败
-          </template>
-        </NText>
       </NSpace>
       <NSpace :size="8" wrap>
         <NButton
-          v-if="activeTab === 'gate'"
+          v-if="activeTab === 'calls'"
           size="small"
-          type="primary"
-          @click="gatePaneRef?.openDryRun()"
+          @click="dryRunOpen = true"
         >
           <template #icon>
             <FlaskConical :size="14" />
           </template>
-          沙盒试跑
+          分流试跑
         </NButton>
         <NButton size="small" @click="togglePause">
           <template #icon>
@@ -817,6 +935,54 @@ onUnmounted(() => {
 
     <NTabs v-model:value="activeTab" class="ai-tabs" type="line">
       <NTabPane name="calls" tab="执行链路">
+        <NAlert
+          v-if="hasJobBanner"
+          class="mb-sm"
+          :show-icon="false"
+          :type="jobCounts.failed > 0 ? 'warning' : 'info'"
+        >
+          <div class="jobs-strip">
+            <span class="tabular">
+              后台任务：
+              <template v-if="jobCounts.running > 0">
+                运行中 {{ jobCounts.running }}
+              </template>
+              <template v-if="jobCounts.pending > 0">
+                {{ jobCounts.running > 0 ? " · " : "" }}排队
+                {{ jobCounts.pending }}
+              </template>
+              <template v-if="jobCounts.failed > 0">
+                {{
+                  jobCounts.running > 0 || jobCounts.pending > 0 ? " · " : ""
+                }}失败 {{ jobCounts.failed }}
+              </template>
+            </span>
+            <NSpace :size="8">
+              <NButton
+                v-if="jobCounts.failed > 0"
+                :loading="retryingJobs"
+                secondary
+                size="tiny"
+                type="warning"
+                @click="handleRetryAllFailed"
+              >
+                <template #icon>
+                  <RotateCcw :size="12" />
+                </template>
+                重试全部失败
+              </NButton>
+              <NButton
+                v-if="jobCounts.failed > 0 && traceScope !== 'error'"
+                quaternary
+                size="tiny"
+                @click="traceScope = 'error'"
+              >
+                仅看异常
+              </NButton>
+            </NSpace>
+          </div>
+        </NAlert>
+
         <div v-show="!isMobile || !mobileShowDetail" class="filter-bar">
           <NRadioGroup v-model:value="traceScope" size="small">
             <NRadioButton value="active">有效交互</NRadioButton>
@@ -940,54 +1106,6 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
-      </NTabPane>
-
-      <NTabPane name="gate" tab="消息分流">
-        <NCard size="small">
-          <GateMonitorPane
-            ref="gatePaneRef"
-            :chat-key="filterChatKey"
-            :paused="streamPaused"
-            @inspect-chat-calls="inspectChatCalls"
-            @update:total="(n: number) => (gateTotal = n)"
-          />
-        </NCard>
-      </NTabPane>
-
-      <NTabPane
-        name="jobs"
-        :tab="
-          jobsSummary && jobsSummary.counts.failed > 0
-            ? `任务队列 (${jobsSummary.counts.failed} 失败)`
-            : jobsSummary && jobsSummary.counts.running > 0
-              ? `任务队列 (${jobsSummary.counts.running} 运行中)`
-              : '任务队列'
-        "
-      >
-        <NCard size="small">
-          <RuntimeJobsPane
-            ref="jobsPaneRef"
-            :paused="streamPaused"
-            @update:summary="(s) => (jobsSummary = s)"
-          />
-        </NCard>
-      </NTabPane>
-
-      <NTabPane
-        name="deliveries"
-        :tab="
-          deliveriesSummary && deliveriesSummary.failed > 0
-            ? `出站投递 (${deliveriesSummary.failed} 失败)`
-            : '出站投递'
-        "
-      >
-        <NCard size="small">
-          <DeliveriesPane
-            ref="deliveriesPaneRef"
-            :paused="streamPaused"
-            @update:summary="(s) => (deliveriesSummary = s)"
-          />
-        </NCard>
       </NTabPane>
 
       <NTabPane name="context" tab="全局上下文">
@@ -1190,32 +1308,134 @@ onUnmounted(() => {
       </NTabPane>
     </NTabs>
 
-    <NDrawer v-model:show="sidecarDrawerOpen" class="drawer-safe" :width="620">
-      <NDrawerContent closable :title="`子代理轨迹 · ${sidecarIdActive ?? ''}`">
-        <div v-if="loadingSidecar" class="trace-list-state">
-          <NSpin size="small" />
-        </div>
-        <NSpace v-else :size="10" vertical>
-          <div v-for="item in sidecarItems" :key="item.key" class="turn-box">
-            <div class="turn-head">
-              <span class="mono turn-time">#{{ item.index }}</span>
-              <NTag size="tiny" :type="roleTagType(item.role)">
-                {{ item.role }}
-              </NTag>
-              <NTag
-                v-for="(toolName, tIdx) in item.toolNames"
-                :key="`${toolName}-${tIdx}`"
-                size="tiny"
-                type="info"
-              >
-                {{ toolName }}
-              </NTag>
-            </div>
-            <pre class="code-block mt-xs">{{ item.body }}</pre>
-          </div>
+    <NModal
+      v-model:show="dryRunOpen"
+      preset="card"
+      :style="{ width: '520px', maxWidth: '94vw' }"
+      title="小模型分流试跑"
+    >
+      <NForm label-placement="top" size="small">
+        <NFormItem label="模拟会话标识">
+          <NSelect
+            v-model:value="dryRunForm.chatKey"
+            filterable
+            :options="chatOptions"
+            placeholder="选择已有会话或输入 group:群号"
+            tag
+          />
+        </NFormItem>
+        <NFormItem
+          v-if="!dryRunForm.chatKey.startsWith('private:')"
+          label="群触发模式"
+        >
+          <NSelect
+            v-model:value="dryRunForm.triggerMode"
+            :options="[
+              { label: '智能观察（smart_observe）', value: 'smart_observe' },
+              { label: '仅提及（mention_only）', value: 'mention_only' },
+            ]"
+          />
+        </NFormItem>
+        <NFormItem label="发送者">
+          <NSpace class="w-full">
+            <NInput
+              v-model:value="dryRunForm.senderName"
+              class="w-190"
+              placeholder="昵称"
+            />
+            <NInput
+              v-model:value="dryRunForm.userId"
+              class="w-190"
+              placeholder="QQ 号"
+            />
+          </NSpace>
+        </NFormItem>
+        <NFormItem label="标记">
+          <NSpace :size="20">
+            <NSpace
+              v-if="!dryRunForm.chatKey.startsWith('private:')"
+              align="center"
+              :size="6"
+            >
+              <NSwitch v-model:value="dryRunForm.mentionedBot" size="small" />
+              <span>@ 树莓娘</span>
+            </NSpace>
+            <NSpace align="center" :size="6">
+              <NSwitch v-model:value="dryRunForm.quotedBot" size="small" />
+              <span>引用机器人消息</span>
+            </NSpace>
+          </NSpace>
+        </NFormItem>
+        <NFormItem label="模拟近期群聊上下文（每行一条）">
+          <NInput
+            v-model:value="dryRunForm.recentContextText"
+            :rows="3"
+            type="textarea"
+          />
+        </NFormItem>
+        <NFormItem label="待判定消息">
+          <NInput v-model:value="dryRunForm.text" :rows="3" type="textarea" />
+        </NFormItem>
+        <NButton
+          block
+          :loading="dryRunBusy"
+          type="primary"
+          @click="handleDryRun"
+        >
+          执行分类测试
+        </NButton>
+      </NForm>
+
+      <NCard v-if="dryRunResult" class="mt-lg" size="small" title="判定结果">
+        <NSpace :size="8" vertical>
+          <NSpace align="center" :size="8">
+            <NTag
+              size="small"
+              :type="dryRunActionMap[dryRunResult.result.action].type"
+            >
+              {{ dryRunActionMap[dryRunResult.result.action].text }}
+            </NTag>
+            <NText class="tabular">
+              置信度 {{ Math.round(dryRunResult.result.confidence * 100) }}%
+            </NText>
+            <NText class="mono sub-note" depth="3">
+              {{ dryRunResult.model }} / {{ dryRunResult.durationMs }} ms
+            </NText>
+          </NSpace>
+          <div>{{ dryRunResult.result.reason }}</div>
         </NSpace>
-      </NDrawerContent>
-    </NDrawer>
+      </NCard>
+    </NModal>
+
+    <NModal
+      v-model:show="sidecarModalOpen"
+      preset="card"
+      :style="{ width: '680px', maxWidth: '94vw' }"
+      :title="`子代理轨迹 · ${sidecarIdActive ?? ''}`"
+    >
+      <div v-if="loadingSidecar" class="trace-list-state">
+        <NSpin size="small" />
+      </div>
+      <NSpace v-else class="sidecar-scroll" :size="10" vertical>
+        <div v-for="item in sidecarItems" :key="item.key" class="turn-box">
+          <div class="turn-head">
+            <span class="mono turn-time">#{{ item.index }}</span>
+            <NTag size="tiny" :type="roleTagType(item.role)">
+              {{ item.role }}
+            </NTag>
+            <NTag
+              v-for="(toolName, tIdx) in item.toolNames"
+              :key="`${toolName}-${tIdx}`"
+              size="tiny"
+              type="info"
+            >
+              {{ toolName }}
+            </NTag>
+          </div>
+          <pre class="code-block mt-xs">{{ item.body }}</pre>
+        </div>
+      </NSpace>
+    </NModal>
   </div>
 </template>
 
@@ -1224,6 +1444,24 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   min-height: calc(100vh - 88px);
+}
+
+.jobs-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.mb-sm {
+  margin-bottom: 10px;
+}
+
+.sidecar-scroll {
+  max-height: 68vh;
+  overflow-y: auto;
 }
 
 .trace-workbench {

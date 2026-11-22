@@ -25,9 +25,6 @@ export const router = createRouter({
         title: "运行追踪",
         tabTitles: {
           calls: "执行链路",
-          gate: "消息分流",
-          jobs: "任务队列",
-          deliveries: "出站投递",
           context: "全局上下文",
           usage: "用量统计",
         },
@@ -37,7 +34,7 @@ export const router = createRouter({
       path: "/gate",
       redirect: (to) => ({
         path: "/ai",
-        query: { ...to.query, tab: "gate" },
+        query: { ...to.query, scope: "all", purpose: "gate" },
       }),
     },
     {
@@ -60,7 +57,7 @@ export const router = createRouter({
       component: () => import("./views/LogsView.vue"),
       beforeEnter: (to) => {
         if (to.query.tab === "jobs" || to.query.tab === "deliveries") {
-          return { path: "/ai", query: to.query };
+          return { path: "/ai" };
         }
 
         return true;

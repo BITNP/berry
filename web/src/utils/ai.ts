@@ -111,11 +111,12 @@ export interface MessageTraceSummary {
 }
 
 export interface ParsedDialogUnit {
-  kind: "qq_reply" | "qq_reaction" | "qq_forward" | "qq_poke";
+  kind: "qq_reply" | "qq_reaction" | "qq_forward" | "qq_poke" | "qq_image";
   text?: string;
   title?: string;
   emojiId?: string;
   userRef?: string;
+  stickerId?: number;
   remove?: boolean;
   quoteMessageId?: string;
   targetRef?: string;
@@ -149,6 +150,7 @@ export function parseDialogUnits(
         title?: string;
         emojiId?: string;
         userRef?: string;
+        stickerId?: number;
         remove?: boolean;
         quoteMessageId?: string;
         targetRef?: string;
@@ -166,7 +168,8 @@ export function parseDialogUnits(
           u.kind === "qq_reply" ||
           u.kind === "qq_reaction" ||
           u.kind === "qq_forward" ||
-          u.kind === "qq_poke",
+          u.kind === "qq_poke" ||
+          u.kind === "qq_image",
       )
       .map((u) => ({
         kind: u.kind as ParsedDialogUnit["kind"],
@@ -174,6 +177,7 @@ export function parseDialogUnits(
         title: u.title,
         emojiId: u.emojiId,
         userRef: u.userRef,
+        stickerId: typeof u.stickerId === "number" ? u.stickerId : undefined,
         remove: u.remove,
         quoteMessageId: u.quoteMessageId,
         targetRef: u.targetRef,
@@ -265,6 +269,9 @@ const PURPOSE_META: Record<
   "subagent:mcp_operator": { label: "子代理：外部工具", type: "info" },
   "gate": { label: "门控分流", type: "default" },
   "memory_update": { label: "记忆提炼", type: "success" },
+  "style_distill": { label: "群风提炼", type: "success" },
+  "jargon_distill": { label: "黑话提炼", type: "success" },
+  "impression_update": { label: "成员印象", type: "success" },
   "compaction": { label: "摘要压缩", type: "warning" },
   "vision": { label: "图像识别", type: "info" },
   "audio": { label: "语音转写", type: "info" },
@@ -299,6 +306,9 @@ export const PURPOSE_FILTER_OPTIONS = [
   { label: "子代理：外部工具", value: "subagent:mcp_operator" },
   { label: "门控分流", value: "gate" },
   { label: "记忆提炼", value: "memory_update" },
+  { label: "群风提炼", value: "style_distill" },
+  { label: "黑话提炼", value: "jargon_distill" },
+  { label: "成员印象", value: "impression_update" },
   { label: "摘要压缩", value: "compaction" },
   { label: "图像识别", value: "vision" },
   { label: "语音转写", value: "audio" },

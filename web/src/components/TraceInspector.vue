@@ -171,7 +171,7 @@ const isVisionEmpty = (step: LlmCallRow): boolean =>
 <template>
   <div v-if="!trace" class="ti-empty">
     <Sparkles class="ti-empty-icon" :size="20" />
-    <span>选择左侧任意一条追踪记录，查看完整消息因果链与 AI 步骤</span>
+    <span>选择左侧任意一条追踪记录，查看完整触发输入、AI 步骤和发出结果</span>
   </div>
 
   <div v-else class="ti-root">
@@ -528,7 +528,9 @@ const isVisionEmpty = (step: LlmCallRow): boolean =>
                       :bordered="false"
                       size="tiny"
                       :type="
-                        unit.kind === 'qq_reaction' || unit.kind === 'qq_poke'
+                        unit.kind === 'qq_reaction' ||
+                        unit.kind === 'qq_poke' ||
+                        unit.kind === 'qq_image'
                           ? 'info'
                           : 'primary'
                       "
@@ -542,7 +544,9 @@ const isVisionEmpty = (step: LlmCallRow): boolean =>
                               : "贴表情"
                             : unit.kind === "qq_poke"
                               ? "戳一戳"
-                              : `合并转发 (${unit.itemCount ?? 0})`
+                              : unit.kind === "qq_image"
+                                ? "发送表情包"
+                                : `合并转发 (${unit.itemCount ?? 0})`
                       }}
                     </NTag>
                     <span class="ti-unit-text">
@@ -553,7 +557,11 @@ const isVisionEmpty = (step: LlmCallRow): boolean =>
                             ? unit.userRef
                               ? `戳了戳 ${unit.userRef}`
                               : "戳了戳对方"
-                            : unit.text || unit.title
+                            : unit.kind === "qq_image"
+                              ? unit.stickerId
+                                ? `表情包 #${unit.stickerId}`
+                                : "发送图片"
+                              : unit.text || unit.title
                       }}
                     </span>
                   </div>

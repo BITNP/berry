@@ -358,7 +358,7 @@ onUnmounted(() => {
             secondary
             size="tiny"
             type="info"
-            @click="router.push('/ai?tab=jobs&lane=background')"
+            @click="router.push('/ai')"
           >
             <span class="dot ok" />
             后台任务 {{ status.activeBackgroundJobs }}

@@ -4,12 +4,6 @@ import {
   NAlert,
   NButton,
   NCard,
-  NCollapse,
-  NCollapseItem,
-  NDescriptions,
-  NDescriptionsItem,
-  NDrawer,
-  NDrawerContent,
   NEmpty,
   NSpace,
   NTag,
@@ -24,11 +18,9 @@ import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useLiveRefresh } from "../composables/useEventStream.ts";
 import type { LlmCallRow } from "../utils/ai.ts";
 import {
-  formatToolArguments,
   parseDialogUnits,
   parseGateDecisionsFromResponse,
   parseSubagentOutput,
-  prettyMaybeJson,
   purposeMeta,
 } from "../utils/ai.ts";
 import { formatBytes, formatPercent, formatTime } from "../utils/format.ts";
@@ -107,9 +99,6 @@ const recentCalls = ref<LlmCallRow[]>([]);
 const recentDeliveries = ref<DeliveryRow[]>([]);
 const jobs = ref<JobRow[]>([]);
 
-const selectedCall = ref<LlmCallRow | null>(null);
-const callDetailOpen = ref(false);
-
 const gateTotal24h = computed(() => {
   if (!overview.value) {
     return 0;
@@ -176,9 +165,34 @@ async function handleRetryAllFailed() {
   }
 }
 
-function openCallDetail(call: LlmCallRow) {
-  selectedCall.value = call;
-  callDetailOpen.value = true;
+function openCallTrace(call: LlmCallRow) {
+  const query: Record<string, string> = {
+    scope: call.status === "error" ? "error" : "all",
+  };
+
+  if (call.chatKey) {
+    query.chatKey = call.chatKey;
+  }
+
+  if (call.purpose === "gate") {
+    query.purpose = "gate";
+  }
+
+  void router.push({ path: "/ai", query });
+}
+
+function openDeliveryTrace(item: DeliveryRow) {
+  const query: Record<string, string> = {};
+
+  if (item.chatKey) {
+    query.chatKey = item.chatKey;
+  }
+
+  if (item.status === "failed") {
+    query.scope = "error";
+  }
+
+  void router.push({ path: "/ai", query });
 }
 
 function summarizePayload(
@@ -207,6 +221,12 @@ function summarizePayload(
     return `戳了戳 ${String(payload.userId ?? "")}`;
   }
 
+  if (kind === "qq_image") {
+    return typeof payload.stickerId === "number"
+      ? `发送表情包 #${payload.stickerId}`
+      : "发送图片";
+  }
+
   return JSON.stringify(payload);
 }
 
@@ -231,6 +251,10 @@ function summarizeCallOutput(call: LlmCallRow): string {
 
       if (first.kind === "qq_poke") {
         return first.userRef ? `戳了戳 ${first.userRef}` : "戳一戳";
+      }
+
+      if (first.kind === "qq_image") {
+        return first.stickerId ? `发送表情包 #${first.stickerId}` : "发送图片";
       }
 
       return `合并转发：${first.title ?? ""}`.trim();
@@ -356,7 +380,7 @@ onMounted(() => {
       <button
         class="metric-card"
         type="button"
-        @click="router.push('/ai?tab=gate')"
+        @click="router.push('/ai?scope=all&purpose=gate')"
       >
         <div class="metric-card-top">
           <span class="metric-label">24 小时分流</span>
@@ -387,10 +411,10 @@ onMounted(() => {
       <button
         class="metric-card"
         type="button"
-        @click="router.push('/ai?tab=jobs')"
+        @click="router.push(failedJobCount > 0 ? '/ai?scope=error' : '/ai')"
       >
         <div class="metric-card-top">
-          <span class="metric-label">任务队列</span>
+          <span class="metric-label">后台任务</span>
           <ArrowRight class="metric-arrow" :size="13" />
         </div>
         <span class="metric-value">
@@ -407,7 +431,9 @@ onMounted(() => {
       <button
         class="metric-card"
         type="button"
-        @click="router.push('/ai?tab=deliveries')"
+        @click="
+          router.push(failedDeliveryCount > 0 ? '/ai?scope=error' : '/ai')
+        "
       >
         <div class="metric-card-top">
           <span class="metric-label">出站投递</span>
@@ -557,8 +583,12 @@ onMounted(() => {
             </template>
             重试全部
           </NButton>
-          <NButton quaternary size="tiny" @click="router.push('/ai?tab=jobs')">
-            查看队列
+          <NButton
+            quaternary
+            size="tiny"
+            @click="router.push('/ai?scope=error')"
+          >
+            查看异常
           </NButton>
         </NSpace>
       </div>
@@ -586,7 +616,7 @@ onMounted(() => {
             v-for="call in recentCalls"
             :key="call.id"
             class="feed-row feed-row-clickable"
-            @click="openCallDetail(call)"
+            @click="openCallTrace(call)"
           >
             <div class="feed-row-top">
               <div class="feed-row-meta">
@@ -622,11 +652,7 @@ onMounted(() => {
 
       <NCard size="small" title="最近出站投递">
         <template #header-extra>
-          <NButton
-            quaternary
-            size="tiny"
-            @click="router.push('/ai?tab=deliveries')"
-          >
+          <NButton quaternary size="tiny" @click="router.push('/ai')">
             查看全部
             <template #icon>
               <ArrowRight :size="12" />
@@ -641,7 +667,12 @@ onMounted(() => {
         />
 
         <div v-else class="feed-list">
-          <div v-for="item in recentDeliveries" :key="item.id" class="feed-row">
+          <div
+            v-for="item in recentDeliveries"
+            :key="item.id"
+            class="feed-row feed-row-clickable"
+            @click="openDeliveryTrace(item)"
+          >
             <div class="feed-row-top">
               <div class="feed-row-meta">
                 <NTag size="tiny" :type="deliveryStatusLabel[item.status].type">
@@ -663,114 +694,5 @@ onMounted(() => {
         </div>
       </NCard>
     </div>
-
-    <NDrawer v-model:show="callDetailOpen" class="drawer-safe" :width="560">
-      <NDrawerContent v-if="selectedCall" closable title="AI 调用详情">
-        <NSpace :size="12" vertical>
-          <NAlert v-if="selectedCall.error" title="调用失败" type="error">
-            {{ selectedCall.error }}
-          </NAlert>
-
-          <NDescriptions
-            bordered
-            :column="2"
-            label-placement="left"
-            size="small"
-          >
-            <NDescriptionsItem label="时间">
-              <span class="tabular">
-                {{ formatTime(selectedCall.createdAt) }}
-              </span>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="用途">
-              <NTag size="small" :type="purposeMeta(selectedCall.purpose).type">
-                {{ purposeMeta(selectedCall.purpose).label }}
-              </NTag>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="模型">
-              <span class="mono">{{ selectedCall.model }}</span>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="耗时">
-              <span class="tabular">{{ selectedCall.durationMs }} ms</span>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="会话">
-              <span class="mono">{{ selectedCall.chatKey || "全局" }}</span>
-            </NDescriptionsItem>
-            <NDescriptionsItem label="Tokens">
-              <span class="tabular">
-                入 {{ selectedCall.inputTokens.toLocaleString() }} / 出
-                {{ selectedCall.outputTokens.toLocaleString() }}
-              </span>
-            </NDescriptionsItem>
-          </NDescriptions>
-
-          <div v-if="selectedCall.toolCalls.length > 0">
-            <div class="section-title">发起的工具调用</div>
-            <NSpace :size="8" vertical>
-              <div
-                v-for="(tc, idx) in selectedCall.toolCalls"
-                :key="`${tc.name}-${idx}`"
-                class="turn-box"
-              >
-                <div class="turn-head">
-                  <NTag size="small" type="info">{{ tc.name }}</NTag>
-                  <NTag
-                    v-if="tc.ok !== undefined"
-                    :bordered="false"
-                    size="tiny"
-                    :type="tc.ok ? 'success' : 'error'"
-                  >
-                    {{ tc.ok ? "成功" : "失败" }}
-                  </NTag>
-                  <span
-                    v-if="tc.durationMs !== undefined"
-                    class="mono turn-time tabular"
-                  >
-                    {{ tc.durationMs }} ms
-                  </span>
-                </div>
-                <div class="tool-io-section">
-                  <div class="tool-io-label"><span>入参</span></div>
-                  <pre class="code-block tool-io-block">{{
-                    formatToolArguments(tc)
-                  }}</pre>
-                </div>
-                <div v-if="tc.result !== undefined" class="tool-io-section">
-                  <div class="tool-io-label"><span>返回值</span></div>
-                  <pre class="code-block tool-io-block">{{
-                    prettyMaybeJson(tc.result)
-                  }}</pre>
-                </div>
-              </div>
-            </NSpace>
-          </div>
-
-          <div v-if="selectedCall.responseText">
-            <div class="section-title">模型输出</div>
-            <pre class="code-block">{{
-              prettyMaybeJson(selectedCall.responseText)
-            }}</pre>
-          </div>
-
-          <NCollapse v-if="selectedCall.requestPreview">
-            <NCollapseItem name="req" title="请求上下文预览">
-              <pre class="code-block">{{ selectedCall.requestPreview }}</pre>
-            </NCollapseItem>
-          </NCollapse>
-
-          <NButton
-            block
-            secondary
-            size="small"
-            @click="
-              callDetailOpen = false;
-              router.push('/ai');
-            "
-          >
-            在 AI 调用页查看更多
-          </NButton>
-        </NSpace>
-      </NDrawerContent>
-    </NDrawer>
   </div>
 </template>
