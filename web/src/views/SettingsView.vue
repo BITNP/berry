@@ -1141,7 +1141,9 @@ onMounted(() => {
                   :min="1"
                 />
               </NFormItem>
-              <NFormItem label="Bunko 目标目录（留空写入工作区根目录）">
+              <NFormItem
+                label="Bunko 自动记录默认目录（自动归档与群聊摘要默认写入此处，留空写根目录）"
+              >
                 <NSelect
                   v-if="bunkoFolders.length > 0"
                   clearable
