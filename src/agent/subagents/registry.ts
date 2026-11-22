@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 
 import { resolveThinkingEffort } from "../../config/settings.ts";
+import { resolveAccessRole } from "../../identity/permissions.ts";
 import { defineTool, defineToolProvider } from "../../tools/define.ts";
 import { resolveTools } from "../../tools/registry.ts";
 import type {
@@ -10,8 +11,12 @@ import type {
   ToolContext,
   ToolProvider,
 } from "../../tools/types.ts";
+import type { JobPayloads } from "../../types.ts";
 import { parseChatKey } from "../../utils/chat-key.ts";
+import { Logger } from "../../utils/logger.ts";
+import { errorMessage } from "../../utils/time.ts";
 import { runChatToolLoop } from "../loop.ts";
+import { ModelIds } from "../model-ids.ts";
 import type { SubagentDefinition, SubagentResult } from "./types.ts";
 
 const subagentOutputSchema = Type.Object(
@@ -33,6 +38,7 @@ const SUBAGENT_OUTPUT_SUFFIX =
 
 export class SubagentRegistry {
   #definitions = new Map<string, SubagentDefinition>();
+  #logger = new Logger("subagent");
 
   public register(...definitions: SubagentDefinition[]): this {
     for (const def of definitions) {
@@ -66,30 +72,13 @@ export class SubagentRegistry {
     ctx: ToolContext,
     options?: { fork?: boolean; maxDurationMs?: number },
   ): Promise<SubagentResult> {
-    const def = this.#definitions.get(kind);
+    const resolved = this.#resolveAvailable(kind, ctx);
 
-    if (!def) {
-      throw new Error(`Unknown subagent kind: ${kind}`);
+    if ("blocked" in resolved) {
+      return resolved.blocked;
     }
 
-    if (def.available && !def.available(ctx.services)) {
-      return {
-        brief: `${def.title}当前未启用或未配置。`,
-        references: [],
-        mutated: false,
-      };
-    }
-
-    const blockedBrief = def.checkAvailability?.(ctx);
-
-    if (blockedBrief) {
-      return {
-        brief: blockedBrief,
-        references: [],
-        mutated: false,
-      };
-    }
-
+    const { def } = resolved;
     const settings = ctx.services.getSettings();
     const tools = resolveTools(def.tools, ctx);
     const rolePrompt =
@@ -150,6 +139,93 @@ export class SubagentRegistry {
     };
   }
 
+  public async runBackground(
+    services: AgentServices,
+    payload: JobPayloads["subagent_task"],
+    options?: { jobId?: number | null },
+  ): Promise<void> {
+    const { store, directory } = services;
+    const settings = services.getSettings();
+    const [allChats, recentSenders, identityUser] = await Promise.all([
+      store.chats.list(),
+      store.messages.recentSenderIds(500),
+      payload.senderId
+        ? directory.byQQ(payload.senderId).catch(() => null)
+        : Promise.resolve(null),
+    ]);
+    const ids = new ModelIds().seedChats(allChats).seedUsers(recentSenders);
+    const role = resolveAccessRole({
+      userId: payload.senderId,
+      adminQQs: settings.policy.adminQQs,
+      permissions: identityUser?.permissions,
+    });
+    const toolContext: ToolContext = {
+      services,
+      actor: {
+        chatKey: payload.chatKey,
+        senderQQ: payload.senderId,
+        actorSubject: identityUser?.subject ?? null,
+        actorName: identityUser?.name ?? payload.senderName,
+        role,
+        triggerMessageId: payload.triggerMessageId,
+      },
+      ids,
+      ...(payload.forkHistory?.length
+        ? { getForkHistory: () => payload.forkHistory! }
+        : {}),
+      trace: {
+        jobId: options?.jobId ?? null,
+        messageIds: payload.triggerMessageId ? [payload.triggerMessageId] : [],
+      },
+    };
+
+    let resultEnvelope: Record<string, unknown>;
+
+    try {
+      const result = await this.run(payload.kind, payload.task, toolContext, {
+        fork: payload.fork,
+        maxDurationMs: ASYNC_SUBAGENT_MAX_DURATION_MS,
+      });
+
+      resultEnvelope = {
+        ok: true,
+        kind: payload.kind,
+        task: payload.task,
+        brief: result.brief,
+        references: result.references,
+        ...(result.sidecarId ? { sidecarId: result.sidecarId } : {}),
+      };
+    } catch (error) {
+      const message = errorMessage(error);
+
+      this.#logger.warn("Background subagent failed", {
+        kind: payload.kind,
+        chatKey: payload.chatKey,
+        error: message,
+      });
+      resultEnvelope = {
+        ok: false,
+        kind: payload.kind,
+        task: payload.task,
+        error: message,
+      };
+    }
+
+    await store.jobs.coalesceInvoke({
+      source: "subagent_result",
+      chatKey: payload.chatKey,
+      kind: payload.chatKind,
+      chatId: payload.chatId,
+      triggerMessageIds: payload.triggerMessageId
+        ? [payload.triggerMessageId]
+        : [],
+      senderId: payload.senderId ?? undefined,
+      senderName: payload.senderName ?? undefined,
+      content: `后台子代理 ${payload.kind} 已执行完毕，请结合以下结果直接回复原发言人（不要重复派发同一任务）：\n${JSON.stringify(resultEnvelope)}`,
+    });
+    services.wakeWorker?.();
+  }
+
   public describeCapabilities(services: AgentServices): string[] {
     const defs = this.#availableDefs(services);
 
@@ -199,30 +275,13 @@ export class SubagentRegistry {
               });
             }
 
-            const def = this.#definitions.get(args.kind);
+            const resolved = this.#resolveAvailable(args.kind, runCtx);
 
-            if (!def) {
-              throw new Error(`Unknown subagent kind: ${args.kind}`);
+            if ("blocked" in resolved) {
+              return resolved.blocked;
             }
 
-            if (def.available && !def.available(runCtx.services)) {
-              return {
-                brief: `${def.title}当前未启用或未配置。`,
-                references: [],
-                mutated: false,
-              };
-            }
-
-            const blockedBrief = def.checkAvailability?.(runCtx);
-
-            if (blockedBrief) {
-              return {
-                brief: blockedBrief,
-                references: [],
-                mutated: false,
-              };
-            }
-
+            const { def } = resolved;
             const parsed = parseChatKey(runCtx.actor.chatKey);
             const forkHistory =
               args.fork && runCtx.getForkHistory
@@ -266,6 +325,41 @@ export class SubagentRegistry {
         return [delegateTool.bind(ctx)];
       },
     });
+  }
+
+  #resolveAvailable(
+    kind: string,
+    ctx: ToolContext,
+  ): { def: SubagentDefinition } | { blocked: SubagentResult } {
+    const def = this.#definitions.get(kind);
+
+    if (!def) {
+      throw new Error(`Unknown subagent kind: ${kind}`);
+    }
+
+    if (def.available && !def.available(ctx.services)) {
+      return {
+        blocked: {
+          brief: `${def.title}当前未启用或未配置。`,
+          references: [],
+          mutated: false,
+        },
+      };
+    }
+
+    const blockedBrief = def.checkAvailability?.(ctx);
+
+    if (blockedBrief) {
+      return {
+        blocked: {
+          brief: blockedBrief,
+          references: [],
+          mutated: false,
+        },
+      };
+    }
+
+    return { def };
   }
 
   #availableDefs(services: AgentServices): SubagentDefinition[] {

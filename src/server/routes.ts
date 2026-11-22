@@ -660,7 +660,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
       const { chatKey } = await parseChatKeyParam(event);
-      const chat = await berry.agent.distillChatStyle(chatKey);
+      const chat = await berry.social.distillChatStyle(chatKey);
 
       return { ok: true, chat };
     }),
@@ -1002,7 +1002,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
 
       return {
         ok: true,
-        ...(await berry.agent.distillChatJargon(body.chatKey as ChatKey)),
+        ...(await berry.social.distillChatJargon(body.chatKey as ChatKey)),
       };
     }),
   );
@@ -1075,7 +1075,7 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
         Type.Object({ userId: Type.String({ minLength: 1 }) }),
         "无效成员 QQ 号",
       );
-      const item = await berry.agent.refreshMemberImpression(userId, {
+      const item = await berry.social.refreshMemberImpression(userId, {
         force: true,
       });
 

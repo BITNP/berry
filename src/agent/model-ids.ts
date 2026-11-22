@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import type { ChatKey } from "../types.ts";
+import type { ChatConfig, ChatKey } from "../types.ts";
 import { makeChatKey } from "../utils/chat-key.ts";
 
 export class ModelIds {
@@ -10,6 +10,28 @@ export class ModelIds {
     string,
     { kind: "user" | "group" | "msg"; rawId: string; chatKey?: ChatKey }
   >();
+
+  public seedChats(
+    chats: readonly Pick<ChatConfig, "kind" | "chatId">[],
+  ): this {
+    for (const entry of chats) {
+      if (entry.kind === "group") {
+        this.groupRef(entry.chatId);
+      } else {
+        this.userRef(entry.chatId);
+      }
+    }
+
+    return this;
+  }
+
+  public seedUsers(userIds: readonly string[]): this {
+    for (const userId of userIds) {
+      this.userRef(userId);
+    }
+
+    return this;
+  }
 
   public userRef(rawUserId: string): string {
     return this.#register("user", "u", rawUserId);

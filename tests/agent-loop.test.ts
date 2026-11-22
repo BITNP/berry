@@ -3,8 +3,8 @@ import test from "node:test";
 
 import { Type } from "typebox";
 
+import { computeReplyPaceDelayMs } from "../src/agent/dispatch.ts";
 import { ModelIds } from "../src/agent/model-ids.ts";
-import { computeReplyPaceDelayMs } from "../src/agent/runner.ts";
 import {
   parseSettings,
   resolveThinkingEffort,

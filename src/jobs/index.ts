@@ -1,7 +1,11 @@
+import { extractMemoryFromMessage } from "../agent/memory-extractor.ts";
 import type { BerryAgent } from "../agent/runner.ts";
+import type { SocialDistiller } from "../agent/social-distiller.ts";
+import type { SubagentRegistry } from "../agent/subagents/index.ts";
 import type { MessageGate } from "../gate/gate.ts";
 import type { GuildAutomationRunner } from "../guild/automation.ts";
 import type { ScheduleRunner } from "../scheduler/runner.ts";
+import type { AgentServices } from "../tools/types.ts";
 import type { GuildTaskKind } from "../types.ts";
 import { JobRegistry } from "./registry.ts";
 
@@ -16,6 +20,9 @@ const GUILD_TASK_LABELS: Record<GuildTaskKind, string> = {
 export const createDefaultJobRegistry = (deps: {
   gate: MessageGate;
   agent: BerryAgent;
+  social: SocialDistiller;
+  subagents: SubagentRegistry;
+  services: AgentServices;
   scheduler: ScheduleRunner;
   guildAutomation: GuildAutomationRunner;
 }): JobRegistry =>
@@ -78,7 +85,8 @@ export const createDefaultJobRegistry = (deps: {
       label: "记忆提炼",
       lane: "background",
       execute: (job) =>
-        deps.agent.updateMemoryFromMessage(
+        extractMemoryFromMessage(
+          deps.services,
           job.payload.chatKey,
           job.payload.messageId,
           { jobId: job.id },
@@ -130,7 +138,9 @@ export const createDefaultJobRegistry = (deps: {
       label: "后台子代理",
       lane: "background",
       execute: (job) =>
-        deps.agent.runBackgroundSubagent(job.payload, { jobId: job.id }),
+        deps.subagents.runBackground(deps.services, job.payload, {
+          jobId: job.id,
+        }),
       referencedMessageIds: (payload) =>
         payload.triggerMessageId ? [payload.triggerMessageId] : [],
       summarize: (job) =>
@@ -141,7 +151,7 @@ export const createDefaultJobRegistry = (deps: {
       label: "群风提炼",
       lane: "background",
       execute: async (job) => {
-        await deps.agent.distillChatStyle(job.payload.chatKey, {
+        await deps.social.distillChatStyle(job.payload.chatKey, {
           jobId: job.id,
         });
       },
@@ -152,7 +162,7 @@ export const createDefaultJobRegistry = (deps: {
       label: "黑话提炼",
       lane: "background",
       execute: async (job) => {
-        await deps.agent.distillChatJargon(job.payload.chatKey, {
+        await deps.social.distillChatJargon(job.payload.chatKey, {
           jobId: job.id,
         });
       },
@@ -163,7 +173,7 @@ export const createDefaultJobRegistry = (deps: {
       label: "成员印象",
       lane: "background",
       execute: async (job) => {
-        await deps.agent.refreshMemberImpression(job.payload.userId, {
+        await deps.social.refreshMemberImpression(job.payload.userId, {
           displayName: job.payload.displayName,
           jobId: job.id,
         });

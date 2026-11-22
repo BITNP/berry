@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { toNodeListener } from "h3";
 
 import { BerryAgent } from "./agent/runner.ts";
+import { SocialDistiller } from "./agent/social-distiller.ts";
 import type { SubagentRegistry } from "./agent/subagents/index.ts";
 import { createDefaultSubagentRegistry } from "./agent/subagents/index.ts";
 import { BunkoClient } from "./bunko/client.ts";
@@ -51,6 +52,8 @@ export class BerryApp {
   public readonly subagents: SubagentRegistry;
   public readonly mainTools: ToolRegistry;
   public readonly agent: BerryAgent;
+  public readonly social: SocialDistiller;
+  public readonly services: AgentServices;
   public readonly scheduler: ScheduleRunner;
   public readonly guildAutomation: GuildAutomationRunner;
   public readonly jobs: JobRegistry;
@@ -81,6 +84,8 @@ export class BerryApp {
     subagents: SubagentRegistry;
     mainTools: ToolRegistry;
     agent: BerryAgent;
+    social: SocialDistiller;
+    services: AgentServices;
     scheduler: ScheduleRunner;
     guildAutomation: GuildAutomationRunner;
     jobs: JobRegistry;
@@ -106,6 +111,8 @@ export class BerryApp {
     this.subagents = options.subagents;
     this.mainTools = options.mainTools;
     this.agent = options.agent;
+    this.social = options.social;
+    this.services = options.services;
     this.scheduler = options.scheduler;
     this.guildAutomation = options.guildAutomation;
     this.jobs = options.jobs;
@@ -171,6 +178,7 @@ export class BerryApp {
     const subagents = createDefaultSubagentRegistry();
     const mainTools = createDefaultMainToolRegistry(subagents);
     const agent = new BerryAgent(services, { subagents, mainTools });
+    const social = new SocialDistiller(store, getSettings);
 
     const gate = new MessageGate(
       store,
@@ -210,6 +218,9 @@ export class BerryApp {
     const jobs = createDefaultJobRegistry({
       gate,
       agent,
+      social,
+      subagents,
+      services,
       scheduler,
       guildAutomation,
     });
@@ -237,6 +248,8 @@ export class BerryApp {
       subagents,
       mainTools,
       agent,
+      social,
+      services,
       scheduler,
       guildAutomation,
       jobs,

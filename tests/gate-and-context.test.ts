@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
+import { extractMemoryFromMessage } from "../src/agent/memory-extractor.ts";
 import { loadEnvConfig } from "../src/config/env.ts";
 import {
   captureText,
@@ -760,7 +761,8 @@ test("memory_update exposes knownGroups so DM instructions can save chat-scoped 
     text: "你在大群里可以多用 reaction 回复，记下来",
   });
 
-  await app.agent.updateMemoryFromMessage(
+  await extractMemoryFromMessage(
+    app.services,
     "private:2832265139",
     dmMsg.message.id,
   );
@@ -1315,7 +1317,7 @@ test("member impressions refresh from history, respect manual locks, and inject 
   ).json()) as { impression: string; locked: boolean };
 
   assert.equal(locked.locked, true);
-  const bgAttempt = await app.agent.refreshMemberImpression("50505");
+  const bgAttempt = await app.social.refreshMemberImpression("50505");
 
   assert.equal(bgAttempt?.impression, "群串子，爱整活测试但人挺好");
 
