@@ -2474,4 +2474,53 @@ test("large or HTTP-413 qq_image stickers fall back to HMAC-signed /api/media/st
   const disabledRes = await fetch(`${url}${signedPath}`);
 
   assert.equal(disabledRes.status, 404);
+
+  // 4) Plain non-sticker qq_image sends sub_type=0 instead of sub_type=1.
+  rejectBase64With413 = false;
+  const plainSubTypes: (number | undefined)[] = [];
+  const plainGw = await startStubServer((req, res, body) => {
+    if (req.url?.includes("/send_group_msg_async")) {
+      const payload = JSON.parse(body) as {
+        message: { type: string; data: { sub_type?: number } }[];
+      };
+
+      plainSubTypes.push(
+        payload.message.find((s) => s.type === "image")?.data.sub_type,
+      );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: { message_id: "img-plain" },
+        }),
+      );
+
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
+  });
+
+  t.after(() => plainGw.close());
+
+  const { app: plainApp } = await createTestBerryApp(
+    { gatewayUrl: plainGw.url, gatewayToken: "gw-plain-secret" },
+    {},
+    t,
+  );
+  const plainDelivery = await plainApp.gateway.dispatchUnit(
+    "group:77001",
+    {
+      kind: "qq_image",
+      isSticker: false,
+      filePath: smallPath,
+      summary: "普通配图",
+    },
+    "999000",
+  );
+
+  assert.equal(plainDelivery.status, "sent");
+  assert.deepEqual(plainSubTypes, [0]);
 });

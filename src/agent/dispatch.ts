@@ -322,6 +322,7 @@ export async function resolveOutputDispatches(
         unit: {
           kind: "qq_image",
           stickerId: sticker.id,
+          isSticker: true,
           filePath: sticker.filePath,
           summary: sticker.tags[0] || sticker.meaning.slice(0, 12) || "表情包",
           ...(rawQuote ? { quoteMessageId: rawQuote } : {}),

@@ -177,12 +177,16 @@ export class GatewayDispatcher {
 
       if (unit.kind === "qq_image") {
         const { stickerId, quoteMessageId, summary } = unit;
+        const isSticker = unit.isSticker ?? stickerId !== undefined;
         const bytes = await readFile(unit.filePath);
-        const signedUrl = buildSignedStickerUrl({
-          publicUrl: this.#publicUrl,
-          secret: this.#mediaSignSecret,
-          stickerId,
-        });
+        const signedUrl =
+          stickerId === undefined
+            ? null
+            : buildSignedStickerUrl({
+                publicUrl: this.#publicUrl,
+                secret: this.#mediaSignSecret,
+                stickerId,
+              });
         const action =
           kind === "group" ? "send_group_msg_async" : "send_private_msg_async";
 
@@ -195,7 +199,7 @@ export class GatewayDispatcher {
               type: "image",
               data: {
                 file: fileRef,
-                sub_type: 1,
+                sub_type: isSticker ? 1 : 0,
                 ...(summary ? { summary: `[${summary}]` } : {}),
               },
             },
@@ -206,11 +210,22 @@ export class GatewayDispatcher {
             : { user_id: Number(chatId), message: segments };
         }
 
+        const fallbackLabel = isSticker ? "表情包" : "图片";
         const sentCtx: SentMessageContext = {
           delivery,
           chatKey,
-          text: summary ? `[表情包: ${summary}]` : "[表情包]",
-          segments: [{ type: "image", data: { summary: summary ?? "表情包" } }],
+          text: summary
+            ? `[${fallbackLabel}: ${summary}]`
+            : `[${fallbackLabel}]`,
+          segments: [
+            {
+              type: "image",
+              data: {
+                ...(isSticker ? { sub_type: 1 } : {}),
+                summary: summary ?? fallbackLabel,
+              },
+            },
+          ],
           replyToMessageId: quoteMessageId ?? null,
           botQQ,
         };
@@ -236,7 +251,7 @@ export class GatewayDispatcher {
                 "Inline base64 sticker hit HTTP 413; retrying with signed media URL",
                 {
                   deliveryId: delivery.id,
-                  stickerId: unit.stickerId,
+                  stickerId,
                   bytes: bytes.length,
                 },
               );
@@ -251,7 +266,9 @@ export class GatewayDispatcher {
           }
         }
 
-        await this.#store.stickers.recordUsage(unit.stickerId).catch(() => {});
+        if (stickerId !== undefined) {
+          await this.#store.stickers.recordUsage(stickerId).catch(() => {});
+        }
 
         return sent;
       }

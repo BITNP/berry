@@ -158,7 +158,8 @@ export type OutputUnit =
     }
   | {
       kind: "qq_image";
-      stickerId: number;
+      stickerId?: number;
+      isSticker?: boolean;
       filePath: string;
       summary?: string;
       quoteMessageId?: string;
