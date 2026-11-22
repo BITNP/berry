@@ -630,3 +630,168 @@ test("gate classifier sends max_tokens >= 2048, mentionedOthers/replyToOther fla
     "group_active_style",
   );
 });
+
+test("memory_update exposes knownGroups so DM instructions can save chat-scoped group memories and enforces memory vs Bunko boundary", async (t) => {
+  let memorySystemPrompt = "";
+  let memoryUserPayload: {
+    chat?: { kind: string; title: string };
+    knownGroups?: { targetRef: string; title: string }[];
+  } = {};
+  let dialogSystemPrompt = "";
+  let memoryTurn = 0;
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+      tools?: { function: { name: string } }[];
+    };
+
+    res.setHeader("Content-Type", "application/json");
+    const systemMsg = reqJson.messages[0]?.content ?? "";
+
+    if (systemMsg.includes("静默记忆助手")) {
+      memoryTurn++;
+      memorySystemPrompt = systemMsg;
+      if (memoryTurn === 1) {
+        memoryUserPayload = JSON.parse(reqJson.messages[1]!.content!) as {
+          chat?: { kind: string; title: string };
+          knownGroups?: { targetRef: string; title: string }[];
+        };
+        const targetGroupRef = memoryUserPayload.knownGroups?.find(
+          (g) => g.title === "网络开拓者协会2026",
+        )?.targetRef;
+
+        assert.ok(
+          targetGroupRef,
+          "knownGroups should include target group ref",
+        );
+        res.end(
+          JSON.stringify({
+            id: "mem-1",
+            object: "chat.completion",
+            created: 1,
+            model: "gpt-test-main",
+            choices: [
+              {
+                index: 0,
+                finish_reason: "tool_calls",
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "call_mem_1",
+                      type: "function",
+                      function: {
+                        name: "memory_manage",
+                        arguments: JSON.stringify({
+                          action: "upsert",
+                          scope: "chat",
+                          targetRef: targetGroupRef,
+                          key: "group_active_style",
+                          summary: "本群发言积极一点，多用 reaction 互动",
+                          content: "在大群里发言积极一点，多用 reaction 回复",
+                        }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            usage: {
+              prompt_tokens: 100,
+              completion_tokens: 40,
+              total_tokens: 140,
+            },
+          }),
+        );
+
+        return;
+      }
+
+      res.end(JSON.stringify(chatReply({ done: true })));
+
+      return;
+    }
+
+    dialogSystemPrompt = systemMsg;
+    res.end(
+      JSON.stringify(
+        chatReply({ units: [{ kind: "qq_reply", text: "收到" }] }),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      mainBaseUrl: `${llmStub.url}/v1`,
+      gateBaseUrl: `${llmStub.url}/v1`,
+      botQQ: "999999",
+    },
+    {
+      policy: {
+        adminQQs: ["2832265139"],
+      },
+    },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "1048169934",
+    title: "网络开拓者协会2026",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+  await app.store.chats.upsert({
+    kind: "private",
+    chatId: "2832265139",
+    title: "硅硅草",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const dmMsg = await captureText(app, {
+    kind: "private",
+    chatId: "2832265139",
+    id: "m-dm-rule-1",
+    userId: "2832265139",
+    senderName: "硅硅草",
+    text: "你在大群里可以多用 reaction 回复，记下来",
+  });
+
+  await app.agent.updateMemoryFromMessage(
+    "private:2832265139",
+    dmMsg.message.id,
+  );
+
+  assert.equal(memoryUserPayload.chat?.kind, "private");
+  assert.match(memorySystemPrompt, /Bunko 知识库/);
+  assert.match(memorySystemPrompt, /scope="chat"/);
+
+  const savedGroupMem = await app.store.memories.get(
+    "chat",
+    "group:1048169934",
+    "group_active_style",
+  );
+
+  assert.ok(
+    savedGroupMem,
+    "DM memory_update should be able to save chat-scoped memory onto target group",
+  );
+  assert.match(savedGroupMem.summary, /reaction/);
+
+  // Main dialog prompt explicitly enforces 3-tier storage split and persisting memories before confirming.
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "private:2832265139",
+    kind: "private",
+    chatId: "2832265139",
+    triggerMessageIds: [dmMsg.message.id],
+    senderId: "2832265139",
+    senderName: "硅硅草",
+  });
+
+  assert.match(dialogSystemPrompt, /三层存储分工/);
+  assert.match(dialogSystemPrompt, /记忆落库铁律/);
+});

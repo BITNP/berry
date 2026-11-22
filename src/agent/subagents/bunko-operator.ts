@@ -4,10 +4,11 @@ import type { SubagentDefinition } from "./types.ts";
 export const bunkoOperatorSubagent: SubagentDefinition = {
   kind: "bunko_operator",
   title: "Bunko 云文档",
-  summary: "浏览、阅读、创建、追加及软删 Bunko 云文档（周报、纪要、协作文档）",
+  summary:
+    "网协知识库（Bunko 云文档）：浏览、阅读、创建、追加及软删架构设计、流程规范、周报、纪要与协作文档",
   available: (services) => services.bunko.enabled,
   describeCapability: () =>
-    "浏览 Bunko 云文档目录树、按标题查找并阅读文档正文，或创建文档、幂等追加正文及移入回收站（周报、会议纪要、群聊摘要、活动复盘和协作文档统一放这里）。",
+    "网协知识库入口：浏览 Bunko 云文档目录树、按标题查找并阅读文档正文，或创建文档、幂等追加正文及移入回收站（项目架构设计、技术方案讨论、工作流程规范/SOP、问题跟进、周报、会议纪要、群聊摘要、活动复盘和协作参考资料统一放这里，不放长期记忆）。",
   systemPrompt: (ctx) => {
     const settings = ctx.services.getSettings();
     const folderHints: string[] = [];

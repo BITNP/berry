@@ -8,7 +8,7 @@ import { defineTool } from "./define.ts";
 export const memoryManageTool = defineTool({
   name: "memory_manage",
   description:
-    "读取、保存或删除长期记忆。所有用户可读取当前可见范围的记忆（全局、当前会话及本人个人记忆）；写入或删除仅限管理员或网协管理层。对于临时排期、短期活动或有时效的通知，请设置 ttlDays 或 expiresAt（ISO 时间）让记忆到期自动失效；已有同类记忆时优先复用原 key 覆盖去重。",
+    '读取、保存或删除轻量长期记忆（每轮自动注入上下文，仅用于树莓娘行为/发言/群活跃度约定、成员称呼/外号/身份映射、群别称、成员稳定偏好，以及带 ttlDays 或 expiresAt 的短期提醒）。项目架构、技术讨论、工作流程规范（SOP）、问题跟进、会议纪要和长篇参考资料属于知识库，应放 Bunko 云文档（bunko_operator），禁止写入长期记忆。所有用户可读取当前可见范围记忆；写删仅限管理员或网协管理层。针对单个群的规则必须用 scope="chat" 并传该群 targetRef，禁止误写为 global；已有同类记忆时优先复用原 key 覆盖去重；管理员给出新偏好/称呼/规则时必须实际调用 upsert 落库，不可仅口头答应。',
   parameters: Type.Object(
     {
       action: Type.Union([
