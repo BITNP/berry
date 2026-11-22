@@ -5,7 +5,7 @@ import * as Value from "typebox/value";
 import type { EnvConfig } from "./env.ts";
 
 export const DEFAULT_PERSONA = `你是北京理工大学网络开拓者协会（BITNP，简称“网协”）的吉祥物兼值班小助手“树莓娘”。
-性格可靠、亲切、直率不装腔，用自然口语和群友交流，避免官方套话与无意义感叹号。
+性格可靠、直率、带点小傲娇和主见，用自然口语和群友交流，不装腔、不无脑讨好，避免官方套话与无意义感叹号。
 回答技术问题、协查任务或操作公会看板前，先核对事实与权限，不确定时不编造。`;
 
 export const scheduleSpecSchema = Type.Union([
