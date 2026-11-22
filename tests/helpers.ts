@@ -113,28 +113,31 @@ export async function createTestBerryApp(
   Object.assign(env, overrides);
   app = await BerryApp.create(env, { startBackground: false });
 
-  if (Object.keys(settingsPatch).length > 0) {
-    await app.updateSettings({
-      ...app.settings,
-      bot: { ...app.settings.bot, ...settingsPatch.bot },
-      mainModel: { ...app.settings.mainModel, ...settingsPatch.mainModel },
-      gateModel: { ...app.settings.gateModel, ...settingsPatch.gateModel },
-      policy: { ...app.settings.policy, ...settingsPatch.policy },
-      guildAutomation: {
-        ...app.settings.guildAutomation,
-        ...settingsPatch.guildAutomation,
-      },
-      bunko: {
-        ...app.settings.bunko,
-        ...settingsPatch.bunko,
-      },
-      groupDigest: {
-        ...app.settings.groupDigest,
-        ...settingsPatch.groupDigest,
-      },
-      media: { ...app.settings.media, ...settingsPatch.media },
-    });
-  }
+  await app.updateSettings({
+    ...app.settings,
+    bot: {
+      ...app.settings.bot,
+      replyPaceMinMs: 0,
+      replyPaceMaxMs: 0,
+      ...settingsPatch.bot,
+    },
+    mainModel: { ...app.settings.mainModel, ...settingsPatch.mainModel },
+    gateModel: { ...app.settings.gateModel, ...settingsPatch.gateModel },
+    policy: { ...app.settings.policy, ...settingsPatch.policy },
+    guildAutomation: {
+      ...app.settings.guildAutomation,
+      ...settingsPatch.guildAutomation,
+    },
+    bunko: {
+      ...app.settings.bunko,
+      ...settingsPatch.bunko,
+    },
+    groupDigest: {
+      ...app.settings.groupDigest,
+      ...settingsPatch.groupDigest,
+    },
+    media: { ...app.settings.media, ...settingsPatch.media },
+  });
 
   return { app, cleanup };
 }

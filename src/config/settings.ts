@@ -78,6 +78,16 @@ export const runtimeSettingsSchema = Type.Object(
         personaPrompt: Type.String({ default: DEFAULT_PERSONA }),
         timezone: Type.String({ default: "Asia/Shanghai" }),
         paused: Type.Boolean({ default: false }),
+        replyPaceMinMs: Type.Integer({
+          minimum: 0,
+          maximum: 5000,
+          default: 600,
+        }),
+        replyPaceMaxMs: Type.Integer({
+          minimum: 0,
+          maximum: 8000,
+          default: 1800,
+        }),
       },
       { default: {}, additionalProperties: false },
     ),

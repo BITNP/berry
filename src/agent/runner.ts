@@ -1,3 +1,5 @@
+import { setTimeout as delay } from "node:timers/promises";
+
 import type { Static } from "typebox";
 import { Type } from "typebox";
 
@@ -108,6 +110,26 @@ function truncateForModel(text: string, limit: number): string {
   }
 
   return `${text.slice(0, limit)}…[消息过长，原长 ${text.length} 字，已截断前 ${limit} 字]`;
+}
+
+export function computeReplyPaceDelayMs(
+  text: string,
+  minMs: number,
+  maxMs: number,
+  randomValue = Math.random(),
+): number {
+  const low = Math.max(0, Math.round(minMs));
+  const high = Math.max(low, Math.round(maxMs));
+
+  if (high === 0) {
+    return 0;
+  }
+
+  const lengthFactor = Math.min(1, text.trim().length / 45);
+  const base = low + (high - low) * lengthFactor;
+  const jitter = (randomValue - 0.5) * 0.3 * (high - low);
+
+  return Math.max(low, Math.min(high, Math.round(base + jitter)));
 }
 
 export class BerryAgent {
@@ -549,12 +571,33 @@ export class BerryAgent {
       });
     }
 
+    const pacedChats = new Set<string>();
+
     for (const dispatch of plannedDispatches) {
+      if (
+        dispatch.unit.kind === "qq_reply" &&
+        pacedChats.has(dispatch.targetChatKey)
+      ) {
+        const waitMs = computeReplyPaceDelayMs(
+          dispatch.unit.text,
+          settings.bot.replyPaceMinMs,
+          settings.bot.replyPaceMaxMs,
+        );
+
+        if (waitMs > 0) {
+          await delay(waitMs);
+        }
+      }
+
       await gateway.dispatchUnit(
         dispatch.targetChatKey,
         dispatch.unit,
         settings.bot.botQQ,
       );
+
+      if (dispatch.unit.kind === "qq_reply") {
+        pacedChats.add(dispatch.targetChatKey);
+      }
     }
 
     const units = plannedDispatches.map((d) => d.unit);

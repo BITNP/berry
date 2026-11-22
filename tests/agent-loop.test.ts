@@ -4,6 +4,7 @@ import test from "node:test";
 import { Type } from "typebox";
 
 import { ModelIds } from "../src/agent/model-ids.ts";
+import { computeReplyPaceDelayMs } from "../src/agent/runner.ts";
 import {
   parseSettings,
   resolveThinkingEffort,
@@ -1172,4 +1173,88 @@ test("tool loop guides models back to output units when qq_poke/qq_reaction are 
   assert.match(toolErrorMessages[0]!, /正常可用/);
   assert.doesNotMatch(toolErrorMessages[0]!, /Unknown tool/);
   assert.ok(gatewayCalls.some((c) => c.path.endsWith("/send_poke")));
+});
+
+test("multi-bubble qq_reply pacing scales with text length and spaces consecutive sends", async (t) => {
+  assert.equal(computeReplyPaceDelayMs("短", 0, 0), 0);
+  const shortDelay = computeReplyPaceDelayMs("好的", 600, 1800, 0.5);
+  const longDelay = computeReplyPaceDelayMs(
+    "这是一句字数比较长、像真人慢慢敲完再发出来的群聊回复内容。",
+    600,
+    1800,
+    0.5,
+  );
+
+  assert.ok(shortDelay >= 600 && shortDelay <= 1800);
+  assert.ok(longDelay > shortDelay);
+
+  const sendTimestamps: number[] = [];
+  const gwStub = await startStubServer((req, res) => {
+    if (req.url?.includes("/send_group_msg_async")) {
+      sendTimestamps.push(Date.now());
+    }
+
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
+  }, t);
+
+  const llmStub = await startStubServer((_req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(
+      JSON.stringify(
+        chatReply({
+          units: [
+            { kind: "qq_reply", text: "第一条短句" },
+            { kind: "qq_reply", text: "第二条稍微长一点的补充" },
+            { kind: "qq_reply", text: "第三条收尾" },
+          ],
+        }),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gwStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+      mainBaseUrl: `${llmStub.url}/v1`,
+    },
+    {
+      bot: { replyPaceMinMs: 70, replyPaceMaxMs: 120 },
+    },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "8882",
+    title: "测试节奏群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const msg = await captureText(app, {
+    kind: "group",
+    chatId: "8882",
+    id: "ob-pace-1",
+    userId: "12345",
+    senderName: "测试君",
+    text: "连发三条试试",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:8882",
+    kind: "group",
+    chatId: "8882",
+    triggerMessageIds: [msg.message.id],
+    senderId: "12345",
+    senderName: "测试君",
+  });
+
+  assert.equal(sendTimestamps.length, 3);
+  assert.ok(sendTimestamps[1]! - sendTimestamps[0]! >= 55);
+  assert.ok(sendTimestamps[2]! - sendTimestamps[1]! >= 55);
 });

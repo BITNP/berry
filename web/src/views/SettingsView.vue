@@ -64,6 +64,8 @@ interface RuntimeSettingsView {
     personaPrompt: string;
     timezone: string;
     paused: boolean;
+    replyPaceMinMs: number;
+    replyPaceMaxMs: number;
   };
   mainModel: {
     baseURL: string;
@@ -822,6 +824,24 @@ onMounted(() => {
               </NFormItem>
               <NFormItem label="暂停被动应答（保留后台消息采集）">
                 <NSwitch v-model:value="settings.bot.paused" />
+              </NFormItem>
+              <NFormItem label="多气泡最小间隔（毫秒，0 关闭）">
+                <NInputNumber
+                  v-model:value="settings.bot.replyPaceMinMs"
+                  class="w-full"
+                  :max="5000"
+                  :min="0"
+                  :step="100"
+                />
+              </NFormItem>
+              <NFormItem label="多气泡最大间隔（毫秒）">
+                <NInputNumber
+                  v-model:value="settings.bot.replyPaceMaxMs"
+                  class="w-full"
+                  :max="8000"
+                  :min="0"
+                  :step="100"
+                />
               </NFormItem>
             </div>
             <NFormItem label="触发别名（直呼其名或昵称识别）">
