@@ -17,6 +17,7 @@ export interface RuntimeSettingsPatch {
   gateModel?: Partial<RuntimeSettings["gateModel"]>;
   policy?: Partial<RuntimeSettings["policy"]>;
   guildAutomation?: Partial<RuntimeSettings["guildAutomation"]>;
+  bunko?: Partial<RuntimeSettings["bunko"]>;
   groupDigest?: Partial<RuntimeSettings["groupDigest"]>;
   media?: Partial<RuntimeSettings["media"]>;
 }
@@ -122,6 +123,10 @@ export async function createTestBerryApp(
       guildAutomation: {
         ...app.settings.guildAutomation,
         ...settingsPatch.guildAutomation,
+      },
+      bunko: {
+        ...app.settings.bunko,
+        ...settingsPatch.bunko,
       },
       groupDigest: {
         ...app.settings.groupDigest,

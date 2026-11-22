@@ -282,7 +282,7 @@ export const bunkoReadDocumentTool = defineTool({
 export const bunkoCreateDocumentTool = defineTool({
   name: "bunko_create_document",
   description:
-    "在 Bunko 云文档中新建一篇文档并可选写入初始 Markdown 正文（仅管理员或网协管理层可用）。不传 folderId 时默认写入已配置的树莓娘自动记录目录（未配置则写根目录）；明确要放到工作区根目录时请传 folderId: null。正文须为标准 GFM Markdown 且 <= 128 KiB，禁止原始 HTML 标签、图片节点或公式节点。",
+    "在 Bunko 云文档中新建一篇文档并可选写入初始 Markdown 正文（仅管理员或网协管理层可用）。正文须为标准 GFM Markdown 且 <= 128 KiB，禁止原始 HTML 标签、图片节点或公式节点。",
   mutating: true,
   guard: requireAdmin("在 Bunko 云文档创建文档"),
   parameters: Type.Object(
@@ -294,14 +294,9 @@ export const bunkoCreateDocumentTool = defineTool({
     { additionalProperties: false },
   ),
   execute: async (args, ctx) => {
-    const defaultAutoFolderId =
-      ctx.services.getSettings().groupDigest.folderId.trim() || null;
-    const resolvedFolderId =
-      args.folderId === undefined ? defaultAutoFolderId : args.folderId;
-
     const doc = await ctx.services.bunko.createDocument({
       title: args.title,
-      folderId: resolvedFolderId,
+      folderId: args.folderId,
       markdown: args.markdown,
     });
     const rawUrl = ctx.services.bunko.docUrl(doc.id);

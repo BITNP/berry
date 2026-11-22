@@ -104,6 +104,9 @@ interface RuntimeSettingsView {
     weeklySchedule: WeeklySchedule | null;
     weeklyFolderId: string;
   };
+  bunko: {
+    autoRecordFolderId: string;
+  };
   groupDigest: {
     enabled: boolean;
     groups: string[];
@@ -1098,7 +1101,7 @@ onMounted(() => {
           </NForm>
         </NTabPane>
 
-        <NTabPane name="digest" tab="群聊摘要">
+        <NTabPane name="digest" tab="文库与摘要">
           <div v-if="envSummary" class="filter-bar mb-md">
             <NTag
               size="small"
@@ -1123,6 +1126,26 @@ onMounted(() => {
             </NButton>
           </div>
           <NForm class="form-narrow" label-placement="top" size="small">
+            <NFormItem
+              label="树莓娘自动记录默认目录（非主动要求记录的内容默认写入此处）"
+            >
+              <NSelect
+                v-if="bunkoFolders.length > 0"
+                clearable
+                filterable
+                :options="bunkoFolderSelectOptions"
+                placeholder="选择 Bunko 目录（留空写根目录）"
+                :value="settings.bunko.autoRecordFolderId"
+                @update:value="
+                  (v) => (settings!.bunko.autoRecordFolderId = v ?? '')
+                "
+              />
+              <NInput
+                v-else
+                v-model:value="settings.bunko.autoRecordFolderId"
+                placeholder="可选 Bunko 目录 UUID（留空写根目录）"
+              />
+            </NFormItem>
             <div class="form-grid-2">
               <NFormItem label="定期生成群聊讨论摘要">
                 <NSwitch v-model:value="settings.groupDigest.enabled" />
@@ -1141,9 +1164,7 @@ onMounted(() => {
                   :min="1"
                 />
               </NFormItem>
-              <NFormItem
-                label="Bunko 自动记录默认目录（自动归档与群聊摘要默认写入此处，留空写根目录）"
-              >
+              <NFormItem label="群聊摘要目标目录（留空写入工作区根目录）">
                 <NSelect
                   v-if="bunkoFolders.length > 0"
                   clearable

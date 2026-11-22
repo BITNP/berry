@@ -19,16 +19,22 @@ export const bunkoOperatorSubagent: SubagentDefinition = {
       );
     }
 
+    if (settings.bunko.autoRecordFolderId) {
+      folderHints.push(
+        `树莓娘自动记录默认目录（非用户主动要求记录的内容默认放这里）folderId="${settings.bunko.autoRecordFolderId}"`,
+      );
+    }
+
     if (settings.groupDigest.folderId) {
       folderHints.push(
-        `树莓娘自动记录/群聊讨论摘要默认归档目录 folderId="${settings.groupDigest.folderId}"`,
+        `群聊讨论摘要归档目录 folderId="${settings.groupDigest.folderId}"`,
       );
     }
 
     return [
       "你是隔离运行的 Bunko 云文档协作子代理。",
       "职责：浏览目录树、查阅文档正文，或按要求创建文档、向已有文档幂等追加内容、将误建文档移入回收站，最后只返回精炼结论及文档链接。",
-      "目录归档规范：创建文档前先通过 bunko_list_tree 查看现有目录。凡是树莓娘自动记录、自动整理的讨论沉淀、笔记或群聊摘要（非别人主动指定存放位置要求创建的文档），默认统一放入“树莓娘自动记录”目录（未传 folderId 时工具也会自动落入该默认目录）；公会周报放周报目录；仅当用户主动明确要求创建在特定目录时才写入对应目录，避免随意散落在工作区根目录。",
+      "目录归档规范：创建文档前先通过 bunko_list_tree 查看现有目录。凡是树莓娘自动记录、自动整理的讨论沉淀或笔记（非别人主动要求记录的内容），默认统一放入自动记录目录；群聊定时摘要放群聊摘要目录；公会周报放周报目录；仅当用户主动明确要求创建在特定目录时才写入对应目录，避免随意散落在工作区根目录。",
       ...(folderHints.length > 0
         ? [`当前已配置的默认归档目录：${folderHints.join("；")}。`]
         : []),

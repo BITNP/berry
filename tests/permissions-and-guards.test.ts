@@ -1092,6 +1092,9 @@ test("Bunko tools enforce standard-user ACL visibility, privileged writes/append
       mainBaseUrl: `${llmStub.url}/v1`,
     },
     {
+      bunko: {
+        autoRecordFolderId: "01950000-0000-7000-8000-000000000777",
+      },
       groupDigest: {
         minMessages: 1,
         folderId: folderPublicId,
@@ -1216,19 +1219,6 @@ test("Bunko tools enforce standard-user ACL visibility, privileged writes/append
       folderId: folderPublicId,
       markdown: "## 要点\n\n- 已迁移",
     });
-  await bunkoCreateDocumentTool
-    .bind(makeCtx(services, ids, adminActor))
-    .execute({
-      title: "自动记录默认归档",
-      markdown: "- 自动归档测试",
-    });
-  await bunkoCreateDocumentTool
-    .bind(makeCtx(services, ids, adminActor))
-    .execute({
-      title: "明确根目录文档",
-      folderId: null,
-      markdown: "- 明确根目录",
-    });
   await bunkoAppendDocumentTool
     .bind(makeCtx(services, ids, adminActor))
     .execute({
@@ -1240,10 +1230,11 @@ test("Bunko tools enforce standard-user ACL visibility, privileged writes/append
     .execute({ documentId: docMemberId });
 
   assert.equal(createdDocs[0]?.title, "会议纪要");
-  assert.equal(createdDocs[1]?.title, "自动记录默认归档");
-  assert.equal(createdDocs[1]?.folderId, folderPublicId);
-  assert.equal(createdDocs[2]?.title, "明确根目录文档");
-  assert.equal(createdDocs[2]?.folderId, undefined);
+  assert.equal(
+    app.settings.bunko.autoRecordFolderId,
+    "01950000-0000-7000-8000-000000000777",
+  );
+  assert.equal(app.settings.groupDigest.folderId, folderPublicId);
   assert.equal(appendedCalls.length, 1);
   assert.ok(appendedCalls[0]?.key.startsWith("berry:"));
   assert.deepEqual(deletedDocs, [docMemberId]);

@@ -166,6 +166,12 @@ export const runtimeSettingsSchema = Type.Object(
       },
       { default: {}, additionalProperties: false },
     ),
+    bunko: Type.Object(
+      {
+        autoRecordFolderId: Type.String({ default: "" }),
+      },
+      { default: {}, additionalProperties: false },
+    ),
     groupDigest: Type.Object(
       {
         enabled: Type.Boolean({ default: false }),
