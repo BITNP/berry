@@ -250,6 +250,17 @@ export const runtimeSettingsSchema = Type.Object(
           default: 30,
         }),
         jargonAutoApprove: Type.Boolean({ default: false }),
+        impressionUpdateEnabled: Type.Boolean({ default: false }),
+        impressionIntervalHours: Type.Integer({
+          minimum: 1,
+          maximum: 168,
+          default: 24,
+        }),
+        impressionMinMessages: Type.Integer({
+          minimum: 3,
+          maximum: 200,
+          default: 8,
+        }),
       },
       { default: {}, additionalProperties: false },
     ),
@@ -349,7 +360,8 @@ export function resolveThinkingEffort(
     purpose === "memory_update" ||
     purpose === "compaction" ||
     purpose === "style_distill" ||
-    purpose === "jargon_distill"
+    purpose === "jargon_distill" ||
+    purpose === "impression_update"
   ) {
     return "none";
   }

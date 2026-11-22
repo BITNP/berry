@@ -140,6 +140,9 @@ interface RuntimeSettingsView {
     jargonIntervalHours: number;
     jargonMinMessages: number;
     jargonAutoApprove: boolean;
+    impressionUpdateEnabled: boolean;
+    impressionIntervalHours: number;
+    impressionMinMessages: number;
   };
 }
 
@@ -1432,6 +1435,32 @@ onMounted(() => {
                     class="w-full"
                     :max="500"
                     :min="10"
+                  />
+                </NFormItem>
+              </div>
+            </NCard>
+
+            <NCard class="mb-md" size="small" title="成员轻量印象卡">
+              <div class="form-grid-2">
+                <NFormItem label="后台低频更新成员印象">
+                  <NSwitch
+                    v-model:value="settings.social.impressionUpdateEnabled"
+                  />
+                </NFormItem>
+                <NFormItem label="更新周期（小时）">
+                  <NInputNumber
+                    v-model:value="settings.social.impressionIntervalHours"
+                    class="w-full"
+                    :max="168"
+                    :min="1"
+                  />
+                </NFormItem>
+                <NFormItem label="周期内最少发言条数">
+                  <NInputNumber
+                    v-model:value="settings.social.impressionMinMessages"
+                    class="w-full"
+                    :max="200"
+                    :min="3"
                   />
                 </NFormItem>
               </div>

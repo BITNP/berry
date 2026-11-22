@@ -205,6 +205,14 @@ export interface BerryTables {
     created_at: number;
     updated_at: number;
   };
+  member_impressions: {
+    user_id: string;
+    display_name: string;
+    impression: string;
+    source: string;
+    locked: number;
+    updated_at: number;
+  };
 }
 
 export type BerryDb = Kysely<BerryTables>;
@@ -783,6 +791,20 @@ const migrations: Record<string, Migration> = {
         .ifNotExists()
         .on("jargon_entries")
         .columns(["status", "chat_key"])
+        .execute();
+    },
+  },
+  "010_member_impressions": {
+    async up(db) {
+      await db.schema
+        .createTable("member_impressions")
+        .ifNotExists()
+        .addColumn("user_id", "text", (c) => c.primaryKey())
+        .addColumn("display_name", "text", (c) => c.notNull().defaultTo(""))
+        .addColumn("impression", "text", (c) => c.notNull())
+        .addColumn("source", "text", (c) => c.notNull().defaultTo("manual"))
+        .addColumn("locked", "integer", (c) => c.notNull().defaultTo(0))
+        .addColumn("updated_at", "integer", (c) => c.notNull())
         .execute();
     },
   },

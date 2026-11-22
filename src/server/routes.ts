@@ -1007,6 +1007,82 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     }),
   );
 
+  router.get(
+    "/api/admin/impressions",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const query = await parseQuery(
+        event,
+        Type.Object({ search: Type.Optional(Type.String()) }),
+      );
+
+      return {
+        items: await berry.store.impressions.list(query),
+      };
+    }),
+  );
+
+  router.put(
+    "/api/admin/impressions/:userId",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const { userId } = await parseParams(
+        event,
+        Type.Object({ userId: Type.String({ minLength: 1 }) }),
+        "无效成员 QQ 号",
+      );
+      const body = await parseBody(
+        event,
+        Type.Object({
+          displayName: Type.Optional(Type.String({ maxLength: 64 })),
+          impression: Type.String({ minLength: 1, maxLength: 120 }),
+          locked: Type.Optional(Type.Boolean()),
+        }),
+      );
+
+      return berry.store.impressions.upsert({
+        userId,
+        displayName: body.displayName,
+        impression: body.impression,
+        source: "manual",
+        locked: body.locked ?? true,
+      });
+    }),
+  );
+
+  router.delete(
+    "/api/admin/impressions/:userId",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const { userId } = await parseParams(
+        event,
+        Type.Object({ userId: Type.String({ minLength: 1 }) }),
+        "无效成员 QQ 号",
+      );
+
+      return {
+        deleted: await berry.store.impressions.remove(userId),
+      };
+    }),
+  );
+
+  router.post(
+    "/api/admin/impressions/:userId/refresh",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const { userId } = await parseParams(
+        event,
+        Type.Object({ userId: Type.String({ minLength: 1 }) }),
+        "无效成员 QQ 号",
+      );
+      const item = await berry.agent.refreshMemberImpression(userId, {
+        force: true,
+      });
+
+      return { ok: true, item };
+    }),
+  );
+
   router.post(
     "/api/admin/guild/trigger/:task",
     defineEventHandler(async (event) => {

@@ -157,4 +157,17 @@ export const createDefaultJobRegistry = (deps: {
         });
       },
       summarize: (job) => `提炼 ${job.payload.chatKey} 群内黑话词条`,
+    })
+    .register({
+      kind: "impression_update",
+      label: "成员印象",
+      lane: "background",
+      execute: async (job) => {
+        await deps.agent.refreshMemberImpression(job.payload.userId, {
+          displayName: job.payload.displayName,
+          jobId: job.id,
+        });
+      },
+      summarize: (job) =>
+        `更新成员 ${job.payload.displayName || job.payload.userId} 一句话印象`,
     });

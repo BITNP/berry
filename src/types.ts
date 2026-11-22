@@ -210,6 +210,10 @@ export interface JobPayloads {
   jargon_distill: {
     chatKey: ChatKey;
   };
+  impression_update: {
+    userId: string;
+    displayName?: string;
+  };
 }
 
 export type BuiltInJobKind = keyof JobPayloads;
@@ -300,6 +304,15 @@ export interface JargonRecord {
   status: JargonStatus;
   source: "manual" | "auto";
   createdAt: number;
+  updatedAt: number;
+}
+
+export interface MemberImpressionRecord {
+  userId: string;
+  displayName: string;
+  impression: string;
+  source: "manual" | "auto";
+  locked: boolean;
   updatedAt: number;
 }
 

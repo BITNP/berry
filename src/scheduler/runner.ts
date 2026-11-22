@@ -16,6 +16,7 @@ export class ScheduleRunner {
   #lastDigestCheck = 0;
   #lastStyleCheck = 0;
   #lastJargonCheck = 0;
+  #lastImpressionCheck = 0;
   #lastMemoryPurge = 0;
 
   constructor(
@@ -89,6 +90,14 @@ export class ScheduleRunner {
       ) {
         this.#lastJargonCheck = now;
         await this.#checkJargonDistill(now);
+      }
+
+      if (
+        settings.social.impressionUpdateEnabled &&
+        now - this.#lastImpressionCheck >= 120_000
+      ) {
+        this.#lastImpressionCheck = now;
+        await this.#checkImpressions(now);
       }
 
       if (now - this.#lastMemoryPurge >= 600_000) {
@@ -337,6 +346,43 @@ export class ScheduleRunner {
       intervalHours: settings.social.jargonIntervalHours,
       minMessages: settings.social.jargonMinMessages,
     });
+  }
+
+  async #checkImpressions(now: number): Promise<void> {
+    const { store } = this.#services;
+    const settings = this.#services.getSettings();
+    const intervalMs = settings.social.impressionIntervalHours * 3_600_000;
+    const active = await store.messages.activeUsersSince(
+      now - intervalMs,
+      settings.social.impressionMinMessages,
+      10,
+    );
+
+    for (const user of active) {
+      const existing = await store.impressions.get(user.userId);
+
+      if (existing?.locked) {
+        continue;
+      }
+
+      const cursorKey = `impression_update:${user.userId}`;
+      const saved = await store.cursors.get(cursorKey);
+      const lastRunAt = saved ? Number(saved) : 0;
+
+      if (lastRunAt > 0 && now - lastRunAt < intervalMs) {
+        continue;
+      }
+
+      await store.jobs.enqueue(
+        "impression_update",
+        `impression-update:${user.userId}:${Math.floor(now / intervalMs)}`,
+        makeChatKey("private", user.userId),
+        { userId: user.userId, displayName: user.displayName },
+        now,
+      );
+      await store.cursors.set(cursorKey, String(now));
+      this.#wake();
+    }
   }
 
   async #enqueueScheduleTask(

@@ -22,6 +22,7 @@ import {
 import { computed, h, onMounted, ref, watch } from "vue";
 
 import { apiFetch } from "../api/client.ts";
+import ImpressionsPane from "../components/ImpressionsPane.vue";
 import JargonPane from "../components/JargonPane.vue";
 import { useChatOptions } from "../composables/useChatOptions.ts";
 import { useLiveRefresh } from "../composables/useEventStream.ts";
@@ -461,6 +462,10 @@ onMounted(() => {
 
       <NTabPane name="jargon" tab="群内黑话">
         <JargonPane />
+      </NTabPane>
+
+      <NTabPane name="impressions" tab="成员印象">
+        <ImpressionsPane />
       </NTabPane>
     </NTabs>
 

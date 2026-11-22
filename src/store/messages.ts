@@ -528,4 +528,58 @@ export class MessagesStore {
 
     return rows.map(decodeMessage);
   }
+
+  public async recentByUser(
+    userId: string,
+    limit = 40,
+  ): Promise<MessageRecord[]> {
+    const clean = userId.trim();
+
+    if (!clean) {
+      return [];
+    }
+
+    const capped = Math.min(100, Math.max(1, limit));
+    const rows = await this.#database.db
+      .selectFrom("messages")
+      .selectAll()
+      .where("user_id", "=", clean)
+      .where("is_bot", "=", 0)
+      .where("recalled_at", "is", null)
+      .orderBy("sent_at", "desc")
+      .orderBy("id", "desc")
+      .limit(capped)
+      .execute();
+
+    return rows.map(decodeMessage).reverse();
+  }
+
+  public async activeUsersSince(
+    sinceMs: number,
+    minMessages: number,
+    limit = 20,
+  ): Promise<{ userId: string; displayName: string; count: number }[]> {
+    const res = await sql<{
+      user_id: string;
+      sender_name: string;
+      cnt: number;
+    }>`
+      select user_id, max(sender_name) as sender_name, count(*) as cnt
+      from messages
+      where is_bot = 0
+        and recalled_at is null
+        and user_id != ''
+        and sent_at >= ${sinceMs}
+      group by user_id
+      having count(*) >= ${Math.max(1, minMessages)}
+      order by cnt desc
+      limit ${Math.max(1, limit)}
+    `.execute(this.#database.db);
+
+    return res.rows.map((row) => ({
+      userId: row.user_id,
+      displayName: row.sender_name.trim(),
+      count: Number(row.cnt),
+    }));
+  }
 }

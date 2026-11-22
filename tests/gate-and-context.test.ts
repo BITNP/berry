@@ -1215,3 +1215,130 @@ test("jargon dictionary distills pending entries, approves via API, and injects 
   assert.match(capturedUsers[1] ?? "", /"term":"群呆唯"/);
   assert.doesNotMatch(capturedUsers[1] ?? "", /"term":"光速跑路"/);
 });
+
+test("member impressions refresh from history, respect manual locks, and inject into speaker payload", async (t) => {
+  let capturedDialogUser = "";
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    const reqJson = JSON.parse(bodyText) as {
+      messages: { role: string; content: string | null }[];
+    };
+    const sys = reqJson.messages[0]?.content ?? "";
+
+    res.setHeader("Content-Type", "application/json");
+    if (sys.includes("成员印象提炼助手")) {
+      res.end(
+        JSON.stringify({
+          id: "imp-1",
+          object: "chat.completion",
+          created: Math.floor(Date.now() / 1000),
+          model: "gpt-test-main",
+          choices: [
+            {
+              index: 0,
+              finish_reason: "stop",
+              message: {
+                role: "assistant",
+                content: "爱开玩笑测试我，但也经常问正经技术问题",
+              },
+            },
+          ],
+          usage: { prompt_tokens: 60, completion_tokens: 18, total_tokens: 78 },
+        }),
+      );
+
+      return;
+    }
+
+    capturedDialogUser = reqJson.messages.at(-1)?.content ?? "";
+    res.end(JSON.stringify(chatReply({ units: [] })));
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      devAuthBypass: true,
+      mainBaseUrl: `${llmStub.url}/v1`,
+    },
+    {},
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "7799",
+    title: "印象测试群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  for (let i = 1; i <= 6; i += 1) {
+    await captureText(app, {
+      kind: "group",
+      chatId: "7799",
+      id: `imp-msg-${i}`,
+      userId: "50505",
+      senderName: "马铭辰",
+      text: `第 ${i} 条测试和提问消息`,
+    });
+  }
+
+  const { url } = await app.listen();
+  const { csrfToken } = (await (
+    await fetch(`${url}/api/auth/status`)
+  ).json()) as { csrfToken: string };
+
+  const refreshed = (await (
+    await fetch(`${url}/api/admin/impressions/50505/refresh`, {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrfToken },
+    })
+  ).json()) as { ok: boolean; item: { impression: string; locked: boolean } };
+
+  assert.equal(refreshed.ok, true);
+  assert.match(refreshed.item.impression, /爱开玩笑测试我/);
+  assert.equal(refreshed.item.locked, false);
+
+  // Manual edit locks the impression so non-forced background refresh does not overwrite it.
+  const locked = (await (
+    await fetch(`${url}/api/admin/impressions/50505`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({
+        displayName: "马铭辰",
+        impression: "群串子，爱整活测试但人挺好",
+        locked: true,
+      }),
+    })
+  ).json()) as { impression: string; locked: boolean };
+
+  assert.equal(locked.locked, true);
+  const bgAttempt = await app.agent.refreshMemberImpression("50505");
+
+  assert.equal(bgAttempt?.impression, "群串子，爱整活测试但人挺好");
+
+  // Main dialog turn injects speaker.impression transiently.
+  const trigger = await captureText(app, {
+    kind: "group",
+    chatId: "7799",
+    id: "imp-trigger",
+    userId: "50505",
+    senderName: "马铭辰",
+    text: "@树莓娘 你觉得我咋样",
+    mentionedBot: true,
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:7799",
+    kind: "group",
+    chatId: "7799",
+    triggerMessageIds: [trigger.message.id],
+    senderId: "50505",
+    senderName: "马铭辰",
+  });
+
+  assert.match(capturedDialogUser, /"impression":"群串子，爱整活测试但人挺好"/);
+});

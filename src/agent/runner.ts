@@ -20,6 +20,7 @@ import type {
   ChatConfig,
   ChatKey,
   JobPayloads,
+  MemberImpressionRecord,
   MessageRecord,
   OutputUnit,
   TurnMessage,
@@ -485,6 +486,17 @@ export class BerryAgent {
       jargonHaystack,
       8,
     );
+    const impressionsByUser = await store.impressions.getMany(
+      resolvedSpeakers.map((item) => item.userId),
+    );
+    const withImpression = <T extends Record<string, unknown>>(
+      profile: T,
+      userId: string,
+    ) => {
+      const imp = impressionsByUser.get(userId)?.impression;
+
+      return imp ? { ...profile, impression: imp } : profile;
+    };
 
     // Transient water-chat context + memory index + structured handoff hint are sent in this invocation only.
     const fullTurnPayload = {
@@ -495,6 +507,17 @@ export class BerryAgent {
           ? { styleHint: chat.stylePrompt.trim() }
           : {}),
       },
+      speaker:
+        coreEnvelope.speaker && singleSpeaker
+          ? withImpression(coreEnvelope.speaker, singleSpeaker.userId)
+          : coreEnvelope.speaker,
+      ...(multiSpeaker && coreEnvelope.speakers
+        ? {
+            speakers: resolvedSpeakers.map((item, idx) =>
+              withImpression(coreEnvelope.speakers![idx]!, item.userId),
+            ),
+          }
+        : {}),
       ...(matchedJargon.length > 0 ? { jargonHints: matchedJargon } : {}),
       ...(conversation.handoff
         ? {
@@ -961,6 +984,107 @@ export class BerryAgent {
     }
 
     return { inserted, totalExtracted: parsed.value.entries.length };
+  }
+
+  public async refreshMemberImpression(
+    userId: string,
+    options?: {
+      displayName?: string;
+      force?: boolean;
+      jobId?: number | null;
+    },
+  ): Promise<MemberImpressionRecord | null> {
+    const cleanUserId = userId.trim();
+
+    if (!cleanUserId) {
+      throw new Error("缺少成员 QQ 号");
+    }
+
+    const { store } = this.#services;
+    const settings = this.#services.getSettings();
+    const existing = await store.impressions.get(cleanUserId);
+
+    if (existing?.locked && !options?.force) {
+      return existing;
+    }
+
+    const samples = (await store.messages.recentByUser(cleanUserId, 40)).filter(
+      (m) => m.text.trim().length > 0,
+    );
+
+    if (samples.length < 5) {
+      throw new Error(
+        `该成员近期发言样本不足（当前 ${samples.length} 条，至少需要 5 条）`,
+      );
+    }
+
+    const cfg = settings.mainModel;
+
+    if (!cfg.apiKey || !cfg.model) {
+      throw new Error("主模型未配置，无法提炼成员印象");
+    }
+
+    const displayName =
+      options?.displayName?.trim() ||
+      samples.at(-1)?.senderName.trim() ||
+      existing?.displayName ||
+      cleanUserId;
+    const transcript = samples
+      .map((m) => m.text.replace(/\s+/g, " ").slice(0, 120))
+      .join("\n");
+    const thinkingEffort = resolveThinkingEffort(settings, "impression_update");
+    const response = await completeChat({
+      apiKey: cfg.apiKey,
+      baseURL: cfg.baseURL,
+      model: cfg.model,
+      timeoutMs: cfg.timeoutMs,
+      maxRetries: 1,
+      store,
+      timeZone: settings.bot.timezone,
+      purpose: "impression_update",
+      chatKey: null,
+      jobId: options?.jobId ?? null,
+      params: {
+        temperature: 0.2,
+        max_tokens: 140,
+        ...(thinkingEffort === "none"
+          ? {}
+          : { reasoning_effort: thinkingEffort }),
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是树莓娘的轻量成员印象提炼助手。请根据该成员的近期聊天样本，提炼**一句极简中文印象**（不超过 45 字，例如“爱开玩笑测试我，偶尔问正经技术问题”或“提问认真克制，偏关注系统运维”）。不要打分、不要做道德评判、不要提敏感隐私，只输出这一句纯文本。",
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              displayName,
+              existingImpression: existing?.impression ?? null,
+              recentLines: transcript,
+            }),
+          },
+        ],
+      },
+    });
+
+    const impression = (response.choices[0]?.message?.content ?? "")
+      .trim()
+      .replace(/^["“”'`]+|["“”'`]+$/g, "")
+      .replace(/\s+/g, " ")
+      .slice(0, 120);
+
+    if (!impression) {
+      throw new Error("模型未返回有效的成员印象");
+    }
+
+    return store.impressions.upsert({
+      userId: cleanUserId,
+      displayName,
+      impression,
+      source: "auto",
+      locked: false,
+    });
   }
 
   public async updateMemoryFromMessage(
