@@ -44,7 +44,7 @@ export const createDefaultJobRegistry = (deps: {
       label: "对话应答",
       lane: "dialog",
       execute: async (job) => {
-        await deps.agent.invoke(job.payload);
+        await deps.agent.invoke(job.payload, { jobId: job.id });
       },
       referencedMessageIds: (payload) => payload.triggerMessageIds,
       summarize: (job, { messagesById }) => {
@@ -81,6 +81,7 @@ export const createDefaultJobRegistry = (deps: {
         deps.agent.updateMemoryFromMessage(
           job.payload.chatKey,
           job.payload.messageId,
+          { jobId: job.id },
         ),
       referencedMessageIds: (payload) => [payload.messageId],
       summarize: (job, { messagesById }) => {
@@ -128,7 +129,8 @@ export const createDefaultJobRegistry = (deps: {
       kind: "subagent_task",
       label: "后台子代理",
       lane: "background",
-      execute: (job) => deps.agent.runBackgroundSubagent(job.payload),
+      execute: (job) =>
+        deps.agent.runBackgroundSubagent(job.payload, { jobId: job.id }),
       referencedMessageIds: (payload) =>
         payload.triggerMessageId ? [payload.triggerMessageId] : [],
       summarize: (job) =>

@@ -110,6 +110,8 @@ export class SubagentRegistry {
     const result = await runChatToolLoop({
       purpose: `subagent:${def.kind}`,
       chatKey: ctx.actor.chatKey,
+      jobId: ctx.trace?.jobId ?? null,
+      messageIds: ctx.trace?.messageIds,
       settings,
       store: ctx.services.store,
       systemPrompt: `${rolePrompt}\n${SUBAGENT_OUTPUT_SUFFIX}`,

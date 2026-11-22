@@ -205,4 +205,53 @@ export class GateDecisionsStore {
 
     return summary;
   }
+
+  public async listByMessageIds(
+    messageIds: number[],
+  ): Promise<Map<number, GateDecisionRecord[]>> {
+    const unique = [
+      ...new Set(messageIds.filter((id) => Number.isInteger(id) && id > 0)),
+    ];
+    const map = new Map<number, GateDecisionRecord[]>();
+
+    if (unique.length === 0) {
+      return map;
+    }
+
+    const rows = await this.#database.db
+      .selectFrom("gate_decisions")
+      .selectAll()
+      .where("message_id", "in", unique)
+      .orderBy("created_at", "asc")
+      .orderBy("id", "asc")
+      .execute();
+
+    for (const row of rows) {
+      if (row.message_id === null) {
+        continue;
+      }
+
+      const item: GateDecisionRecord = {
+        id: row.id,
+        chatKey: row.chat_key,
+        messageId: row.message_id,
+        action: row.action as GateAction,
+        stage: row.stage as GateStage,
+        confidence: row.confidence,
+        reason: row.reason,
+        model: row.model,
+        durationMs: row.duration_ms,
+        createdAt: row.created_at,
+      };
+      const list = map.get(row.message_id);
+
+      if (list) {
+        list.push(item);
+      } else {
+        map.set(row.message_id, [item]);
+      }
+    }
+
+    return map;
+  }
 }

@@ -39,6 +39,22 @@ function clipText(
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
+function decodeMessageIds(raw: string | null | undefined): number[] {
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is number => typeof id === "number")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 const decodeLlmCall = (
   row: Selectable<BerryTables["llm_usage"]>,
 ): LlmCallRecord => ({
@@ -59,6 +75,8 @@ const decodeLlmCall = (
     : [],
   error: row.error,
   cacheWarning: row.cache_warning ?? null,
+  jobId: row.job_id ?? null,
+  messageIds: decodeMessageIds(row.message_ids_json),
   createdAt: row.created_at,
 });
 
@@ -85,12 +103,19 @@ export class UsageStore {
     toolCalls?: LlmToolCallSummary[];
     error?: string | null;
     cacheWarning?: string | null;
+    jobId?: number | null;
+    messageIds?: number[];
     timeZone?: string;
   }): Promise<LlmCallRecord> {
     const now = Date.now();
     const day = formatDay(now, input.timeZone ?? "Asia/Shanghai");
     const toolCalls = input.toolCalls ?? [];
     const status = input.status ?? (input.error ? "error" : "ok");
+    const uniqueMessageIds = [
+      ...new Set(
+        (input.messageIds ?? []).filter((id) => Number.isInteger(id) && id > 0),
+      ),
+    ];
 
     const row = await this.#database.writeTx(async (trx) =>
       trx
@@ -111,6 +136,11 @@ export class UsageStore {
             toolCalls.length > 0 ? JSON.stringify(toolCalls) : null,
           error: clipText(input.error, 2000),
           cache_warning: clipText(input.cacheWarning, 500),
+          job_id: input.jobId ?? null,
+          message_ids_json:
+            uniqueMessageIds.length > 0
+              ? JSON.stringify(uniqueMessageIds)
+              : null,
           created_at: now,
         })
         .returningAll()
@@ -336,5 +366,92 @@ export class UsageStore {
       outputTokens: Number(row.output_tokens),
       avgDurationMs: Number(row.avg_duration_ms),
     }));
+  }
+
+  public async listForTrace(input: {
+    jobIds?: number[];
+    messageId?: number;
+    chatKey?: string;
+    window?: { from: number; to: number };
+    limit?: number;
+  }): Promise<LlmCallRecord[]> {
+    const jobIds = [
+      ...new Set((input.jobIds ?? []).filter((id) => Number.isInteger(id))),
+    ];
+    const messageId =
+      input.messageId && Number.isInteger(input.messageId)
+        ? input.messageId
+        : null;
+    const limit = Math.min(200, Math.max(1, input.limit ?? 100));
+
+    if (jobIds.length === 0 && !messageId && !input.window) {
+      return [];
+    }
+
+    const rows = await this.#database.db
+      .selectFrom("llm_usage")
+      .selectAll()
+      .where((eb) => {
+        const branches = [];
+
+        if (jobIds.length > 0) {
+          branches.push(eb("job_id", "in", jobIds));
+        }
+
+        if (messageId !== null) {
+          branches.push(
+            eb(
+              sql<number>`exists (select 1 from json_each(coalesce(llm_usage.message_ids_json, '[]')) where value = ${messageId})`,
+              "=",
+              1,
+            ),
+          );
+        }
+
+        if (input.window && input.chatKey) {
+          branches.push(
+            eb.and([
+              eb("chat_key", "=", input.chatKey),
+              eb("job_id", "is", null),
+              eb("message_ids_json", "is", null),
+              eb("created_at", ">=", input.window.from),
+              eb("created_at", "<=", input.window.to),
+            ]),
+          );
+        }
+
+        return eb.or(branches);
+      })
+      .orderBy("created_at", "asc")
+      .orderBy("id", "asc")
+      .limit(limit)
+      .execute();
+
+    return rows.map(decodeLlmCall);
+  }
+
+  public async listLinkedToMessages(
+    messageIds: number[],
+  ): Promise<LlmCallRecord[]> {
+    const unique = [
+      ...new Set(messageIds.filter((id) => Number.isInteger(id) && id > 0)),
+    ];
+
+    if (unique.length === 0) {
+      return [];
+    }
+
+    const rows = await this.#database.db
+      .selectFrom("llm_usage")
+      .selectAll()
+      .where("message_ids_json", "is not", null)
+      .where(
+        sql<boolean>`exists (select 1 from json_each(llm_usage.message_ids_json) where value in (${sql.join(unique)}))`,
+      )
+      .orderBy("created_at", "asc")
+      .orderBy("id", "asc")
+      .execute();
+
+    return rows.map(decodeLlmCall);
   }
 }

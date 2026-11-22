@@ -110,7 +110,10 @@ export class BerryAgent {
       options.mainTools ?? createDefaultMainToolRegistry(this.#subagents);
   }
 
-  public async invoke(input: UnifiedInput): Promise<{
+  public async invoke(
+    input: UnifiedInput,
+    options?: { jobId?: number | null },
+  ): Promise<{
     units: OutputUnit[];
     mutated: boolean;
   }> {
@@ -401,12 +404,19 @@ export class BerryAgent {
         chatKey: input.chatKey,
         senderQQ: speakerQQ,
         actorSubject: identityUser?.subject ?? null,
-        actorName: identityUser?.name ?? speakerName,
+        actorName: multiSpeaker
+          ? resolvedSpeakers.map((item) => item.displayName).join(" / ")
+          : (identityUser?.name ?? speakerName),
         role,
+        ...(multiSpeaker ? { multiSpeaker: true } : {}),
         triggerMessageId: requestMessages.at(-1)?.id ?? null,
       },
       ids,
       getForkHistory: () => forkSnapshot,
+      trace: {
+        jobId: options?.jobId ?? null,
+        messageIds: requestMessages.map((m) => m.id),
+      },
     };
 
     const systemPrompt = buildStaticSystemPrompt({
@@ -419,6 +429,8 @@ export class BerryAgent {
     const result = await runChatToolLoop({
       purpose: "dialog",
       chatKey: input.chatKey,
+      jobId: options?.jobId ?? null,
+      messageIds: requestMessages.map((m) => m.id),
       settings,
       store,
       systemPrompt,
@@ -496,6 +508,7 @@ export class BerryAgent {
 
   public async runBackgroundSubagent(
     payload: JobPayloads["subagent_task"],
+    options?: { jobId?: number | null },
   ): Promise<void> {
     const { store, directory } = this.#services;
     const settings = this.#services.getSettings();
@@ -537,6 +550,10 @@ export class BerryAgent {
       ...(payload.forkHistory?.length
         ? { getForkHistory: () => payload.forkHistory! }
         : {}),
+      trace: {
+        jobId: options?.jobId ?? null,
+        messageIds: payload.triggerMessageId ? [payload.triggerMessageId] : [],
+      },
     };
 
     let resultEnvelope: Record<string, unknown>;
@@ -594,6 +611,7 @@ export class BerryAgent {
   public async updateMemoryFromMessage(
     chatKey: ChatKey,
     messageId: number,
+    options?: { jobId?: number | null },
   ): Promise<void> {
     const { store } = this.#services;
     const settings = this.#services.getSettings();
@@ -640,6 +658,8 @@ export class BerryAgent {
     await runChatToolLoop({
       purpose: "memory_update",
       chatKey,
+      jobId: options?.jobId ?? null,
+      messageIds: [messageId],
       settings,
       store,
       systemPrompt:

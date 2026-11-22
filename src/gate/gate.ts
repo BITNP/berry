@@ -292,6 +292,7 @@ export class MessageGate {
       await this.#enrichContextLines(chat.chatKey, recentContext),
       { global: memIndex.global, chat: memIndex.chat, users: userMems },
       senderRoles,
+      { jobId: job.id },
     );
 
     const replyMessages: MessageRecord[] = [];

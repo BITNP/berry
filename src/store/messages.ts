@@ -457,4 +457,27 @@ export class MessagesStore {
       name: row.sender_name.trim(),
     }));
   }
+
+  public async findBotRepliesTo(
+    chatKey: string,
+    onebotMessageIds: string[],
+  ): Promise<MessageRecord[]> {
+    const unique = [...new Set(onebotMessageIds.filter(Boolean))];
+
+    if (unique.length === 0) {
+      return [];
+    }
+
+    const rows = await this.#database.db
+      .selectFrom("messages")
+      .selectAll()
+      .where("chat_key", "=", chatKey)
+      .where("is_bot", "=", 1)
+      .where("reply_to_message_id", "in", unique)
+      .orderBy("sent_at", "asc")
+      .orderBy("id", "asc")
+      .execute();
+
+    return rows.map(decodeMessage);
+  }
 }

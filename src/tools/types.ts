@@ -40,6 +40,10 @@ export interface ToolContext {
   actor: ToolActor;
   ids: ModelIds;
   getForkHistory?: () => TurnMessage[];
+  trace?: {
+    jobId?: number | null;
+    messageIds?: number[];
+  };
 }
 
 export interface Tool {

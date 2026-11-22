@@ -33,6 +33,8 @@ export interface ToolLoopResult<T> {
 export async function runChatToolLoop<S extends TSchema>(options: {
   purpose: string;
   chatKey: string | null;
+  jobId?: number | null;
+  messageIds?: number[];
   settings: RuntimeSettings;
   store: Store;
   systemPrompt: string;
@@ -136,6 +138,8 @@ export async function runChatToolLoop<S extends TSchema>(options: {
       timeZone: options.settings.bot.timezone,
       purpose: options.purpose,
       chatKey: options.chatKey,
+      jobId: options.jobId,
+      messageIds: options.messageIds,
       cacheCheck,
       onRecorded: (callId) => {
         recordedCallId = callId;

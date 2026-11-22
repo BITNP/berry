@@ -120,6 +120,8 @@ export async function completeChat(options: {
   timeZone: string;
   purpose: string;
   chatKey?: string | null;
+  jobId?: number | null;
+  messageIds?: number[];
   cacheCheck?: CacheCheckHandle | null;
   onRecorded?: (callId: number) => void;
   params: Omit<ChatCompletionCreateParamsNonStreaming, "model" | "stream">;
@@ -164,6 +166,8 @@ export async function completeChat(options: {
       purpose: options.purpose,
       model: options.model,
       chatKey: options.chatKey ?? null,
+      jobId: options.jobId ?? null,
+      messageIds: options.messageIds,
       status: "ok",
       inputTokens,
       cachedInputTokens,
@@ -185,6 +189,8 @@ export async function completeChat(options: {
         purpose: options.purpose,
         model: options.model,
         chatKey: options.chatKey ?? null,
+        jobId: options.jobId ?? null,
+        messageIds: options.messageIds,
         status: "error",
         inputTokens: 0,
         cachedInputTokens: 0,

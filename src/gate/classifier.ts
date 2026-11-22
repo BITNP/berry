@@ -84,6 +84,7 @@ export class SmallModelClassifier {
       users: Record<string, { key: string; summary: string }[]>;
     },
     senderRoles?: Record<string, AccessRole>,
+    trace?: { jobId?: number | null },
   ): Promise<{
     results: CandidateClassification[];
     model: string;
@@ -150,6 +151,8 @@ export class SmallModelClassifier {
         timeZone: settings.bot.timezone,
         purpose: "gate",
         chatKey: chat.chatKey,
+        jobId: trace?.jobId ?? null,
+        messageIds: candidates.map((item) => item.id),
         params: {
           temperature: 0,
           max_tokens: 800,

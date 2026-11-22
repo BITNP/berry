@@ -156,6 +156,8 @@ export interface BerryTables {
     tool_calls_json: string | null;
     error: string | null;
     cache_warning: string | null;
+    job_id: number | null;
+    message_ids_json: string | null;
     created_at: number;
   };
   admin_sessions: {
@@ -703,6 +705,33 @@ const migrations: Record<string, Migration> = {
           .addColumn("cache_warning", "text")
           .execute();
       }
+    },
+  },
+  "007_llm_usage_trace_links": {
+    async up(db) {
+      const existing = await sql<{ name: string }>`
+        pragma table_info(llm_usage)
+      `.execute(db);
+      const colSet = new Set(existing.rows.map((r) => r.name));
+
+      if (!colSet.has("job_id")) {
+        await db.schema
+          .alterTable("llm_usage")
+          .addColumn("job_id", "integer")
+          .execute();
+      }
+
+      if (!colSet.has("message_ids_json")) {
+        await db.schema
+          .alterTable("llm_usage")
+          .addColumn("message_ids_json", "text")
+          .execute();
+      }
+
+      await sql`
+        create index if not exists idx_llm_usage_job_id
+        on llm_usage (job_id)
+      `.execute(db);
     },
   },
 };

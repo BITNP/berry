@@ -371,6 +371,8 @@ export interface LlmCallRecord {
   toolCalls: LlmToolCallSummary[];
   error: string | null;
   cacheWarning: string | null;
+  jobId: number | null;
+  messageIds: number[];
   createdAt: number;
 }
 

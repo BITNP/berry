@@ -28,6 +28,11 @@ import {
   parseQuery,
   stringIdParamSchema,
 } from "./http.ts";
+import {
+  buildAiTraces,
+  buildMessageTrace,
+  summarizeMessageTraces,
+} from "./traces.ts";
 
 const avatarParamsSchema = Type.Object({
   kind: Type.Union([Type.Literal("user"), Type.Literal("group")]),
@@ -114,6 +119,23 @@ const messagesQuerySchema = Type.Object({
   search: Type.Optional(Type.String()),
   limit: Type.Integer({ minimum: 1, default: 80 }),
   beforeId: Type.Optional(Type.Integer({ minimum: 1 })),
+});
+
+const aiTracesQuerySchema = Type.Object({
+  chatKey: Type.Optional(Type.String()),
+  status: Type.Optional(
+    Type.Union([Type.Literal("ok"), Type.Literal("error")]),
+  ),
+  scope: Type.Optional(
+    Type.Union([
+      Type.Literal("all"),
+      Type.Literal("active"),
+      Type.Literal("error"),
+    ]),
+  ),
+  purpose: Type.Optional(Type.String()),
+  search: Type.Optional(Type.String()),
+  limit: Type.Integer({ minimum: 1, maximum: 120, default: 60 }),
 });
 
 const memoryScopeSchema = Type.Union([
@@ -510,6 +532,31 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
     }),
   );
 
+  router.get(
+    "/api/admin/ai/traces",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const query = await parseQuery(event, aiTracesQuerySchema);
+
+      return buildAiTraces(berry, query);
+    }),
+  );
+
+  router.get(
+    "/api/admin/messages/:id/trace",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+      const { id } = await parseParams(event, idParamSchema, "无效的消息编号");
+      const trace = await buildMessageTrace(berry, id);
+
+      if (!trace) {
+        throw createError({ statusCode: 404, message: "消息不存在" });
+      }
+
+      return trace;
+    }),
+  );
+
   router.post(
     "/api/admin/gate-decisions/dry-run",
     defineEventHandler(async (event) => {
@@ -654,12 +701,24 @@ export function createHttpApp(berry: BerryApp, webDistDir: string) {
           items.map((m) => m.onebotMessageId),
         ),
       ]);
+      const traceSummaryMap = await summarizeMessageTraces(
+        berry,
+        items,
+        assetMap,
+      );
 
       return {
         items: items.map((msg) => ({
           ...msg,
           assets: assetMap.get(msg.id) ?? [],
           reactions: reactionMap.get(msg.onebotMessageId) ?? [],
+          traceSummary: traceSummaryMap.get(msg.id) ?? {
+            gateAction: null,
+            gateReason: null,
+            aiCalls: 0,
+            aiErrors: 0,
+            hasTrace: false,
+          },
         })),
       };
     }),
