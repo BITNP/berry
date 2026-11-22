@@ -19,7 +19,7 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { h, onMounted, ref, watch } from "vue";
+import { h, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
@@ -137,7 +137,7 @@ function readPickedFile(file: File | undefined) {
   reader.addEventListener("load", () => {
     if (typeof reader.result === "string") {
       uploadForm.value.dataUrl = reader.result;
-      uploadForm.value.filename = file.name;
+      uploadForm.value.filename = file.name || "clipboard-image.png";
     }
   });
   reader.readAsDataURL(file);
@@ -151,6 +151,53 @@ function handleFileChange(event: Event) {
 
 function handleDrop(event: DragEvent) {
   readPickedFile(event.dataTransfer?.files[0]);
+}
+
+function extractClipboardImage(event: ClipboardEvent): File | null {
+  const items = event.clipboardData?.items;
+
+  if (items) {
+    for (const item of items) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+
+        if (file) {
+          return file;
+        }
+      }
+    }
+  }
+
+  const files = event.clipboardData?.files;
+
+  if (files) {
+    for (const file of files) {
+      if (file.type.startsWith("image/")) {
+        return file;
+      }
+    }
+  }
+
+  return null;
+}
+
+function handlePaste(event: ClipboardEvent) {
+  if (modalOpen.value) {
+    return;
+  }
+
+  const image = extractClipboardImage(event);
+
+  if (!image) {
+    return;
+  }
+
+  event.preventDefault();
+  if (!uploadModalOpen.value) {
+    openUpload();
+  }
+
+  readPickedFile(image);
 }
 
 async function handleUpload() {
@@ -414,7 +461,12 @@ watch(
 );
 
 onMounted(() => {
+  window.addEventListener("paste", handlePaste);
   void loadStickers();
+});
+
+onUnmounted(() => {
+  window.removeEventListener("paste", handlePaste);
 });
 </script>
 
@@ -542,13 +594,15 @@ onMounted(() => {
             />
             <div class="upload-meta">
               <NText strong>
-                {{ uploadForm.filename || "点击选择或拖拽图片到此处" }}
+                {{
+                  uploadForm.filename || "点击选择、拖拽或直接 Ctrl+V 粘贴图片"
+                }}
               </NText>
               <NText class="sub-note" depth="3">
                 {{
                   uploadForm.dataUrl
-                    ? "点击可重新选择图片"
-                    : "上架后树莓娘可直接按含义和情绪标签检索发送"
+                    ? "点击、拖拽或 Ctrl+V 可替换图片"
+                    : "支持在弹窗内或表情包库页面直接粘贴剪贴板图片"
                 }}
               </NText>
             </div>
