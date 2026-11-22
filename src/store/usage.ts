@@ -371,8 +371,6 @@ export class UsageStore {
   public async listForTrace(input: {
     jobIds?: number[];
     messageId?: number;
-    chatKey?: string;
-    window?: { from: number; to: number };
     limit?: number;
   }): Promise<LlmCallRecord[]> {
     const jobIds = [
@@ -384,7 +382,7 @@ export class UsageStore {
         : null;
     const limit = Math.min(200, Math.max(1, input.limit ?? 100));
 
-    if (jobIds.length === 0 && !messageId && !input.window) {
+    if (jobIds.length === 0 && messageId === null) {
       return [];
     }
 
@@ -405,18 +403,6 @@ export class UsageStore {
               "=",
               1,
             ),
-          );
-        }
-
-        if (input.window && input.chatKey) {
-          branches.push(
-            eb.and([
-              eb("chat_key", "=", input.chatKey),
-              eb("job_id", "is", null),
-              eb("message_ids_json", "is", null),
-              eb("created_at", ">=", input.window.from),
-              eb("created_at", "<=", input.window.to),
-            ]),
           );
         }
 

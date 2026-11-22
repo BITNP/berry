@@ -25,7 +25,7 @@ import { MediaProcessor } from "./media/processor.ts";
 import { ScheduleRunner } from "./scheduler/runner.ts";
 import { AdminAuthService } from "./server/auth.ts";
 import { AvatarCache } from "./server/avatars.ts";
-import { createHttpApp } from "./server/routes.ts";
+import { createHttpApp } from "./server/routes/index.ts";
 import { Store } from "./store/index.ts";
 import type { AgentServices, ToolRegistry } from "./tools/index.ts";
 import { createDefaultMainToolRegistry } from "./tools/index.ts";

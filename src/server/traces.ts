@@ -66,139 +66,32 @@ export interface MessageTraceSummary {
   hasTrace: boolean;
 }
 
-function extractLegacyMessageIds(call: LlmCallRecord): number[] {
-  const raw = call.requestPreview;
-
-  if (!raw) {
-    return [];
-  }
-
-  const ids = new Set<number>();
-
-  if (call.purpose === "dialog") {
-    // requestPreview includes recent Tape history turns before the current turn,
-    // so ALWAYS read the LAST requestMessages array (the current turn).
-    const matches = [...raw.matchAll(/"requestMessages":\[([^\]]{1,4000})\]/g)];
-    const lastMatch = matches.at(-1);
-
-    if (lastMatch?.[1]) {
-      for (const idMatch of lastMatch[1].matchAll(/"id":(\d+)/g)) {
-        const n = Number(idMatch[1]);
-
-        if (Number.isInteger(n) && n > 0) {
-          ids.add(n);
-        }
-      }
-    }
-  } else if (call.purpose === "gate") {
-    const matches = [...raw.matchAll(/"candidates":\[([^\]]{1,4000})\]/g)];
-    const lastMatch = matches.at(-1);
-
-    if (lastMatch?.[1]) {
-      for (const idMatch of lastMatch[1].matchAll(/"messageId":(\d+)/g)) {
-        const n = Number(idMatch[1]);
-
-        if (Number.isInteger(n) && n > 0) {
-          ids.add(n);
-        }
-      }
-    }
-  }
-
-  return [...ids];
-}
-
-function legacyJobKindForPurpose(purpose: string): string | null {
-  if (purpose === "dialog" || purpose.startsWith("subagent")) {
-    return "invoke";
-  }
-
-  if (purpose === "gate") {
-    return "gate_batch";
-  }
-
-  if (purpose === "memory_update") {
-    return "memory_update";
-  }
-
-  return null;
-}
-
-function matchLegacyJobForCall(
-  call: LlmCallRecord,
-  jobs: JobRecord[],
-): JobRecord | undefined {
-  if (!call.chatKey) {
-    return undefined;
-  }
-
-  const expectedKind = legacyJobKindForPurpose(call.purpose);
-
-  if (!expectedKind) {
-    return undefined;
-  }
-
-  let best: JobRecord | undefined;
-  let bestDist = Number.POSITIVE_INFINITY;
-
-  for (const job of jobs) {
-    if (job.kind !== expectedKind || job.chatKey !== call.chatKey) {
-      continue;
-    }
-
-    if (
-      call.createdAt >= job.createdAt - 1000 &&
-      call.createdAt <= job.updatedAt + 2500
-    ) {
-      const dist = Math.abs(job.updatedAt - call.createdAt);
-
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = job;
-      }
-    }
-  }
-
-  return best;
-}
-
 const stripInlineMarkdown = (text: string): string =>
   text
     .replaceAll(/\*\*([^*]+)\*\*/g, "$1")
     .replaceAll(/\s+/g, " ")
     .trim();
 
+const PURPOSE_LABELS: Record<string, string> = {
+  dialog: "主对话",
+  gate: "消息分流",
+  vision: "图像识别",
+  audio: "语音转写",
+  memory_update: "记忆提炼",
+  style_distill: "群风提炼",
+  jargon_distill: "黑话提炼",
+  impression_update: "成员印象",
+  compaction: "上下文压缩",
+  report: "周报汇总",
+};
+
 function purposeLabelCn(purpose: string | undefined): string {
   if (!purpose) {
     return "记录";
   }
 
-  if (purpose === "dialog") {
-    return "主对话";
-  }
-
-  if (purpose === "gate") {
-    return "消息分流";
-  }
-
-  if (purpose === "vision") {
-    return "图像识别";
-  }
-
-  if (purpose === "audio") {
-    return "语音转写";
-  }
-
-  if (purpose === "memory_update") {
-    return "记忆提炼";
-  }
-
-  if (purpose === "compaction") {
-    return "上下文压缩";
-  }
-
-  if (purpose === "report") {
-    return "周报汇总";
+  if (PURPOSE_LABELS[purpose]) {
+    return PURPOSE_LABELS[purpose];
   }
 
   if (purpose.startsWith("subagent")) {
@@ -372,6 +265,14 @@ function parseDialogOutcome(steps: LlmCallRecord[]): TraceOutcome | null {
           kind: "reaction",
           label: "戳一戳",
           preview: "戳了戳对方",
+        };
+      }
+
+      if (parsed.units.some((u) => u.kind === "qq_image")) {
+        return {
+          kind: "reaction",
+          label: "表情包",
+          preview: "发送了表情包",
         };
       }
     } catch {
@@ -618,59 +519,9 @@ export async function buildMessageTrace(
   ];
   const assetMap = await berry.store.assets.listForMessages(allMsgIds);
 
-  // Fallback time window for legacy pre-migration rows without job_id / message_ids_json.
-  const windowStart = Math.min(
-    message.receivedAt - 2000,
-    ...relatedJobs.map((j) => j.createdAt - 2000),
-  );
-  const windowEnd = Math.max(
-    message.receivedAt + 45_000,
-    ...relatedJobs.map((j) => j.updatedAt + 5000),
-    ...replyRecords.map((r) => r.receivedAt + 3000),
-  );
-
-  const rawCalls = await berry.store.usage.listForTrace({
+  const calls = await berry.store.usage.listForTrace({
     jobIds,
     messageId: message.id,
-    chatKey: message.chatKey,
-    window: { from: windowStart, to: windowEnd },
-  });
-
-  const calls = rawCalls.filter((call) => {
-    if (call.messageIds.includes(message.id)) {
-      return true;
-    }
-
-    if (call.jobId !== null && jobIds.includes(call.jobId)) {
-      return true;
-    }
-
-    // For pre-migration legacy rows, verify preview or job time-window actually references this message.
-    if (call.jobId === null && call.messageIds.length === 0) {
-      const legacyIds = extractLegacyMessageIds(call);
-
-      if (legacyIds.length > 0) {
-        return legacyIds.includes(message.id);
-      }
-
-      const matchedJob = matchLegacyJobForCall(call, relatedJobs);
-
-      if (matchedJob) {
-        return true;
-      }
-
-      if (call.purpose === "vision") {
-        const assets = assetMap.get(message.id) ?? [];
-
-        return assets.some(
-          (a) =>
-            a.kind === "image" &&
-            Math.abs(a.updatedAt - call.createdAt) <= 15_000,
-        );
-      }
-    }
-
-    return false;
   });
 
   return finalizeTrace({
@@ -755,32 +606,9 @@ export async function buildAiTraces(
   }
 
   for (const call of recentCalls) {
-    const directJob = call.jobId === null ? undefined : jobById.get(call.jobId);
-    const directJobMsgIds = directJob
-      ? collectJobMessageIds(directJob, berry)
-      : [];
-    const previewMsgIds =
-      call.messageIds.length === 0 && directJobMsgIds.length === 0
-        ? extractLegacyMessageIds(call)
-        : [];
-    const legacyJob =
-      call.messageIds.length === 0 &&
-      directJobMsgIds.length === 0 &&
-      previewMsgIds.length === 0
-        ? matchLegacyJobForCall(call, recentJobs)
-        : undefined;
-    const job = directJob ?? legacyJob;
-    const legacyJobMsgIds = legacyJob
-      ? collectJobMessageIds(legacyJob, berry)
-      : [];
-    const callMsgIds =
-      call.messageIds.length > 0
-        ? call.messageIds
-        : directJobMsgIds.length > 0
-          ? directJobMsgIds
-          : previewMsgIds.length > 0
-            ? previewMsgIds
-            : legacyJobMsgIds;
+    const job = call.jobId === null ? undefined : jobById.get(call.jobId);
+    const jobMsgIds = job ? collectJobMessageIds(job, berry) : [];
+    const callMsgIds = call.messageIds.length > 0 ? call.messageIds : jobMsgIds;
 
     let group: RawGroup;
 
@@ -1001,76 +829,27 @@ export async function summarizeMessageTraces(
 ): Promise<Map<number, MessageTraceSummary>> {
   const ids = messages.map((m) => m.id);
   const idSet = new Set(ids);
-  const chatKey = messages[0]?.chatKey;
-  const [gateMap, linkedCalls, recentChatCalls, recentChatJobs] =
-    await Promise.all([
-      berry.store.gate.listByMessageIds(ids),
-      berry.store.usage.listLinkedToMessages(ids),
-      chatKey
-        ? berry.store.usage.listRecent({ chatKey, limit: 160 })
-        : Promise.resolve({ items: [] as LlmCallRecord[], total: 0 }),
-      chatKey
-        ? berry.store.jobs.list({ chatKey, limit: 160 })
-        : Promise.resolve([] as JobRecord[]),
-    ]);
+  const [gateMap, linkedCalls] = await Promise.all([
+    berry.store.gate.listByMessageIds(ids),
+    berry.store.usage.listLinkedToMessages(ids),
+  ]);
 
   const callStats = new Map<number, { count: number; errors: number }>();
-  const counted = new Set<string>();
-
-  function addCallStat(mid: number, call: LlmCallRecord) {
-    if (!idSet.has(mid)) {
-      return;
-    }
-
-    const dedupeKey = `${mid}:${call.id}`;
-
-    if (counted.has(dedupeKey)) {
-      return;
-    }
-
-    counted.add(dedupeKey);
-    const cur = callStats.get(mid) ?? { count: 0, errors: 0 };
-
-    cur.count++;
-    if (call.status === "error") {
-      cur.errors++;
-    }
-
-    callStats.set(mid, cur);
-  }
 
   for (const call of linkedCalls) {
-    for (const mid of call.messageIds) {
-      addCallStat(mid, call);
-    }
-  }
-
-  // Also associate pre-migration legacy calls in this chat so historical messages show AI step counts.
-  for (const call of recentChatCalls.items) {
-    if (call.messageIds.length > 0) {
-      for (const mid of call.messageIds) {
-        addCallStat(mid, call);
+    for (const mid of new Set(call.messageIds)) {
+      if (!idSet.has(mid)) {
+        continue;
       }
 
-      continue;
-    }
+      const cur = callStats.get(mid) ?? { count: 0, errors: 0 };
 
-    const previewIds = extractLegacyMessageIds(call);
-
-    if (previewIds.length > 0) {
-      for (const mid of previewIds) {
-        addCallStat(mid, call);
+      cur.count++;
+      if (call.status === "error") {
+        cur.errors++;
       }
 
-      continue;
-    }
-
-    const legacyJob = matchLegacyJobForCall(call, recentChatJobs);
-
-    if (legacyJob) {
-      for (const mid of collectJobMessageIds(legacyJob, berry)) {
-        addCallStat(mid, call);
-      }
+      callStats.set(mid, cur);
     }
   }
 
