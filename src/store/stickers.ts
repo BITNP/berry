@@ -270,7 +270,12 @@ export class StickersStore {
   public async searchApproved(
     query = "",
     limit = 6,
-  ): Promise<{ total: number; items: StickerRecord[] }> {
+  ): Promise<{
+    total: number;
+    libraryTotal: number;
+    fallback: boolean;
+    items: StickerRecord[];
+  }> {
     const rows = await this.#database.db
       .selectFrom("stickers")
       .selectAll()
@@ -280,6 +285,7 @@ export class StickersStore {
       .orderBy("updated_at", "desc")
       .execute();
     const all = rows.map(decodeSticker);
+    const safeLimit = Math.min(24, Math.max(1, limit));
     const tokens = query
       .trim()
       .toLowerCase()
@@ -289,7 +295,9 @@ export class StickersStore {
     if (tokens.length === 0) {
       return {
         total: all.length,
-        items: all.slice(0, Math.min(12, Math.max(1, limit))),
+        libraryTotal: all.length,
+        fallback: false,
+        items: all.slice(0, safeLimit),
       };
     }
 
@@ -297,17 +305,33 @@ export class StickersStore {
       .map((item) => {
         const tagText = item.tags.join(" ").toLowerCase();
         const meaningText = item.meaning.toLowerCase();
+        const combined = `${tagText} ${meaningText}`;
         let score = 0;
 
         for (const token of tokens) {
+          let tokenMatched = false;
+
           if (item.tags.some((t) => t.toLowerCase() === token)) {
-            score += 4;
+            score += 6;
+            tokenMatched = true;
           } else if (tagText.includes(token)) {
-            score += 2;
+            score += 3;
+            tokenMatched = true;
           }
 
           if (meaningText.includes(token)) {
-            score += 2;
+            score += 3;
+            tokenMatched = true;
+          }
+
+          if (!tokenMatched && token.length >= 2) {
+            const cjkChars = [...new Set(token.match(/\p{Script=Han}/gu))];
+
+            for (const ch of cjkChars) {
+              if (combined.includes(ch)) {
+                score += 1;
+              }
+            }
           }
         }
 
@@ -321,11 +345,20 @@ export class StickersStore {
           b.item.updatedAt - a.item.updatedAt,
       );
 
+    if (scored.length === 0 && all.length > 0) {
+      return {
+        total: 0,
+        libraryTotal: all.length,
+        fallback: true,
+        items: all.slice(0, safeLimit),
+      };
+    }
+
     return {
       total: scored.length,
-      items: scored
-        .slice(0, Math.min(12, Math.max(1, limit)))
-        .map((e) => e.item),
+      libraryTotal: all.length,
+      fallback: false,
+      items: scored.slice(0, safeLimit).map((e) => e.item),
     };
   }
 }

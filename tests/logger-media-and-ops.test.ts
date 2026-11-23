@@ -2694,3 +2694,171 @@ test("inspect_media supports targeted image detail Q&A by assetId without overwr
     /仅管理员|无权/,
   );
 });
+
+test("availableStickers injects live catalog transiently and searchApproved supports fuzzy match + fallback candidates", async (t) => {
+  const { writeFile, mkdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+
+  let capturedAvailableStickers:
+    | { total: number; items: { stickerId: number; meaning: string }[] }
+    | undefined;
+  const sentGroupPayloads: Record<string, unknown>[] = [];
+
+  const gw = await startStubServer((req, res, body) => {
+    if (req.url?.includes("/send_group_msg_async")) {
+      sentGroupPayloads.push(JSON.parse(body) as Record<string, unknown>);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: { message_id: `grp-stk-${sentGroupPayloads.length}` },
+        }),
+      );
+
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: [] }));
+  });
+
+  t.after(() => gw.close());
+
+  const llm = await startStubServer((req, res, body) => {
+    if (!req.url?.endsWith("/chat/completions")) {
+      res.writeHead(404);
+      res.end();
+
+      return;
+    }
+
+    const parsed = JSON.parse(body) as {
+      messages: { role: string; content?: string }[];
+    };
+    const userPayload = JSON.parse(
+      parsed.messages.findLast((m) => m.role === "user")?.content ?? "{}",
+    ) as {
+      availableStickers?: {
+        total: number;
+        items: { stickerId: number; meaning: string }[];
+      };
+    };
+
+    capturedAvailableStickers = userPayload.availableStickers;
+    const pickedId = capturedAvailableStickers?.items[0]?.stickerId;
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify(
+        chatReply(
+          JSON.stringify({
+            units: pickedId
+              ? [
+                  { kind: "qq_reply", text: "哼，给你发一张" },
+                  { kind: "qq_image", stickerId: pickedId },
+                ]
+              : [{ kind: "qq_reply", text: "没有图" }],
+          }),
+        ),
+      ),
+    );
+  });
+
+  t.after(() => llm.close());
+
+  const { app } = await createTestBerryApp(
+    {
+      gatewayUrl: gw.url,
+      gatewayToken: "gw-stk-test",
+      mainBaseUrl: `${llm.url}/v1`,
+      mainApiKey: "test-main-key",
+      mainModel: "test-main",
+    },
+    { bot: { replyPaceMinMs: 0, replyPaceMaxMs: 0 } },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "55001",
+    title: "斗图测试群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const stickerDir = join(app.store.assetsDir, "stickers");
+
+  await mkdir(stickerDir, { recursive: true });
+  const pngBytes = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=",
+    "base64",
+  );
+  const stickerPath = join(stickerDir, "daze.png");
+
+  await writeFile(stickerPath, pngBytes);
+
+  const { record: sticker } = await app.store.stickers.collectIfAbsent({
+    sha256: "sha-daze-bunny",
+    filePath: stickerPath,
+    mimeType: "image/png",
+    meaning: "好树莓…（兔耳女孩呆滞表情包）",
+    tags: ["树莓娘", "呆滞"],
+    sourceChatKey: "group:55001",
+    status: "approved",
+    enabled: true,
+  });
+
+  // 1) CJK character overlap fuzzy match ("呆住" hits "呆滞").
+  const fuzzy = await app.store.stickers.searchApproved("呆住", 6);
+
+  assert.equal(fuzzy.fallback, false);
+  assert.equal(fuzzy.total, 1);
+  assert.equal(fuzzy.items[0]?.id, sticker.id);
+
+  // 2) Unmatched query gracefully falls back to available candidates instead of empty array.
+  const unmatched = await app.store.stickers.searchApproved("完全无关的词", 6);
+
+  assert.equal(unmatched.total, 0);
+  assert.equal(unmatched.libraryTotal, 1);
+  assert.equal(unmatched.fallback, true);
+  assert.equal(unmatched.items[0]?.id, sticker.id);
+
+  // 3) Dialog turn receives transient availableStickers and sends qq_image directly in 1 round.
+  const msg = await captureText(app, {
+    kind: "group",
+    chatId: "55001",
+    id: "ob-sticker-direct-1",
+    userId: "30001",
+    senderName: "群友",
+    text: "@树莓娘 斗个图",
+    mentionedBot: true,
+  });
+
+  const invokeRes = await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:55001",
+    kind: "group",
+    chatId: "55001",
+    triggerMessageIds: [msg.message.id],
+    senderId: "30001",
+    senderName: "群友",
+  });
+
+  assert.equal(capturedAvailableStickers?.total, 1);
+  assert.equal(capturedAvailableStickers?.items[0]?.stickerId, sticker.id);
+  assert.equal(invokeRes.units.length, 2);
+  assert.equal(sentGroupPayloads.length, 2);
+
+  // Persisted Tape does NOT store transient availableStickers payload.
+  const view = await app.store.conversations.buildView({
+    role: "admin",
+    chatKey: "group:55001",
+  });
+  const persistedUser = view.messages.find((m) => m.role === "user");
+
+  assert.equal(
+    String(persistedUser?.content ?? "").includes("availableStickers"),
+    false,
+  );
+});

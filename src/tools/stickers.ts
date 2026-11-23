@@ -11,22 +11,30 @@ import type { ToolContext } from "./types.ts";
 export const searchStickersTool = defineTool({
   name: "search_stickers",
   description:
-    '按情绪或语境关键词检索表情包库中已审核启用的表情包（支持多关键词空格分隔，如 "无语 傲娇"、"开心 贴贴"、"吃瓜"；留空返回可用表情包列表）。查到后在最终回复 JSON 的 units 中输出 {"kind":"qq_image","stickerId":123} 发送，切勿把 qq_image 当成工具调用。',
+    '按情绪或语境关键词检索表情包库中已审核启用的表情包（支持多关键词空格分隔，如 "无语 傲娇"、"开心 贴贴"、"吃瓜"；留空或无精确命中时也会返回可用候选供挑选）。查到后（或直接从本轮 availableStickers 中选出后）在最终回复 JSON 的 units 中输出 {"kind":"qq_image","stickerId":123} 发送，切勿把 qq_image 当成工具调用。',
   parameters: Type.Object(
     {
       query: Type.Optional(Type.String()),
-      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 12 })),
+      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 24 })),
     },
     { additionalProperties: false },
   ),
   execute: async (args, ctx) => {
-    const { total, items } = await ctx.services.store.stickers.searchApproved(
-      args.query ?? "",
-      args.limit ?? 6,
-    );
+    const { total, libraryTotal, fallback, items } =
+      await ctx.services.store.stickers.searchApproved(
+        args.query ?? "",
+        args.limit ?? 8,
+      );
 
     return {
       total,
+      libraryTotal,
+      ...(fallback
+        ? {
+            fallback: true,
+            note: "未精确命中关键词，已返回表情包库中的可用候选，可按语境挑选合适的一张直接发送",
+          }
+        : {}),
       items: items.map((item) => ({
         stickerId: item.id,
         meaning: item.meaning,

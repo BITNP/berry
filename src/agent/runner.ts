@@ -356,10 +356,12 @@ export class BerryAgent {
     ]
       .map((m) => enrichedText.get(m.id) ?? m.text)
       .join("\n");
-    const [matchedJargon, impressionsByUser] = await Promise.all([
-      store.jargon.matchInText(input.chatKey, jargonHaystack, 8),
-      store.impressions.getMany(resolvedSpeakers.map((item) => item.userId)),
-    ]);
+    const [matchedJargon, impressionsByUser, stickerCatalog] =
+      await Promise.all([
+        store.jargon.matchInText(input.chatKey, jargonHaystack, 8),
+        store.impressions.getMany(resolvedSpeakers.map((item) => item.userId)),
+        store.stickers.searchApproved("", 20),
+      ]);
     const withImpression = <T extends Record<string, unknown>>(
       profile: T,
       userId: string,
@@ -390,6 +392,18 @@ export class BerryAgent {
           }
         : {}),
       ...(matchedJargon.length > 0 ? { jargonHints: matchedJargon } : {}),
+      ...(stickerCatalog.items.length > 0
+        ? {
+            availableStickers: {
+              total: stickerCatalog.libraryTotal,
+              items: stickerCatalog.items.map((item) => ({
+                stickerId: item.id,
+                meaning: item.meaning.slice(0, 60),
+                tags: item.tags.slice(0, 5),
+              })),
+            },
+          }
+        : {}),
       ...(conversation.handoff
         ? {
             conversationHandoff: {
