@@ -88,7 +88,7 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
     }),
   );
 
-  // Jargon dictionary
+  // Jargon dictionary (global across all chats)
   router.get(
     "/api/admin/jargon",
     defineEventHandler(async (event) => {
@@ -96,7 +96,6 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
       const query = await parseQuery(
         event,
         Type.Object({
-          chatKey: Type.Optional(Type.String()),
           status: Type.Optional(reviewStatusSchema),
           search: Type.Optional(Type.String()),
         }),
@@ -113,7 +112,6 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
       const body = await parseBody(
         event,
         Type.Object({
-          chatKey: Type.Optional(Type.String()),
           term: Type.String({ minLength: 1, maxLength: 48 }),
           aliases: Type.Optional(Type.Array(Type.String())),
           meaning: Type.String({ minLength: 1, maxLength: 240 }),
@@ -137,7 +135,6 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
       const body = await parseBody(
         event,
         Type.Object({
-          chatKey: Type.Optional(Type.String()),
           term: Type.Optional(Type.String({ minLength: 1, maxLength: 48 })),
           aliases: Type.Optional(Type.Array(Type.String())),
           meaning: Type.Optional(Type.String({ minLength: 1, maxLength: 240 })),

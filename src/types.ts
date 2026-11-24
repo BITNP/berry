@@ -307,7 +307,6 @@ export type JargonStatus = "approved" | "pending";
 
 export interface JargonRecord {
   id: number;
-  chatKey: string;
   term: string;
   aliases: string[];
   meaning: string;

@@ -24,7 +24,6 @@ function decodeJargon(
 
   return {
     id: row.id,
-    chatKey: row.chat_key,
     term: row.term,
     aliases,
     meaning: row.meaning,
@@ -59,15 +58,10 @@ export class JargonStore {
   }
 
   public async list(filters?: {
-    chatKey?: string;
     status?: JargonStatus;
     search?: string;
   }): Promise<JargonRecord[]> {
     let query = this.#database.db.selectFrom("jargon_entries").selectAll();
-
-    if (filters?.chatKey) {
-      query = query.where("chat_key", "=", filters.chatKey);
-    }
 
     if (filters?.status) {
       query = query.where("status", "=", filters.status);
@@ -103,14 +97,12 @@ export class JargonStore {
   }
 
   public async upsert(input: {
-    chatKey?: string;
     term: string;
     aliases?: string[];
     meaning: string;
     status?: JargonStatus;
     source?: "manual" | "auto";
   }): Promise<JargonRecord> {
-    const chatKey = input.chatKey?.trim() || "global";
     const term = input.term.trim().slice(0, 48);
     const meaning = input.meaning.trim().slice(0, 240);
 
@@ -122,12 +114,40 @@ export class JargonStore {
     const status: JargonStatus = input.status ?? "approved";
     const source = input.source ?? "manual";
     const now = Date.now();
+    const targetLower = term.toLowerCase();
 
     return this.#database.writeTx(async (trx) => {
+      const existingRows = await trx
+        .selectFrom("jargon_entries")
+        .select(["id", "term"])
+        .execute();
+      const matched = existingRows.find(
+        (r) => r.term.trim().toLowerCase() === targetLower,
+      );
+
+      if (matched) {
+        const updated = await trx
+          .updateTable("jargon_entries")
+          .set({
+            chat_key: "global",
+            term,
+            aliases_json: JSON.stringify(aliases),
+            meaning,
+            status,
+            source,
+            updated_at: now,
+          })
+          .where("id", "=", matched.id)
+          .returningAll()
+          .executeTakeFirstOrThrow();
+
+        return decodeJargon(updated);
+      }
+
       const row = await trx
         .insertInto("jargon_entries")
         .values({
-          chat_key: chatKey,
+          chat_key: "global",
           term,
           aliases_json: JSON.stringify(aliases),
           meaning,
@@ -136,15 +156,6 @@ export class JargonStore {
           created_at: now,
           updated_at: now,
         })
-        .onConflict((oc) =>
-          oc.columns(["chat_key", "term"]).doUpdateSet({
-            aliases_json: JSON.stringify(aliases),
-            meaning,
-            status,
-            source,
-            updated_at: now,
-          }),
-        )
         .returningAll()
         .executeTakeFirstOrThrow();
 
@@ -153,14 +164,12 @@ export class JargonStore {
   }
 
   public async insertIfAbsent(input: {
-    chatKey?: string;
     term: string;
     aliases?: string[];
     meaning: string;
     status?: JargonStatus;
     source?: "manual" | "auto";
   }): Promise<boolean> {
-    const chatKey = input.chatKey?.trim() || "global";
     const term = input.term.trim().slice(0, 48);
     const meaning = input.meaning.trim().slice(0, 240);
 
@@ -170,12 +179,24 @@ export class JargonStore {
 
     const aliases = normalizeAliases(input.aliases);
     const now = Date.now();
+    const targetLower = term.toLowerCase();
 
     return this.#database.writeTx(async (trx) => {
+      const existingRows = await trx
+        .selectFrom("jargon_entries")
+        .select(["term"])
+        .execute();
+
+      if (
+        existingRows.some((r) => r.term.trim().toLowerCase() === targetLower)
+      ) {
+        return false;
+      }
+
       const res = await trx
         .insertInto("jargon_entries")
         .values({
-          chat_key: chatKey,
+          chat_key: "global",
           term,
           aliases_json: JSON.stringify(aliases),
           meaning,
@@ -194,7 +215,6 @@ export class JargonStore {
   public async update(
     id: number,
     patch: {
-      chatKey?: string;
       term?: string;
       aliases?: string[];
       meaning?: string;
@@ -213,9 +233,7 @@ export class JargonStore {
       const row = await trx
         .updateTable("jargon_entries")
         .set({
-          ...(patch.chatKey === undefined
-            ? {}
-            : { chat_key: patch.chatKey.trim() || "global" }),
+          chat_key: "global",
           ...(patch.term === undefined
             ? {}
             : { term: patch.term.trim().slice(0, 48) }),
@@ -250,7 +268,6 @@ export class JargonStore {
   }
 
   public async matchInText(
-    chatKey: string,
     text: string,
     limit = 8,
   ): Promise<{ term: string; meaning: string }[]> {
@@ -264,26 +281,13 @@ export class JargonStore {
       .selectFrom("jargon_entries")
       .selectAll()
       .where("status", "=", "approved")
-      .where(
-        "chat_key",
-        "in",
-        chatKey === "global" ? ["global"] : ["global", chatKey],
-      )
       .orderBy("updated_at", "desc")
       .execute();
-
-    // Prefer chat-specific entries over global entries when the same term exists.
-    const sorted = rows.map(decodeJargon).sort((a, b) => {
-      const aSpecific = a.chatKey === chatKey ? 0 : 1;
-      const bSpecific = b.chatKey === chatKey ? 0 : 1;
-
-      return aSpecific - bSpecific || b.updatedAt - a.updatedAt;
-    });
 
     const seenTerms = new Set<string>();
     const matched: { term: string; meaning: string }[] = [];
 
-    for (const item of sorted) {
+    for (const item of rows.map(decodeJargon)) {
       const termKey = item.term.toLowerCase();
 
       if (seenTerms.has(termKey)) {

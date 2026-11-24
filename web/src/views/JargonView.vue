@@ -28,7 +28,6 @@ type JargonStatus = "approved" | "pending";
 
 interface JargonRow {
   id: number;
-  chatKey: string;
   term: string;
   aliases: string[];
   meaning: string;
@@ -41,7 +40,7 @@ interface JargonRow {
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
-const { chats, chatOptions } = useChatOptions();
+const { chats } = useChatOptions();
 
 const parseStatus = (raw: unknown): JargonStatus | null =>
   raw === "approved" || raw === "pending" ? raw : null;
@@ -50,20 +49,12 @@ const loading = ref(false);
 const saving = ref(false);
 const distilling = ref(false);
 const items = ref<JargonRow[]>([]);
-const filterChatKey = ref<string | null>(
-  typeof route.query.chatKey === "string" && route.query.chatKey
-    ? route.query.chatKey
-    : null,
-);
 const filterStatus = ref<JargonStatus | null>(parseStatus(route.query.status));
 const filterSearch = ref(
   typeof route.query.q === "string" ? route.query.q : "",
 );
 const distillChatKey = ref<string | null>(null);
 
-const chatTitleByKey = computed(
-  () => new Map(chats.value.map((c) => [c.chatKey, c.title])),
-);
 const groupOptions = computed(() =>
   chats.value
     .filter((c) => c.kind === "group")
@@ -72,30 +63,12 @@ const groupOptions = computed(() =>
       value: c.chatKey,
     })),
 );
-const scopeOptions = computed(() => [
-  { label: "全局 (global)", value: "global" },
-  ...chatOptions.value,
-]);
-
-function formatChat(chatKey: string): string {
-  if (chatKey === "global") {
-    return "全局";
-  }
-
-  const title = chatTitleByKey.value.get(chatKey);
-
-  return title ? `${title} (${chatKey})` : chatKey;
-}
 
 async function loadJargon() {
   loading.value = true;
 
   try {
     const params = new URLSearchParams();
-
-    if (filterChatKey.value) {
-      params.set("chatKey", filterChatKey.value);
-    }
 
     if (filterStatus.value) {
       params.set("status", filterStatus.value);
@@ -121,7 +94,6 @@ async function loadJargon() {
 const modalOpen = ref(false);
 const editingId = ref<number | null>(null);
 const form = ref({
-  chatKey: "global",
   term: "",
   aliases: [] as string[],
   meaning: "",
@@ -131,7 +103,6 @@ const form = ref({
 function openCreate() {
   editingId.value = null;
   form.value = {
-    chatKey: filterChatKey.value ?? "global",
     term: "",
     aliases: [],
     meaning: "",
@@ -143,7 +114,6 @@ function openCreate() {
 function openEdit(row: JargonRow) {
   editingId.value = row.id;
   form.value = {
-    chatKey: row.chatKey,
     term: row.term,
     aliases: [...row.aliases],
     meaning: row.meaning,
@@ -256,15 +226,8 @@ const columns: DataTableColumns<JargonRow> = [
   {
     title: "释义",
     key: "meaning",
-    minWidth: 240,
+    minWidth: 260,
     ellipsis: { tooltip: true },
-  },
-  {
-    title: "归属",
-    key: "chatKey",
-    width: 150,
-    ellipsis: { tooltip: true },
-    render: (row) => formatChat(row.chatKey),
   },
   {
     title: "状态",
@@ -346,10 +309,6 @@ const columns: DataTableColumns<JargonRow> = [
 function syncQuery() {
   const nextQuery: Record<string, string> = {};
 
-  if (filterChatKey.value) {
-    nextQuery.chatKey = filterChatKey.value;
-  }
-
   if (filterStatus.value) {
     nextQuery.status = filterStatus.value;
   }
@@ -366,7 +325,7 @@ function handleSearch() {
   void loadJargon();
 }
 
-watch([filterChatKey, filterStatus], () => {
+watch(filterStatus, () => {
   syncQuery();
   void loadJargon();
 });
@@ -374,14 +333,8 @@ watch([filterChatKey, filterStatus], () => {
 watch(
   () => route.query,
   (q) => {
-    const nextChat =
-      typeof q.chatKey === "string" && q.chatKey ? q.chatKey : null;
     const nextStatus = parseStatus(q.status);
     const nextSearch = typeof q.q === "string" ? q.q : "";
-
-    if (nextChat !== filterChatKey.value) {
-      filterChatKey.value = nextChat;
-    }
 
     if (nextStatus !== filterStatus.value) {
       filterStatus.value = nextStatus;
@@ -404,7 +357,9 @@ onMounted(() => {
     <div class="page-bar">
       <NSpace align="center" :size="10">
         <h1 class="page-title">群内黑话</h1>
-        <NText class="sub-note tabular" depth="3">{{ items.length }} 条</NText>
+        <NText class="sub-note tabular" depth="3">
+          {{ items.length }} 条 · 全局生效
+        </NText>
       </NSpace>
       <NButton size="small" type="primary" @click="openCreate">
         <template #icon>
@@ -415,15 +370,6 @@ onMounted(() => {
     </div>
 
     <div class="filter-bar">
-      <NSelect
-        v-model:value="filterChatKey"
-        class="w-210"
-        clearable
-        filterable
-        :options="scopeOptions"
-        placeholder="全部归属"
-        size="small"
-      />
       <NSelect
         v-model:value="filterStatus"
         class="w-120"
@@ -478,7 +424,7 @@ onMounted(() => {
         :data="items"
         :loading
         :pagination="{ pageSize: 20 }"
-        :scroll-x="880"
+        :scroll-x="760"
         size="small"
       />
     </NCard>
@@ -490,13 +436,6 @@ onMounted(() => {
       :title="editingId === null ? '新增黑话词条' : '编辑黑话词条'"
     >
       <NForm label-placement="top" size="small">
-        <NFormItem label="归属范围">
-          <NSelect
-            v-model:value="form.chatKey"
-            filterable
-            :options="scopeOptions"
-          />
-        </NFormItem>
         <NFormItem label="词条">
           <NInput
             v-model:value="form.term"

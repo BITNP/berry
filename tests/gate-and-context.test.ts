@@ -1134,19 +1134,16 @@ test("jargon dictionary distills pending entries, approves via API, and injects 
                 term: "树莓娘",
                 aliases: ["树莓"],
                 meaning: "树莓派的拟人化称呼",
-                scope: "global",
               },
               {
                 term: "诊所",
                 aliases: ["电脑诊所"],
                 meaning: "网协全校通用的电脑维修志愿服务点",
-                scope: "global",
               },
               {
                 term: "群呆唯",
                 aliases: ["呆唯"],
                 meaning: "网协群主郭逸戈在群里的外号",
-                scope: "chat",
               },
               {
                 term: "光速跑路",
@@ -1213,24 +1210,16 @@ test("jargon dictionary distills pending entries, approves via API, and injects 
   assert.equal(distillRes.ok, true);
   assert.equal(distillRes.inserted, 3);
 
-  const globalListed = (await (
-    await fetch(`${url}/api/admin/jargon?chatKey=global`)
-  ).json()) as {
-    items: { id: number; term: string; status: string; chatKey: string }[];
-  };
-
-  assert.equal(globalListed.items.length, 1);
-  assert.equal(globalListed.items[0]?.term, "诊所");
-  assert.equal(globalListed.items[0]?.chatKey, "global");
-
-  const listed = (await (
-    await fetch(`${url}/api/admin/jargon?chatKey=group%3A7788`)
-  ).json()) as {
+  const listed = (await (await fetch(`${url}/api/admin/jargon`)).json()) as {
     items: { id: number; term: string; status: string }[];
   };
 
-  assert.equal(listed.items.length, 2);
+  assert.equal(listed.items.length, 3);
   assert.ok(listed.items.every((item) => item.status === "pending"));
+  assert.deepEqual(
+    listed.items.map((item) => item.term).sort(),
+    ["光速跑路", "群呆唯", "诊所"].sort(),
+  );
 
   // Pending terms are NOT injected yet.
   const msg1 = await captureText(app, {
@@ -1254,7 +1243,7 @@ test("jargon dictionary distills pending entries, approves via API, and injects 
   });
   assert.doesNotMatch(capturedUsers[0] ?? "", /jargonHints/);
 
-  // Approve both entries.
+  // Approve all distilled entries.
   for (const item of listed.items) {
     await fetch(`${url}/api/admin/jargon/${item.id}`, {
       method: "PATCH",
@@ -1266,10 +1255,18 @@ test("jargon dictionary distills pending entries, approves via API, and injects 
     });
   }
 
-  // Turn mentioning ONLY alias "呆唯" injects "群呆唯", NOT unrelated "炼丹".
+  // Turn in ANOTHER group mentioning ONLY alias "呆唯" injects global "群呆唯", NOT unrelated "光速跑路".
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "9900",
+    title: "另一个测试群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
   const msg2 = await captureText(app, {
     kind: "group",
-    chatId: "7788",
+    chatId: "9900",
     id: "jargon-q-2",
     userId: "4001",
     senderName: "成员1",
@@ -1279,9 +1276,9 @@ test("jargon dictionary distills pending entries, approves via API, and injects 
 
   await app.agent.invoke({
     source: "qq_batch",
-    chatKey: "group:7788",
+    chatKey: "group:9900",
     kind: "group",
-    chatId: "7788",
+    chatId: "9900",
     triggerMessageIds: [msg2.message.id],
     senderId: "4001",
     senderName: "成员1",

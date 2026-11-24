@@ -415,7 +415,7 @@ export class BerryAgent {
       .join("\n");
     const [matchedJargon, impressionsByUser, stickerCatalog] =
       await Promise.all([
-        store.jargon.matchInText(input.chatKey, jargonHaystack, 8),
+        store.jargon.matchInText(jargonHaystack, 8),
         store.impressions.getMany(resolvedSpeakers.map((item) => item.userId)),
         store.stickers.searchApproved("", 20),
       ]);

@@ -849,6 +849,85 @@ const migrations: Record<string, Migration> = {
         .execute();
     },
   },
+  "012_global_jargon": {
+    async up(db) {
+      const { rows } = await sql<{
+        id: number;
+        chat_key: string;
+        term: string;
+        status: string;
+        updated_at: number;
+      }>`SELECT id, chat_key, term, status, updated_at FROM jargon_entries`.execute(
+        db,
+      );
+
+      // Keep one winning entry per case-insensitive term (prefer approved, then global, then newest).
+      const winners = new Map<
+        string,
+        {
+          id: number;
+          chat_key: string;
+          term: string;
+          status: string;
+          updated_at: number;
+        }
+      >();
+      const deleteIds: number[] = [];
+
+      const rank = (row: {
+        chat_key: string;
+        status: string;
+        updated_at: number;
+        id: number;
+      }) => ({
+        approved: row.status === "approved" ? 1 : 0,
+        global: row.chat_key === "global" ? 1 : 0,
+        updatedAt: row.updated_at,
+        id: row.id,
+      });
+
+      for (const row of rows) {
+        const key = row.term.trim().toLowerCase();
+        const current = winners.get(key);
+
+        if (!current) {
+          winners.set(key, row);
+
+          continue;
+        }
+
+        const a = rank(row);
+        const b = rank(current);
+        const rowWins =
+          a.approved === b.approved
+            ? a.global === b.global
+              ? a.updatedAt === b.updatedAt
+                ? a.id > b.id
+                : a.updatedAt > b.updatedAt
+              : a.global > b.global
+            : a.approved > b.approved;
+
+        if (rowWins) {
+          deleteIds.push(current.id);
+          winners.set(key, row);
+        } else {
+          deleteIds.push(row.id);
+        }
+      }
+
+      for (const id of deleteIds) {
+        await sql`DELETE FROM jargon_entries WHERE id = ${id}`.execute(db);
+      }
+
+      for (const winner of winners.values()) {
+        if (winner.chat_key !== "global") {
+          await sql`UPDATE jargon_entries SET chat_key = 'global' WHERE id = ${winner.id}`.execute(
+            db,
+          );
+        }
+      }
+    },
+  },
 };
 
 const migrationProvider: MigrationProvider = {
