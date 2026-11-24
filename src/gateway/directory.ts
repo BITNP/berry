@@ -278,11 +278,19 @@ export class GatewayDirectory {
         continue;
       }
 
-      if (
-        cleanOneBotName(
-          typeof seg.data.name === "string" ? seg.data.name : undefined,
-        )
-      ) {
+      const rawName =
+        typeof seg.data.name === "string"
+          ? seg.data.name.trim().replace(/^@+/, "").trim()
+          : "";
+      const existingName =
+        rawName && rawName !== qq ? cleanOneBotName(rawName) : null;
+
+      if (existingName) {
+        if (seg.data.name !== existingName) {
+          seg.data.name = existingName;
+          changed = true;
+        }
+
         continue;
       }
 

@@ -136,6 +136,7 @@ export type OutputUnit =
   | {
       kind: "qq_reply";
       text: string;
+      segments?: OneBotSegment[];
       quoteMessageId?: string;
       targetRef?: string;
     }

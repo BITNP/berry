@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { completeChat, validateModelJson } from "../agent/llm.ts";
 import type { RuntimeSettings } from "../config/settings.ts";
 import { resolveMaxOutputTokens } from "../config/settings.ts";
+import { extractMessageMentions } from "../gateway/segments.ts";
 import type { AccessRole } from "../identity/permissions.ts";
 import { resolveAccessRole } from "../identity/permissions.ts";
 import type { Store } from "../store/index.ts";
@@ -143,16 +144,6 @@ export class SmallModelClassifier {
     }
 
     const botQQ = settings.bot.botQQ;
-    const hasAtOther = (item: MessageRecord): boolean =>
-      item.segments.some((seg) => {
-        if (seg.type !== "at") {
-          return false;
-        }
-
-        const qq = String(seg.data.qq ?? "");
-
-        return Boolean(qq && qq !== "all" && qq !== botQQ);
-      });
 
     const botActivity = trace?.botActivity;
     const inputPayload = {
@@ -171,20 +162,29 @@ export class SmallModelClassifier {
         text: item.text.slice(0, 600),
       })),
       memoryHints,
-      candidates: candidates.map((item) => ({
-        messageId: item.id,
-        userId: item.userId,
-        senderName: item.senderName,
-        role: senderRoles?.[item.userId] ?? "guest",
-        mentionedBot: item.mentionedBot,
-        mentionedOthers: hasAtOther(item),
-        quotedBot: item.quotedBot,
-        replyToOther: Boolean(item.replyToMessageId) && !item.quotedBot,
-        text:
-          item.text.length > 2000
-            ? `${item.text.slice(0, 2000)}…[原长 ${item.text.length} 字，已截断前 2000 字]`
-            : item.text,
-      })),
+      candidates: candidates.map((item) => {
+        const mentions = extractMessageMentions(item.segments, botQQ);
+        const mentionedOtherNames = mentions.mentionedUsers
+          .map((u) => u.name)
+          .filter((n): n is string => Boolean(n));
+
+        return {
+          messageId: item.id,
+          userId: item.userId,
+          senderName: item.senderName,
+          role: senderRoles?.[item.userId] ?? "guest",
+          mentionedBot: item.mentionedBot,
+          mentionedOthers: mentions.mentionedUsers.length > 0,
+          ...(mentions.mentionedAll ? { mentionedAll: true } : {}),
+          ...(mentionedOtherNames.length > 0 ? { mentionedOtherNames } : {}),
+          quotedBot: item.quotedBot,
+          replyToOther: Boolean(item.replyToMessageId) && !item.quotedBot,
+          text:
+            item.text.length > 2000
+              ? `${item.text.slice(0, 2000)}…[原长 ${item.text.length} 字，已截断前 2000 字]`
+              : item.text,
+        };
+      }),
     };
 
     try {

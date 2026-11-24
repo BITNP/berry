@@ -273,11 +273,83 @@ function normalizeSegments(rawMessage: unknown): OneBotSegment[] {
   return segments;
 }
 
+export interface MessageMentions {
+  mentionedBot: boolean;
+  mentionedAll: boolean;
+  mentionedUsers: { qq: string; userRef?: string; name?: string }[];
+}
+
+export function cleanMentionName(raw: unknown, qq?: string): string {
+  const cleaned = String(raw ?? "")
+    .trim()
+    .replace(/^@+/, "")
+    .trim();
+
+  if (!cleaned || (qq && cleaned === qq)) {
+    return "";
+  }
+
+  return cleaned;
+}
+
+export function extractMessageMentions(
+  segments: readonly OneBotSegment[],
+  botQQ: string,
+  options?: { ids?: ModelIds; userNames?: ReadonlyMap<string, string> },
+): MessageMentions {
+  let mentionedBot = false;
+  let mentionedAll = false;
+  const seen = new Set<string>();
+  const mentionedUsers: { qq: string; userRef?: string; name?: string }[] = [];
+
+  for (const seg of segments) {
+    if (seg.type !== "at") {
+      continue;
+    }
+
+    const qq = String(seg.data.qq ?? "").trim();
+
+    if (!qq) {
+      continue;
+    }
+
+    if (qq === "all") {
+      mentionedAll = true;
+
+      continue;
+    }
+
+    if (botQQ && qq === botQQ) {
+      mentionedBot = true;
+
+      continue;
+    }
+
+    if (!DIGITS_RE.test(qq) || seen.has(qq)) {
+      continue;
+    }
+
+    seen.add(qq);
+    const name =
+      cleanMentionName(seg.data.name, qq) || options?.userNames?.get(qq) || "";
+    const userRef = options?.ids ? options.ids.userRef(qq) : undefined;
+
+    mentionedUsers.push({
+      qq,
+      ...(userRef ? { userRef } : {}),
+      ...(name ? { name } : {}),
+    });
+  }
+
+  return { mentionedBot, mentionedAll, mentionedUsers };
+}
+
 export function parseOneBotSegments(
   rawMessage: unknown,
   botQQ: string,
   botName = "树莓娘",
   ids?: ModelIds,
+  userNames?: ReadonlyMap<string, string>,
 ): ParsedSegments {
   const segments = normalizeSegments(rawMessage);
   const parts: string[] = [];
@@ -305,7 +377,8 @@ export function parseOneBotSegments(
           mentionedBot = true;
         }
 
-        const name = String(seg.data.name ?? "").trim();
+        const name =
+          cleanMentionName(seg.data.name, qq) || userNames?.get(qq) || "";
 
         if (qq === "all") {
           parts.push("@全体成员");
@@ -458,7 +531,12 @@ export function parseOneBotSegments(
 
 export function renderMessageTextForModel(
   message: Pick<MessageRecord, "text" | "segments">,
-  options: { botQQ: string; botName?: string; ids?: ModelIds },
+  options: {
+    botQQ: string;
+    botName?: string;
+    ids?: ModelIds;
+    userNames?: ReadonlyMap<string, string>;
+  },
 ): string {
   if (message.segments.length === 0) {
     return message.text;
@@ -469,5 +547,6 @@ export function renderMessageTextForModel(
     options.botQQ,
     options.botName,
     options.ids,
+    options.userNames,
   ).text;
 }

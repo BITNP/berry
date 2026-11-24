@@ -273,24 +273,38 @@ export class GatewayDispatcher {
         return sent;
       }
 
-      const segments: OneBotSegment[] = [
+      const bodySegments: OneBotSegment[] =
+        unit.segments && unit.segments.length > 0
+          ? unit.segments
+          : [{ type: "text", data: { text: unit.text } }];
+      const wireSegments: OneBotSegment[] = [
         ...(unit.quoteMessageId
           ? [{ type: "reply", data: { id: unit.quoteMessageId } }]
           : []),
-        { type: "text", data: { text: unit.text } },
+        ...bodySegments.map((seg) =>
+          seg.type === "at"
+            ? { type: "at", data: { qq: String(seg.data.qq ?? "") } }
+            : seg,
+        ),
+      ];
+      const storedSegments: OneBotSegment[] = [
+        ...(unit.quoteMessageId
+          ? [{ type: "reply", data: { id: unit.quoteMessageId } }]
+          : []),
+        ...bodySegments,
       ];
       const action =
         kind === "group" ? "send_group_msg_async" : "send_private_msg_async";
       const params =
         kind === "group"
-          ? { group_id: Number(chatId), message: segments }
-          : { user_id: Number(chatId), message: segments };
+          ? { group_id: Number(chatId), message: wireSegments }
+          : { user_id: Number(chatId), message: wireSegments };
 
       return await this.#sendAsyncMessage(action, params, {
         delivery,
         chatKey,
         text: unit.text,
-        segments,
+        segments: storedSegments,
         replyToMessageId: unit.quoteMessageId ?? null,
         botQQ,
       });

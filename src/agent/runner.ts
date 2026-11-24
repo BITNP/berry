@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 
 import { resolveThinkingEffort } from "../config/settings.ts";
+import { extractMessageMentions } from "../gateway/segments.ts";
 import type { DirectoryUser } from "../identity/keycloak.ts";
 import type { AccessRole } from "../identity/permissions.ts";
 import { resolveAccessRole } from "../identity/permissions.ts";
@@ -284,11 +285,53 @@ export class BerryAgent {
       ...requestMessages.map((m) => m.id),
       ...quotedMessages.map((m) => m.id),
     ]);
-    const enrichedText = await media.enrichMessagesText(
-      input.chatKey,
-      [...requestMessages, ...quotedMessages, ...recentContext],
-      ids,
-    );
+    const allVisibleMessages = [
+      ...requestMessages,
+      ...quotedMessages,
+      ...recentContext,
+    ];
+    const mentionUserIds = new Set<string>();
+
+    for (const msg of allVisibleMessages) {
+      for (const seg of msg.segments) {
+        if (seg.type !== "at") {
+          continue;
+        }
+
+        const qq = String(seg.data.qq ?? "").trim();
+
+        if (qq && qq !== "all" && /^\d+$/.test(qq)) {
+          mentionUserIds.add(qq);
+        }
+      }
+    }
+
+    const [enrichedText, knownUserNames] = await Promise.all([
+      media.enrichMessagesText(input.chatKey, allVisibleMessages, ids),
+      mentionUserIds.size > 0
+        ? media.resolveUserNames(
+            input.chatKey,
+            mentionUserIds,
+            allVisibleMessages,
+          )
+        : Promise.resolve(new Map<string, string>()),
+    ]);
+
+    for (const msg of allVisibleMessages) {
+      if (
+        !msg.isBot &&
+        msg.senderName.trim() &&
+        !knownUserNames.has(msg.userId)
+      ) {
+        knownUserNames.set(msg.userId, msg.senderName.trim());
+      }
+    }
+
+    for (const speaker of resolvedSpeakers) {
+      if (speaker.displayName.trim() && !knownUserNames.has(speaker.userId)) {
+        knownUserNames.set(speaker.userId, speaker.displayName.trim());
+      }
+    }
 
     const mapMessage = (
       msg: MessageRecord,
@@ -296,6 +339,11 @@ export class BerryAgent {
     ) => {
       const rawText = enrichedText.get(msg.id) ?? msg.text;
       const limit = opts.maxChars ?? MAX_REQUEST_MESSAGE_CHARS;
+      const mentions = extractMessageMentions(
+        msg.segments,
+        settings.bot.botQQ,
+        { ids, userNames: knownUserNames },
+      );
 
       return {
         id: msg.id,
@@ -314,6 +362,15 @@ export class BerryAgent {
           ? { role: speakerRoleByUserId.get(msg.userId) }
           : {}),
         mentionedBot: msg.mentionedBot,
+        ...(mentions.mentionedAll ? { mentionedAll: true } : {}),
+        ...(mentions.mentionedUsers.length > 0
+          ? {
+              mentionedUsers: mentions.mentionedUsers.map((u) => ({
+                userRef: u.userRef!,
+                ...(u.name ? { name: u.name } : {}),
+              })),
+            }
+          : {}),
         text: truncateForModel(rawText, limit),
         time: formatDateTime(msg.sentAt, settings.bot.timezone),
       };
@@ -512,6 +569,7 @@ export class BerryAgent {
         speakerQQ,
         role,
         botQQ: settings.bot.botQQ,
+        userNames: knownUserNames,
       });
 
     for (const detail of dispatchErrors) {

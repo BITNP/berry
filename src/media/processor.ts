@@ -301,19 +301,33 @@ export class MediaProcessor {
       this.#store.reactions.aggregateForMessages(chatKey, onebotIds),
     ]);
 
-    const reactorIds = new Set<string>();
+    const userIdsToResolve = new Set<string>();
 
     for (const list of reactionMap.values()) {
       for (const r of list) {
         for (const uid of r.userIds) {
-          reactorIds.add(uid);
+          userIdsToResolve.add(uid);
         }
       }
     }
 
-    const reactorNames =
-      reactorIds.size > 0
-        ? await this.resolveUserNames(chatKey, reactorIds, messages)
+    for (const msg of messages) {
+      for (const seg of msg.segments) {
+        if (seg.type !== "at") {
+          continue;
+        }
+
+        const qq = String(seg.data.qq ?? "").trim();
+
+        if (qq && qq !== "all" && /^\d+$/.test(qq)) {
+          userIdsToResolve.add(qq);
+        }
+      }
+    }
+
+    const resolvedUserNames =
+      userIdsToResolve.size > 0
+        ? await this.resolveUserNames(chatKey, userIdsToResolve, messages)
         : new Map<string, string>();
     const botLabel = settings.bot.names[0] || "树莓娘";
     const formatReactor = (uid: string): string => {
@@ -328,7 +342,7 @@ export class MediaProcessor {
         return "未知用户";
       }
 
-      const name = reactorNames.get(uid);
+      const name = resolvedUserNames.get(uid);
 
       if (ids) {
         const ref = ids.userRef(uid);
@@ -344,6 +358,7 @@ export class MediaProcessor {
         botQQ: settings.bot.botQQ,
         botName: settings.bot.names[0],
         ids,
+        userNames: resolvedUserNames,
       });
       const extra: string[] = [];
       const assets = assetMap.get(msg.id) ?? [];

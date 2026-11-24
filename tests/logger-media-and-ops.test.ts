@@ -2794,8 +2794,11 @@ test("availableStickers injects live catalog transiently and searchApproved supp
     const parsed = JSON.parse(body) as {
       messages: { role: string; content?: string }[];
     };
+    const rawUser =
+      parsed.messages.findLast((m) => m.role === "user")?.content ?? "{}";
+    const jsonStart = rawUser.indexOf("{");
     const userPayload = JSON.parse(
-      parsed.messages.findLast((m) => m.role === "user")?.content ?? "{}",
+      jsonStart === -1 ? "{}" : rawUser.slice(jsonStart),
     ) as {
       availableStickers?: {
         total: number;
@@ -2919,4 +2922,284 @@ test("availableStickers injects live catalog transiently and searchApproved supp
     String(persistedUser?.content ?? "").includes("availableStickers"),
     false,
   );
+});
+
+test("QQ @ mentions resolve inbound @others cleanly and send outbound OneBot at segments via mentionUserRefs or inline handles", async (t) => {
+  const sentGroupMessages: {
+    group_id: number;
+    message: { type: string; data: Record<string, unknown> }[];
+  }[] = [];
+  const sentPrivateMessages: {
+    user_id: number;
+    message: { type: string; data: Record<string, unknown> }[];
+  }[] = [];
+  const capturedReqMsgs: {
+    mentionedBot?: boolean;
+    mentionedAll?: boolean;
+    mentionedUsers?: { userRef: string; name?: string }[];
+    text?: string;
+  }[] = [];
+  let llmMode: "group" | "private" = "group";
+
+  const gw = await startStubServer((req, res, body) => {
+    if (req.url?.includes("/get_group_member_list")) {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: [
+            { user_id: 50_002, nickname: "逸戈", card: "24-静B-郭逸戈" },
+            { user_id: 50_003, nickname: "小李", card: "" },
+          ],
+        }),
+      );
+
+      return;
+    }
+
+    if (req.url?.includes("/send_group_msg_async")) {
+      sentGroupMessages.push(
+        JSON.parse(body) as (typeof sentGroupMessages)[number],
+      );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: { message_id: `grp-at-${sentGroupMessages.length}` },
+        }),
+      );
+
+      return;
+    }
+
+    if (req.url?.includes("/send_private_msg_async")) {
+      sentPrivateMessages.push(
+        JSON.parse(body) as (typeof sentPrivateMessages)[number],
+      );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: { message_id: `dm-at-${sentPrivateMessages.length}` },
+        }),
+      );
+
+      return;
+    }
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: [] }));
+  });
+
+  t.after(() => gw.close());
+
+  const llm = await startStubServer((req, res, body) => {
+    if (!req.url?.endsWith("/chat/completions")) {
+      res.writeHead(404);
+      res.end();
+
+      return;
+    }
+
+    const parsed = JSON.parse(body) as {
+      messages: { role: string; content?: string }[];
+    };
+    const rawUser =
+      parsed.messages.findLast((m) => m.role === "user")?.content ?? "{}";
+    const jsonStart = rawUser.indexOf("{");
+    const userPayload = JSON.parse(
+      jsonStart === -1 ? "{}" : rawUser.slice(jsonStart),
+    ) as {
+      requestMessages?: {
+        mentionedBot?: boolean;
+        mentionedAll?: boolean;
+        mentionedUsers?: { userRef: string; name?: string }[];
+        text?: string;
+      }[];
+    };
+
+    const reqMsg = userPayload.requestMessages?.[0];
+
+    if (reqMsg) {
+      capturedReqMsgs.push(reqMsg);
+    }
+
+    const targetRef = reqMsg?.mentionedUsers?.[0]?.userRef ?? "";
+    const secondRef = reqMsg?.mentionedUsers?.[1]?.userRef ?? "";
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (llmMode === "group") {
+      res.end(
+        JSON.stringify(
+          chatReply(
+            JSON.stringify({
+              units: [
+                {
+                  kind: "qq_reply",
+                  text: "@24-静B-郭逸戈 这边修好了",
+                  mentionUserRefs: [targetRef],
+                },
+                {
+                  kind: "qq_reply",
+                  text: `顺便问问 @小李 (${secondRef}) 和 @${targetRef} 意见`,
+                },
+              ],
+            }),
+          ),
+        ),
+      );
+    } else {
+      res.end(
+        JSON.stringify(
+          chatReply(
+            JSON.stringify({
+              units: [
+                {
+                  kind: "qq_reply",
+                  text: `私聊提一下 @24-静B-郭逸戈 (${targetRef}) 不发 at`,
+                  mentionUserRefs: [targetRef],
+                },
+              ],
+            }),
+          ),
+        ),
+      );
+    }
+  });
+
+  t.after(() => llm.close());
+
+  const { app } = await createTestBerryApp(
+    {
+      botQQ: "999999",
+      gatewayUrl: gw.url,
+      gatewayToken: "gw-at-test",
+      mainBaseUrl: `${llm.url}/v1`,
+      mainApiKey: "test-main-key",
+      mainModel: "test-main",
+    },
+    { bot: { botQQ: "999999", replyPaceMinMs: 0, replyPaceMaxMs: 0 } },
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "81001",
+    title: "测试@群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  // Inbound message with leading "@" in name, raw QQ as name, @all, and @bot.
+  const inboundSegments = [
+    { type: "at", data: { qq: "999999" } },
+    { type: "text", data: { text: " 帮我叫下 " } },
+    { type: "at", data: { qq: "50002", name: "@24-静B-郭逸戈" } },
+    { type: "text", data: { text: " 和 " } },
+    { type: "at", data: { qq: "50003", name: "50003" } },
+    { type: "text", data: { text: " " } },
+    { type: "at", data: { qq: "all" } },
+  ];
+
+  await app.gateway.enrichMentionNames(
+    "group",
+    "81001",
+    inboundSegments,
+    "999999",
+  );
+  assert.equal(inboundSegments[2]?.data.name, "24-静B-郭逸戈");
+  assert.equal(inboundSegments[4]?.data.name, "小李");
+
+  const captured = await app.store.messages.capture({
+    kind: "group",
+    chatId: "81001",
+    onebotMessageId: "ob-at-in-1",
+    userId: "50001",
+    senderName: "Kat",
+    text: "@树莓娘 帮我叫下 @24-静B-郭逸戈 和 @小李 @全体成员",
+    segments: inboundSegments,
+    replyToMessageId: null,
+    isBot: false,
+    mentionedBot: true,
+    sentAt: Date.now(),
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:81001",
+    kind: "group",
+    chatId: "81001",
+    triggerMessageIds: [captured.message.id],
+    senderId: "50001",
+    senderName: "Kat",
+  });
+
+  // 1) Model received clean @name (u_*) without "@@" and structured mentionedUsers + mentionedAll.
+  const firstCaptured = capturedReqMsgs[0];
+
+  assert.ok(firstCaptured);
+  assert.equal(firstCaptured.mentionedBot, true);
+  assert.equal(firstCaptured.mentionedAll, true);
+  assert.equal(firstCaptured.mentionedUsers?.length, 2);
+  assert.equal(firstCaptured.mentionedUsers?.[0]?.name, "24-静B-郭逸戈");
+  assert.equal(firstCaptured.mentionedUsers?.[1]?.name, "小李");
+  assert.equal(firstCaptured.text?.includes("@@"), false);
+
+  // 2) Outbound group replies sent real OneBot at segments without duplicate @name or leaked u_* handles.
+  assert.equal(sentGroupMessages.length, 2);
+  assert.deepEqual(sentGroupMessages[0]?.message, [
+    { type: "at", data: { qq: "50002" } },
+    { type: "text", data: { text: " 这边修好了" } },
+  ]);
+  assert.deepEqual(sentGroupMessages[1]?.message, [
+    { type: "text", data: { text: "顺便问问 " } },
+    { type: "at", data: { qq: "50003" } },
+    { type: "text", data: { text: " 和 " } },
+    { type: "at", data: { qq: "50002" } },
+    { type: "text", data: { text: " 意见" } },
+  ]);
+
+  // 3) Private chat strips internal u_* handle and sends plain text without at segments.
+  llmMode = "private";
+  await app.store.chats.upsert({
+    kind: "private",
+    chatId: "50001",
+    title: "Kat",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+  const dmCaptured = await app.store.messages.capture({
+    kind: "private",
+    chatId: "50001",
+    onebotMessageId: "ob-dm-at-1",
+    userId: "50001",
+    senderName: "Kat",
+    text: "提一下他",
+    segments: [
+      { type: "text", data: { text: "提一下 " } },
+      { type: "at", data: { qq: "50002", name: "24-静B-郭逸戈" } },
+    ],
+    replyToMessageId: null,
+    isBot: false,
+    mentionedBot: false,
+    sentAt: Date.now(),
+  });
+
+  await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "private:50001",
+    kind: "private",
+    chatId: "50001",
+    triggerMessageIds: [dmCaptured.message.id],
+    senderId: "50001",
+    senderName: "Kat",
+  });
+
+  assert.equal(sentPrivateMessages.length, 1);
+  assert.deepEqual(sentPrivateMessages[0]?.message, [
+    { type: "text", data: { text: "私聊提一下 @24-静B-郭逸戈 不发 at" } },
+  ]);
 });
