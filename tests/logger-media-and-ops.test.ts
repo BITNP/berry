@@ -2724,6 +2724,8 @@ test("inspect_media supports targeted image detail Q&A by assetId without overwr
   assert.equal(detailRes.summary, "一张终端报错截图");
   assert.match(detailRes.detail, /v0\.2\.1.*5432/);
   assert.equal(visionCalls.length, 2);
+  assert.match(visionCalls[0]?.system ?? "", /珊瑚橙粉色.*双马尾/);
+  assert.match(visionCalls[1]?.system ?? "", /珊瑚橙粉色.*双马尾/);
   // Original concise summary remains intact in DB.
   assert.equal(
     (await app.store.assets.get(asset.id))?.transcript,

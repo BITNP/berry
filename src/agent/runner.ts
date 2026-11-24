@@ -507,6 +507,7 @@ export class BerryAgent {
 
     const systemPrompt = buildStaticSystemPrompt({
       personaPrompt: settings.bot.personaPrompt,
+      appearance: settings.bot.appearance,
       capabilities: this.#mainTools.describeCapabilities(this.#services),
     });
 

@@ -704,10 +704,15 @@ export class MediaProcessor {
     }
 
     const question = options?.question?.trim();
+    const botName = settings.bot.names[0]?.trim() || "树莓娘";
+    const appearance = settings.bot.appearance.trim();
+    const appearanceHint = appearance
+      ? `\n参考：本群机器人“${botName}”的官方形象为「${appearance}」。仅当图中人物明显符合该特征时才说明疑似${botName}；若明显不符（如动物、其他发色角色、三次元真人等），请如实描述原图主体，不要附和误称为${botName}。`
+      : "";
     const dataUrl = `data:${mimeType};base64,${bytes.toString("base64")}`;
     const systemPrompt = question
-      ? "你是高精度细节读图助手。请仔细查看原图，严格围绕用户提出的问题或关注点作答，完整准确地提取相关文字、数值、代码、报错或画面细节；看不清或图中不存在的内容请如实说明，不要编造。"
-      : "用简洁中文概括图片主要内容，提取关键可见文字、报错信息、代码或界面要点（简明扼要，细节可由后续按需详查）。";
+      ? `你是高精度细节读图助手。请仔细查看原图，严格围绕用户提出的问题或关注点作答，完整准确地提取相关文字、数值、代码、报错或画面细节；看不清或图中不存在的内容请如实说明，不要编造。${appearanceHint}`
+      : `用简洁中文概括图片主要内容，提取关键可见文字、报错信息、代码或界面要点（简明扼要，细节可由后续按需详查）。${appearanceHint}`;
     const userContent = question
       ? [
           { type: "text" as const, text: question },

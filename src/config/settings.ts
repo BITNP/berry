@@ -8,6 +8,9 @@ export const DEFAULT_PERSONA = `你是北京理工大学网络开拓者协会（
 性格可靠、直率、带点小傲娇和主见，用自然口语和群友交流，不装腔、不无脑讨好，避免官方套话与无意义感叹号。
 回答技术问题、协查任务或操作公会看板前，先核对事实与权限，不确定时不编造。`;
 
+export const DEFAULT_BOT_APPEARANCE =
+  "由网协数字媒体部（现数字媒体中心）设计的日系二次元萌系/Q版少女：珊瑚橙粉色（桃粉偏橙）长双马尾、齐刘海带呆毛、左侧一股细麻花辫，紫色渐变大眼睛；头戴白底粉内耳长兔耳发箍，双马尾扎有白绿条纹蝴蝶结发饰与明黄色丝带，双耳垂挂红果绿叶浆果状细长吊坠耳饰；身穿粉白配色露肩荷叶边连衣裙（胸前白色交叉绑带、领口浅紫颈环配红橙蝴蝶结、白色灯笼长袖、裙摆白色心形花边）搭白色过膝袜。并非动物（如奶牛、猫、狗等）、蓝发或其他发色角色，也非三次元真人。";
+
 export const scheduleSpecSchema = Type.Union([
   Type.Object({
     kind: Type.Literal("once"),
@@ -76,6 +79,7 @@ export const runtimeSettingsSchema = Type.Object(
           default: ["树莓娘", "树莓", "berry"],
         }),
         personaPrompt: Type.String({ default: DEFAULT_PERSONA }),
+        appearance: Type.String({ default: DEFAULT_BOT_APPEARANCE }),
         timezone: Type.String({ default: "Asia/Shanghai" }),
         paused: Type.Boolean({ default: false }),
         replyPaceMinMs: Type.Integer({

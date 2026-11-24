@@ -55,6 +55,7 @@ interface RuntimeSettingsView {
     botQQ: string;
     names: string[];
     personaPrompt: string;
+    appearance: string;
     timezone: string;
     paused: boolean;
     replyPaceMinMs: number;
@@ -576,13 +577,21 @@ onMounted(() => {
             <NFormItem label="触发别名（直呼其名或昵称识别）">
               <NDynamicTags v-model:value="settings.bot.names" />
             </NFormItem>
-            <NFormItem
-              label="人设指令（Persona System Prompt）"
-              :show-feedback="false"
-            >
+            <NFormItem label="人设指令（Persona System Prompt）">
               <NInput
                 v-model:value="settings.bot.personaPrompt"
                 :rows="6"
+                type="textarea"
+              />
+            </NFormItem>
+            <NFormItem
+              label="形象设定（同步注入主对话及识图模型）"
+              :show-feedback="false"
+            >
+              <NInput
+                v-model:value="settings.bot.appearance"
+                placeholder="例如：珊瑚橙粉色长双马尾、紫红色眼睛的日系二次元少女……"
+                :rows="3"
                 type="textarea"
               />
             </NFormItem>
