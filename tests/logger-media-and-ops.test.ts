@@ -1859,6 +1859,14 @@ test("sticker library auto-collects group stickers, enforces review, searches vi
     }).ok,
     true,
   );
+  assert.equal(
+    checkStickerEligibility({
+      bytes: makePngHeader(300, 300),
+      transcript: "一张动画截图风格的树莓娘震惊表情包，睁大眼睛张嘴惊讶",
+      meaning: "震惊表情包",
+    }).ok,
+    true,
+  );
 
   await assert.rejects(
     () =>
@@ -1869,6 +1877,56 @@ test("sticker library auto-collects group stickers, enforces review, searches vi
       }),
     /不是表情包/,
   );
+
+  const forcedSave = (await adminTools[0]!.execute({
+    assetId: cachedAsset.id,
+    meaning: "树莓娘AI工作流截图",
+    tags: ["强制收录"],
+    force: true,
+  })) as { ok: boolean; stickerId: number };
+
+  assert.equal(forcedSave.ok, true);
+  assert.equal(forcedSave.stickerId, collected.id);
+
+  // Quoting a reply message that itself quotes the image message resolves the image via 1-hop replyToMessageId.
+  const imgMsgRow = (await app.store.messages.get(eventRes.messageId))!;
+  const replyToImg = await app.store.messages.capture({
+    kind: "group",
+    chatId: "654321",
+    onebotMessageId: "ob-reply-to-sticker-img",
+    userId: "999999",
+    senderName: "树莓娘",
+    text: "哟，发了个震惊表情包",
+    segments: [{ type: "text", data: { text: "哟，发了个震惊表情包" } }],
+    replyToMessageId: imgMsgRow.onebotMessageId,
+    isBot: true,
+    mentionedBot: false,
+    sentAt: Date.now(),
+  });
+  const quoteIds = new ModelIds();
+  const replyRef = quoteIds.messageRef(
+    replyToImg.message.onebotMessageId,
+    replyToImg.message.chatKey,
+  );
+  const quoteBoundTool = saveStickerToolProvider.resolve({
+    services: app.services,
+    actor: {
+      chatKey: "group:654321",
+      senderQQ: "10001",
+      actorSubject: null,
+      actorName: "管理员",
+      role: "admin",
+    },
+    ids: quoteIds,
+  })[0]!;
+  const quotedSave = (await quoteBoundTool.execute({
+    messageRef: replyRef,
+    meaning: "震惊表情包",
+    tags: ["震惊"],
+  })) as { ok: boolean; stickerId: number };
+
+  assert.equal(quotedSave.ok, true);
+  assert.equal(quotedSave.stickerId, collected.id);
 
   // Re-encoded sticker with different sha256 but same meaning deduplicates instead of creating a duplicate row.
   const { writeFile } = await import("node:fs/promises");

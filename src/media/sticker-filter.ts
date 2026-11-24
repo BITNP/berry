@@ -6,13 +6,13 @@ export interface ImageDimensions {
 }
 
 const NON_STICKER_TEXT_RE =
-  /截图|录屏|聊天记录|对话界面|网页界面|管理后台|后台界面|控制台界面|工作流|报错信息|代码片段|终端输出|命令行|二维码|付款码|收款码|行程码|发票|表格/;
+  /(?:群聊|聊天|对话|微信|QQ|网页|页面|浏览器|管理后台|后台|控制台|工作流|终端|代码|报错|错误|日志|系统|手机|电脑|桌面|屏幕|通知|弹窗|设置|面板|应用|软件|界面)截图|录屏|聊天记录|对话界面|网页界面|管理后台|后台界面|控制台界面|报错信息|代码片段|终端输出|命令行|二维码|付款码|收款码|行程码|发票|通知横条/;
 
 const SCREENSHOT_CONTEXT_RE =
   /手机屏幕|电脑屏幕|浏览器窗口|微信界面|QQ界面|系统设置页面|通知栏/;
 
-const MIN_STICKER_ASPECT = 0.52;
-const MAX_STICKER_ASPECT = 2.4;
+const MIN_STICKER_ASPECT = 0.45;
+const MAX_STICKER_ASPECT = 2.8;
 
 export function readImageDimensions(bytes: Uint8Array): ImageDimensions | null {
   try {

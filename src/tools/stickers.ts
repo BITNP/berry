@@ -72,6 +72,22 @@ async function resolveImageAsset(
       (assetMap.get(msg.id) ?? []).find((item) => item.kind === "image") ??
       null;
 
+    if (!candidate && msg.replyToMessageId) {
+      const quoted = await store.messages.findByOnebotId(
+        targetChatKey,
+        msg.replyToMessageId,
+      );
+
+      if (quoted) {
+        const quotedMap = await store.assets.listForMessages([quoted.id]);
+
+        candidate =
+          (quotedMap.get(quoted.id) ?? []).find(
+            (item) => item.kind === "image",
+          ) ?? null;
+      }
+    }
+
     if (!candidate) {
       throw new Error(`消息 ${args.messageRef} 中不包含图片附件`);
     }
@@ -116,7 +132,7 @@ async function resolveImageAsset(
 const saveStickerTool = defineTool({
   name: "save_sticker",
   description:
-    "仅管理员可用：把聊天中真正的表情包/梗图/Q版反应图收录并上架到表情包库（立即审核通过并启用，随后可用 search_stickers 搜到并用 qq_image 发送）。严禁收录聊天截图、通知横条截图、后台/网页界面截图、代码报错图或普通照片；批量收录前请先确认每张图的识图描述确实是表情包且未重复。优先传上下文中的 assetId（[附件 #N]）或 messageRef（m_* 句柄）；均省略时自动取当前会话最近一张图片。",
+    "仅管理员可用：把聊天中的表情包/梗图/Q版反应图收录并上架到表情包库（立即审核通过并启用，随后可用 qq_image 发送）。批量收录时只收真正的表情包，不要把群聊截图、通知横条、后台/网页截图、代码报错图塞进库里；优先传上下文中的 assetId（[图片内容 #N]）或 messageRef（m_* 句柄，会自动追溯一层被引用消息中的图片），均省略时取当前会话最近一张图片。默认会拦截明显的界面/报错截图与极端长条图；若管理员明确指定要收录某张具体图片却被误判拦截，可传 force=true 强制收录。",
   mutating: true,
   parameters: Type.Object(
     {
@@ -124,6 +140,7 @@ const saveStickerTool = defineTool({
       messageRef: Type.Optional(Type.String({ minLength: 1 })),
       meaning: Type.String({ minLength: 1, maxLength: 180 }),
       tags: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
+      force: Type.Optional(Type.Boolean()),
     },
     { additionalProperties: false },
   ),
@@ -134,15 +151,20 @@ const saveStickerTool = defineTool({
 
     const asset = await resolveImageAsset(ctx, args);
     const cleanMeaning = args.meaning.trim().slice(0, 180);
-    const bytes = await readFile(asset.filePath!).catch(() => undefined);
-    const eligibility = checkStickerEligibility({
-      bytes,
-      meaning: cleanMeaning,
-      transcript: asset.transcript,
-    });
 
-    if (!eligibility.ok) {
-      throw new Error(eligibility.reason);
+    if (!args.force) {
+      const bytes = await readFile(asset.filePath!).catch(() => undefined);
+      const eligibility = checkStickerEligibility({
+        bytes,
+        meaning: cleanMeaning,
+        transcript: asset.transcript,
+      });
+
+      if (!eligibility.ok) {
+        throw new Error(
+          `${eligibility.reason}（如管理员明确指定收录此图，可传 force=true 强制收录）`,
+        );
+      }
     }
 
     const cleanTags = (args.tags ?? [])
@@ -209,7 +231,7 @@ const saveStickerTool = defineTool({
 export const saveStickerToolProvider = defineToolProvider({
   id: "save_sticker",
   describe: () => [
-    "- save_sticker(meaning, tags?, assetId?, messageRef?): 仅管理员可用，直接把聊天中的图片附件收录上架到表情包库",
+    "- save_sticker(meaning, tags?, assetId?, messageRef?, force?): 仅管理员可用，直接把聊天中的图片附件收录上架到表情包库",
   ],
   resolve: (ctx) => (isAdmin(ctx.actor) ? [saveStickerTool.bind(ctx)] : []),
 });
