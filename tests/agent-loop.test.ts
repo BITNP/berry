@@ -573,9 +573,15 @@ test("per-task thinkingEffort resolves defaults, category fallback, and exact ov
           term: "群串子",
           aliases: "串子",
           meaning: "指群里爱带节奏整活的成员",
+          scope: "chat",
           extraNote: "ignored",
         },
-        { term: "炼丹", aliases: ["调参", "树莓", null], meaning: "训练模型" },
+        {
+          term: "炼丹",
+          aliases: ["调参", "树莓", null],
+          meaning: "训练模型",
+          scope: "global",
+        },
       ],
     }),
     {
@@ -590,8 +596,9 @@ test("per-task thinkingEffort resolves defaults, category fallback, and exact ov
       term: "群串子",
       aliases: ["串子"],
       meaning: "指群里爱带节奏整活的成员",
+      scope: "chat",
     },
-    { term: "炼丹", aliases: ["调参"], meaning: "训练模型" },
+    { term: "炼丹", aliases: ["调参"], meaning: "训练模型", scope: "global" },
   ]);
 
   assert.throws(

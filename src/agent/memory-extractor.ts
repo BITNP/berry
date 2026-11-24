@@ -82,7 +82,7 @@ export async function extractMemoryFromMessage(
       "你是树莓娘的静默记忆助手，只负责维护每轮自动注入上下文的轻量长期记忆（不是知识库），不向群聊发言。",
       "【允许写入的 4 类轻量记忆】：1) 树莓娘行为/发言/群活跃度或互动规则；2) 成员称呼/外号/QQ身份映射、群别称（如“网协大群”对应哪个群）；3) 成员或管理员稳定个人偏好；4) 极简且有时效的短期提醒/排期（必须设置 ttlDays 或 expiresAt）。",
       '【严禁写入的知识库内容】：项目架构设计、技术方案讨论、功能脑暴/优化待办、工作流程规范（SOP）、漏洞或故障跟进、会议纪要、协作空间说明等长篇参考资料属于 Bunko 知识库或公会看板，宁缺毋滥，遇到此类内容直接跳过不写并输出 {"done":true}。',
-      '【精准归属与去重】：针对某一个群的规则必须写 scope="chat" 并传 knownGroups 中对应群的 targetRef（禁止误写成 scope="global"）；针对特定人的称呼或偏好用 scope="user" 并传 userRef；已有同类主题时复用原 key 覆盖更新；summary 一句话说清核心，content 保持精炼不堆砌流水账。结束后输出 {"done":true}。',
+      '【精准归属与去重】：适用于全网协/全校/多群通用的规则、组织信息、群别称映射（如“大群=网络开拓者协会2026”）、跨群通用的树莓娘行为习惯写 scope="global"；仅针对某一个群的活跃度/风格或单群约定必须写 scope="chat" 并传 knownGroups 中对应群的 targetRef（禁止误写成 scope="global"）；针对特定人的称呼或偏好用 scope="user" 并传 userRef；已有同类主题时复用原 key 覆盖更新；summary 一句话说清核心，content 保持精炼不堆砌流水账。结束后输出 {"done":true}。',
     ].join("\n"),
     history: [],
     userContent: JSON.stringify({

@@ -1134,11 +1134,19 @@ test("jargon dictionary distills pending entries, approves via API, and injects 
                 term: "树莓娘",
                 aliases: ["树莓"],
                 meaning: "树莓派的拟人化称呼",
+                scope: "global",
+              },
+              {
+                term: "诊所",
+                aliases: ["电脑诊所"],
+                meaning: "网协全校通用的电脑维修志愿服务点",
+                scope: "global",
               },
               {
                 term: "群呆唯",
                 aliases: ["呆唯"],
                 meaning: "网协群主郭逸戈在群里的外号",
+                scope: "chat",
               },
               {
                 term: "光速跑路",
@@ -1203,7 +1211,17 @@ test("jargon dictionary distills pending entries, approves via API, and injects 
   ).json()) as { ok: boolean; inserted: number; totalExtracted: number };
 
   assert.equal(distillRes.ok, true);
-  assert.equal(distillRes.inserted, 2);
+  assert.equal(distillRes.inserted, 3);
+
+  const globalListed = (await (
+    await fetch(`${url}/api/admin/jargon?chatKey=global`)
+  ).json()) as {
+    items: { id: number; term: string; status: string; chatKey: string }[];
+  };
+
+  assert.equal(globalListed.items.length, 1);
+  assert.equal(globalListed.items[0]?.term, "诊所");
+  assert.equal(globalListed.items[0]?.chatKey, "global");
 
   const listed = (await (
     await fetch(`${url}/api/admin/jargon?chatKey=group%3A7788`)

@@ -12,6 +12,7 @@ interface ExtractedJargonEntry {
   term: string;
   aliases: string[];
   meaning: string;
+  scope: "global" | "chat";
 }
 
 function normalizeAliases(raw: unknown): string[] {
@@ -114,12 +115,17 @@ export function parseJargonResponse(
       continue;
     }
 
+    const scopeRaw =
+      typeof row.scope === "string" ? row.scope.trim().toLowerCase() : "";
+    const scope: "global" | "chat" = scopeRaw === "global" ? "global" : "chat";
+
     out.push({
       term,
       aliases: normalizeAliases(row.aliases).filter(
         (alias) => !excluded.has(alias.toLowerCase()),
       ),
       meaning,
+      scope,
     });
   }
 
@@ -211,11 +217,14 @@ export class SocialDistiller {
       options?.sampleLimit ?? 100,
     );
     const cfg = this.#requireMainModel(settings, "提炼群内黑话词条");
-    const [existingRows, memoryIndex] = await Promise.all([
+    const [globalRows, chatRows, memoryIndex] = await Promise.all([
+      this.#store.jargon.list({ chatKey: "global" }),
       this.#store.jargon.list({ chatKey }),
       this.#store.memories.index(chatKey),
     ]);
-    const existingTerms = existingRows.map((item) => item.term);
+    const existingTerms = [
+      ...new Set([...globalRows, ...chatRows].map((item) => item.term)),
+    ];
     const botNames = [
       ...new Set(
         [...settings.bot.names, "树莓娘", "网协树莓娘", "树莓", "berry"]
@@ -250,7 +259,7 @@ export class SocialDistiller {
           {
             role: "system",
             content:
-              '你是北京理工大学网络开拓者协会（BITNP）QQ 机器人“树莓娘”的群内黑话词典提炼助手。请从群聊样本中挑出真正具有本群或圈内特定含义的梗、黑话、外号或简称（最多 8 条；若没有明显黑话则返回空数组）。严格遵守：1) botIdentity.names 是你（群机器人树莓娘）自己的名字和别称，严禁把机器人自己的名字收录成黑话，也禁止望文生义误解为“树莓派”；2) 忽略普通日常词汇、单字词、通用软件/开发/工程术语（如 staging、tape、API、注入、PR、Docker 等）以及 existingTerms / knownMemories 中已收录或已明确定义的内容；3) 每条释义必须能在群聊上下文中得到明确佐证，不确定含义时宁缺毋滥，不要凭字面臆测。严格输出 JSON：{"entries":[{"term":"词条","aliases":["同义写法"],"meaning":"一句简明解释"}]}。',
+              '你是北京理工大学网络开拓者协会（BITNP）QQ 机器人“树莓娘”的群内黑话词典提炼助手。请从群聊样本中挑出真正具有圈内或本群特定含义的梗、黑话、外号或简称（最多 8 条；若没有明显黑话则返回空数组），并为每条准确判断归属范围 scope（"global" 或 "chat"）。严格遵守：1) botIdentity.names 是你（群机器人树莓娘）自己的名字和别称，严禁把机器人自己的名字收录成黑话，也禁止望文生义误解为“树莓派”；2) 忽略普通日常词汇、单字词、通用软件/开发/工程术语（如 staging、tape、API、注入、PR、Docker 等）以及 existingTerms / knownMemories 中已收录或已明确定义的内容；3) 每条释义必须能在群聊上下文中得到明确佐证，不确定含义时宁缺毋滥，不要凭字面臆测；4) 准确划分 scope：全校或全网协跨群通用的词条必须标 scope="global"（包括北理工校内地点/社团简称如求是、学电，网协各部门/服务/系统/虚拟货币/通用称呼及跨群共通梗如诊所、铭晶玉、NPC、小登、网协炸麦部、大肥鱼、跨群熟知的网协成员简称或外号等）；只有当前特定垂直兴趣群或小群专属、放去其他群不成立或含义不同的词条才标 scope="chat"（如硬件/图吧群专属的捡垃圾、黑片、0e、倒史，或仅某单群内部发生的专属事件梗）。严格输出 JSON：{"entries":[{"term":"词条","aliases":["同义写法"],"meaning":"一句简明解释","scope":"global|chat"}]}。',
           },
           {
             role: "user",
@@ -280,8 +289,9 @@ export class SocialDistiller {
     let inserted = 0;
 
     for (const entry of entries.slice(0, 8)) {
+      const targetChatKey = entry.scope === "global" ? "global" : chatKey;
       const added = await this.#store.jargon.insertIfAbsent({
-        chatKey,
+        chatKey: targetChatKey,
         term: entry.term,
         aliases: entry.aliases,
         meaning: entry.meaning,
