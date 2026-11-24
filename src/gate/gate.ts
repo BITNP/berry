@@ -9,6 +9,44 @@ import type { JobRecord, MessageRecord } from "../types.ts";
 import { Logger } from "../utils/logger.ts";
 import type { SmallModelClassifier } from "./classifier.ts";
 
+const RESET_COMMAND_RE = /^(?:#new#|\/new)$/i;
+
+function isResetContextCommand(message: MessageRecord, botQQ: string): boolean {
+  if (message.segments.length > 0) {
+    const hasNonBotAt = message.segments.some((seg) => {
+      if (seg.type !== "at") {
+        return false;
+      }
+
+      const qq = String(seg.data.qq ?? "").trim();
+
+      return Boolean(qq && (!botQQ || qq !== botQQ));
+    });
+
+    if (hasNonBotAt) {
+      return false;
+    }
+
+    const hasUnsupportedSegment = message.segments.some(
+      (seg) => seg.type !== "text" && seg.type !== "at" && seg.type !== "reply",
+    );
+
+    if (hasUnsupportedSegment) {
+      return false;
+    }
+
+    const plainText = message.segments
+      .filter((seg) => seg.type === "text")
+      .map((seg) => String(seg.data.text ?? ""))
+      .join("")
+      .trim();
+
+    return RESET_COMMAND_RE.test(plainText);
+  }
+
+  return RESET_COMMAND_RE.test(message.text.trim());
+}
+
 export class MessageGate {
   #store: Store;
   #classifier: SmallModelClassifier;
@@ -143,7 +181,10 @@ export class MessageGate {
       return;
     }
 
-    if (isDirectInvocation && message.text.trim() === "#NEW#") {
+    if (
+      isDirectInvocation &&
+      isResetContextCommand(message, settings.bot.botQQ)
+    ) {
       const role = await getSenderRole();
 
       if (role !== "admin") {
@@ -153,7 +194,7 @@ export class MessageGate {
           action: "ignore",
           stage: "l0_rule",
           confidence: 1,
-          reason: "非管理员尝试执行 #NEW#，已拒绝重置全局上下文",
+          reason: "非管理员尝试执行重置上下文指令，已拒绝",
           model: "l0-rule",
           durationMs: 0,
         });
@@ -161,7 +202,7 @@ export class MessageGate {
           message.chatKey,
           {
             kind: "qq_reply",
-            text: "树莓娘当前使用全局统一上下文，仅管理员或网协管理层可执行 #NEW# 重置。",
+            text: "树莓娘当前使用全局统一上下文，仅管理员或网协管理层可开启新对话（#NEW# / /new）。",
             quoteMessageId: message.onebotMessageId,
           },
           settings.bot.botQQ,
@@ -179,7 +220,7 @@ export class MessageGate {
         action: "ignore",
         stage: "l0_rule",
         confidence: 1,
-        reason: "管理员执行 #NEW# 全局上下文重置指令",
+        reason: "管理员执行全局上下文重置指令（#NEW# / /new）",
         model: "l0-rule",
         durationMs: 0,
       });
@@ -187,7 +228,7 @@ export class MessageGate {
         message.chatKey,
         {
           kind: "qq_reply",
-          text: "全局上下文已重置，新的对话开始啦。",
+          text: "已开启新的全局对话上下文，新的对话开始啦。",
           quoteMessageId: message.onebotMessageId,
         },
         settings.bot.botQQ,

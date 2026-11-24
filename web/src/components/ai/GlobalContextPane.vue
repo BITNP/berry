@@ -266,10 +266,10 @@ async function handleResetConversation() {
 
   try {
     await apiFetch("/api/admin/conversation/reset", { method: "POST" });
-    message.success("已追加全局上下文重置检查点");
+    message.success("已开启新的全局对话上下文");
     await refresh();
   } catch (err) {
-    message.error(err instanceof Error ? err.message : "重置上下文失败");
+    message.error(err instanceof Error ? err.message : "开启新对话失败");
   } finally {
     resettingContext.value = false;
   }
@@ -292,23 +292,43 @@ defineExpose({ refresh, loading });
 <template>
   <NCard size="small">
     <NSpace v-if="conversation" :size="12" vertical>
-      <div class="filter-bar space-between">
-        <NText class="mono sub-note" depth="3">
-          session: {{ conversation.sessionId }} · afterMessageId:
-          {{ conversation.afterMessageId }} · 更新于
-          {{ formatTime(conversation.updatedAt) }}
-        </NText>
-        <NPopconfirm @positive-click="handleResetConversation">
+      <div class="context-header">
+        <div class="context-header-info">
+          <div class="context-header-title">
+            <span>全局对话上下文</span>
+            <NText class="mono sub-note" depth="3">
+              session {{ conversation.sessionId }} · afterMessageId
+              {{ conversation.afterMessageId }} · 更新于
+              {{ formatTime(conversation.updatedAt) }}
+            </NText>
+          </div>
+          <NText class="sub-note" depth="3">
+            管理员在 QQ 发送
+            <span class="mono">#NEW#</span>
+            或
+            <span class="mono">/new</span>
+            （群聊需 @ 树莓娘）同样可强制开启新上下文
+          </NText>
+        </div>
+        <NPopconfirm
+          positive-text="确认开启"
+          @positive-click="handleResetConversation"
+        >
           <template #trigger>
-            <NButton :loading="resettingContext" size="small" type="warning">
+            <NButton
+              :loading="resettingContext"
+              secondary
+              size="small"
+              type="warning"
+            >
               <template #icon>
                 <RotateCcw :size="14" />
               </template>
-              追加重置检查点
+              开启新对话
             </NButton>
           </template>
-          将在 Tape 尾部追加重置 Anchor（历史记录不删除，可在完整 Tape
-          中回放），长期记忆保留不变。确认继续？
+          确认强制开启新的全局上下文？（后台将追加重置检查点，历史对话保留在完整
+          Tape 中，长期记忆、黑话及表情包不受影响）
         </NPopconfirm>
       </div>
 
@@ -486,6 +506,32 @@ defineExpose({ refresh, loading });
 
 .handoff-title {
   font-size: 13px;
+  font-weight: 600;
+}
+
+.context-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--berry-border);
+}
+
+.context-header-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.context-header-title {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 14px;
   font-weight: 600;
 }
 

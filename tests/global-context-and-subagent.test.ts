@@ -512,6 +512,41 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
   assert.equal(afterAdminNew?.messages.length, 0);
   assert.equal(afterAdminNew?.afterMessageId, adminNewMsg?.id);
 
+  // Group @bot #NEW# and @bot /new also trigger reset for admins (even though text includes @bot prefix).
+  await app.gatewayEvents.handleEvent({
+    post_type: "message",
+    message_type: "group",
+    group_id: 9999,
+    user_id: 10_001,
+    message_id: "ob-admin-group-new",
+    time: Math.floor(Date.now() / 1000),
+    message: [
+      { type: "at", data: { qq: "999999" } },
+      { type: "text", data: { text: " #NEW#" } },
+    ],
+    sender: { nickname: "管理员" },
+  });
+  const afterGroupNew = await app.store.conversations.get();
+
+  assert.notEqual(afterGroupNew?.sessionId, afterAdminNew?.sessionId);
+
+  await app.gatewayEvents.handleEvent({
+    post_type: "message",
+    message_type: "group",
+    group_id: 9999,
+    user_id: 10_001,
+    message_id: "ob-admin-group-slash-new",
+    time: Math.floor(Date.now() / 1000),
+    message: [
+      { type: "at", data: { qq: "999999" } },
+      { type: "text", data: { text: " /new" } },
+    ],
+    sender: { nickname: "管理员" },
+  });
+  const afterSlashNew = await app.store.conversations.get();
+
+  assert.notEqual(afterSlashNew?.sessionId, afterGroupNew?.sessionId);
+
   const globalMem = await app.store.memories.upsert({
     scope: "global",
     ownerId: "ignored-arbitrary-owner",
