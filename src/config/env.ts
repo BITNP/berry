@@ -23,6 +23,7 @@ export interface EnvConfig {
   guildPublicUrl: string;
   bunkoApiUrl: string;
   bunkoApiKey: string;
+  bunkoNotificationToken: string;
   bunkoPublicUrl: string;
   bunkoWorkspaceSlug: string;
   shortlinkOrigin: string;
@@ -139,6 +140,7 @@ export function loadEnvConfig(
     guildPublicUrl: readEnv(env, "BERRY_GUILD_PUBLIC_URL").replace(/\/+$/, ""),
     bunkoApiUrl: readEnv(env, "BERRY_BUNKO_API_URL").replace(/\/+$/, ""),
     bunkoApiKey: readEnv(env, "BERRY_BUNKO_API_KEY"),
+    bunkoNotificationToken: readEnv(env, "BERRY_BUNKO_NOTIFICATION_TOKEN"),
     bunkoPublicUrl: readEnv(env, "BERRY_BUNKO_PUBLIC_URL").replace(/\/+$/, ""),
     bunkoWorkspaceSlug: readEnv(env, "BERRY_BUNKO_WORKSPACE_SLUG", "bitnp"),
     shortlinkOrigin: readEnv(

@@ -9,6 +9,7 @@ import { SocialDistiller } from "./agent/social-distiller.ts";
 import type { SubagentRegistry } from "./agent/subagents/index.ts";
 import { createDefaultSubagentRegistry } from "./agent/subagents/index.ts";
 import { BunkoClient } from "./bunko/client.ts";
+import { BunkoMentionNotifications } from "./bunko/mention-notifications.ts";
 import type { EnvConfig } from "./config/env.ts";
 import type { RuntimeSettings } from "./config/settings.ts";
 import { SmallModelClassifier } from "./gate/classifier.ts";
@@ -44,6 +45,7 @@ export class BerryApp {
   public readonly directory: IdentityDirectory;
   public readonly guild: GuildInternalClient;
   public readonly bunko: BunkoClient;
+  #bunkoMentions: BunkoMentionNotifications;
   public readonly shortlink: ShortLinkClient;
   public readonly mcp: McpHub;
   public readonly classifier: SmallModelClassifier;
@@ -76,6 +78,7 @@ export class BerryApp {
     directory: IdentityDirectory;
     guild: GuildInternalClient;
     bunko: BunkoClient;
+    bunkoMentions: BunkoMentionNotifications;
     shortlink: ShortLinkClient;
     mcp: McpHub;
     classifier: SmallModelClassifier;
@@ -103,6 +106,7 @@ export class BerryApp {
     this.directory = options.directory;
     this.guild = options.guild;
     this.bunko = options.bunko;
+    this.#bunkoMentions = options.bunkoMentions;
     this.shortlink = options.shortlink;
     this.mcp = options.mcp;
     this.classifier = options.classifier;
@@ -139,6 +143,13 @@ export class BerryApp {
     const directory = new IdentityDirectory(env);
     const guild = new GuildInternalClient(env);
     const bunko = new BunkoClient(env);
+    const bunkoMentions = new BunkoMentionNotifications(
+      env,
+      store.cursors,
+      directory,
+      gateway,
+      () => getSettings().bot.botQQ,
+    );
     const shortlink = new ShortLinkClient(env.shortlinkOrigin);
     const mcp = new McpHub();
     const classifier = new SmallModelClassifier(store);
@@ -150,6 +161,7 @@ export class BerryApp {
         env.gatewayToken,
         env.guildInternalToken,
         env.bunkoApiKey,
+        env.bunkoNotificationToken,
         env.oidcClientSecret,
         env.keycloakClientSecret,
         current.mainModel.apiKey,
@@ -240,6 +252,7 @@ export class BerryApp {
       directory,
       guild,
       bunko,
+      bunkoMentions,
       shortlink,
       mcp,
       classifier,
@@ -265,6 +278,7 @@ export class BerryApp {
       workerRef.start();
       scheduler.start();
       guildAutomation.start();
+      bunkoMentions.start();
     }
 
     return instance;
@@ -308,6 +322,7 @@ export class BerryApp {
     await this.gatewayEvents.stop();
     this.scheduler.stop();
     await this.guildAutomation.stop();
+    await this.#bunkoMentions.stop();
     await this.worker.stop();
     await this.media.close();
     await this.gateway.close();
