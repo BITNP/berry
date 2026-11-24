@@ -1,28 +1,89 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { BunkoMentionNotifications } from "../src/bunko/mention-notifications.ts";
-import { permissionsFromRoles } from "../src/identity/permissions.ts";
-import type { ChatKey, OutputUnit } from "../src/types.ts";
-import { startStubServer, waitUntil } from "./helpers.ts";
+import { createTestBerryApp, startStubServer, waitUntil } from "./helpers.ts";
 
-test("Bunko notifications resume with the service token and send one private message", async (t) => {
+test("Bunko mention notifications resume from cursor, ignore malformed/duplicate events, and dispatch one private message", async (t) => {
   const cursorKey = "bunko_mention_event_cursor";
-  const state = new Map([
-    ["bunko_mention_last_dispatch", "already-queued"],
-    [cursorKey, "41"],
-  ]);
-  const requests: string[] = [];
-  const sent: { chatKey: ChatKey; unit: OutputUnit }[] = [];
-  const stream = await startStubServer((req, res) => {
-    requests.push(
-      req.url ?? "",
-      req.headers.authorization ?? "",
-      req.headers["last-event-id"] as string,
-    );
+  const requests: { url: string; auth: string; lastEventId: string }[] = [];
+  const sentDms: { userId: number; text: string }[] = [];
+
+  const kcStub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+    if (url.pathname === "/realms/bitnp/protocol/openid-connect/token") {
+      res.end(JSON.stringify({ access_token: "kc-tok", expires_in: 300 }));
+
+      return;
+    }
+
+    if (url.pathname === "/admin/realms/bitnp/users/keycloak-member") {
+      res.end(
+        JSON.stringify({
+          id: "keycloak-member",
+          username: "member",
+          firstName: "成员",
+          enabled: true,
+          attributes: { qq_number: ["123456"] },
+        }),
+      );
+
+      return;
+    }
+
+    if (
+      url.pathname ===
+      "/admin/realms/bitnp/users/keycloak-member/role-mappings/realm/composite"
+    ) {
+      res.end(JSON.stringify([]));
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  }, t);
+
+  const gatewayStub = await startStubServer((req, res, bodyText) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/api/v1/accounts/qq/send_private_msg_async") {
+      const body = JSON.parse(bodyText) as {
+        user_id: number;
+        message: { data?: { text?: string } }[];
+      };
+
+      sentDms.push({
+        userId: body.user_id,
+        text: body.message
+          .map((seg) => seg.data?.text ?? "")
+          .join("")
+          .trim(),
+      });
+      res.end(
+        JSON.stringify({
+          status: "ok",
+          retcode: 0,
+          data: { message_id: `dm-${sentDms.length}` },
+        }),
+      );
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end();
+  }, t);
+
+  const streamStub = await startStubServer((req, res) => {
+    requests.push({
+      url: req.url ?? "",
+      auth: req.headers.authorization ?? "",
+      lastEventId: String(req.headers["last-event-id"] ?? ""),
+    });
     res.writeHead(200, { "Content-Type": "text/event-stream" });
 
-    function event(
+    function frame(
       id: number,
       notificationId: string,
       recipientSubject = "keycloak-member",
@@ -39,80 +100,49 @@ test("Bunko notifications resume with the service token and send one private mes
       return `id: ${id}\nevent: mention.requested\ndata: ${JSON.stringify(data)}\n\n`;
     }
 
-    res.write(event(41, "old-event"));
-    res.write(event(42, "already-queued"));
-    res.write(event(43, "unbound-event", "unbound-member"));
-    res.write(event(44, "new-event"));
-    res.end(event(44, "new-event"));
+    res.write("event: heartbeat\ndata: {}\n\n");
+    res.write("event: mention.requested\ndata: {invalid-json\n\n");
+    res.write(frame(41, "old-event"));
+    res.write(frame(42, "unbound-event", "unbound-member"));
+    res.write(frame(43, "new-event"));
+    res.end(frame(43, "new-event"));
   }, t);
-  const runner = new BunkoMentionNotifications(
+
+  const { app } = await createTestBerryApp(
     {
-      bunkoApiUrl: stream.url,
+      gatewayUrl: gatewayStub.url,
+      gatewayAccount: "qq",
+      gatewayToken: "gw-tok",
+      keycloakAdminUrl: `${kcStub.url}/admin/realms/bitnp`,
+      keycloakClientId: "berry-admin",
+      keycloakClientSecret: "sec",
+      oidcIssuer: `${kcStub.url}/realms/bitnp`,
+      bunkoApiUrl: streamStub.url,
       bunkoPublicUrl: "https://docs.example.com",
       bunkoWorkspaceSlug: "bitnp",
       bunkoNotificationToken: "bunko_notify_test",
     },
-    {
-      get: async (key) => state.get(key) ?? null,
-      set: async (key, value) => {
-        state.set(key, value);
-      },
-    },
-    {
-      enabled: true,
-      bySubject: async (subject) =>
-        subject === "keycloak-member"
-          ? {
-              subject,
-              username: "member",
-              name: "成员",
-              qq: "123456",
-              enabled: true,
-              permissions: permissionsFromRoles([]),
-            }
-          : null,
-    },
-    {
-      configured: true,
-      dispatchUnit: async (chatKey, unit) => {
-        sent.push({ chatKey, unit });
-
-        return {
-          id: 1,
-          chatKey,
-          kind: unit.kind,
-          payload: unit,
-          gatewayDeliveryId: "gateway-1",
-          status: "queued",
-          attempts: 0,
-          error: null,
-          onebotMessageId: null,
-          createdAt: 0,
-          updatedAt: 0,
-        };
-      },
-    },
-    () => "999",
+    {},
+    t,
   );
 
-  runner.start();
-  try {
-    await waitUntil(() => state.get(cursorKey) === "44");
-    assert.deepEqual(requests, [
-      "/api/v1/internal/mention-notifications/stream?after=41",
-      "Bearer bunko_notify_test",
-      "41",
-    ]);
-    assert.deepEqual(sent, [
-      {
-        chatKey: "private:123456",
-        unit: {
-          kind: "qq_reply",
-          text: "编辑者 在《值班表》中提及了你。\nhttps://docs.example.com/bitnp/doc/doc-id",
-        },
-      },
-    ]);
-  } finally {
-    await runner.stop();
-  }
+  await app.store.cursors.set(cursorKey, "41");
+  app.bunkoMentions.start();
+
+  await waitUntil(
+    async () => (await app.store.cursors.get(cursorKey)) === "43",
+  );
+  await app.bunkoMentions.stop();
+
+  assert.deepEqual(requests[0], {
+    url: "/api/v1/internal/mention-notifications/stream?after=41",
+    auth: "Bearer bunko_notify_test",
+    lastEventId: "41",
+  });
+  assert.deepEqual(sentDms, [
+    {
+      userId: 123_456,
+      text: "编辑者 在《值班表》中提及了你。\nhttps://docs.example.com/bitnp/doc/doc-id",
+    },
+  ]);
 });

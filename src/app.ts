@@ -45,7 +45,7 @@ export class BerryApp {
   public readonly directory: IdentityDirectory;
   public readonly guild: GuildInternalClient;
   public readonly bunko: BunkoClient;
-  #bunkoMentions: BunkoMentionNotifications;
+  public readonly bunkoMentions: BunkoMentionNotifications;
   public readonly shortlink: ShortLinkClient;
   public readonly mcp: McpHub;
   public readonly classifier: SmallModelClassifier;
@@ -106,7 +106,7 @@ export class BerryApp {
     this.directory = options.directory;
     this.guild = options.guild;
     this.bunko = options.bunko;
-    this.#bunkoMentions = options.bunkoMentions;
+    this.bunkoMentions = options.bunkoMentions;
     this.shortlink = options.shortlink;
     this.mcp = options.mcp;
     this.classifier = options.classifier;
@@ -145,10 +145,11 @@ export class BerryApp {
     const bunko = new BunkoClient(env);
     const bunkoMentions = new BunkoMentionNotifications(
       env,
-      store.cursors,
+      bunko,
+      store,
       directory,
       gateway,
-      () => getSettings().bot.botQQ,
+      getSettings,
     );
     const shortlink = new ShortLinkClient(env.shortlinkOrigin);
     const mcp = new McpHub();
@@ -322,7 +323,7 @@ export class BerryApp {
     await this.gatewayEvents.stop();
     this.scheduler.stop();
     await this.guildAutomation.stop();
-    await this.#bunkoMentions.stop();
+    await this.bunkoMentions.stop();
     await this.worker.stop();
     await this.media.close();
     await this.gateway.close();
