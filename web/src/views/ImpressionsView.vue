@@ -17,7 +17,7 @@ import {
   NText,
   useMessage,
 } from "naive-ui";
-import { computed, h, onMounted, ref, watch } from "vue";
+import { h, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { apiFetch } from "../api/client.ts";
@@ -36,7 +36,7 @@ interface ImpressionRow {
 const route = useRoute();
 const router = useRouter();
 const message = useMessage();
-const { users, userOptions } = useChatOptions();
+const { userOptions } = useChatOptions();
 
 const loading = ref(false);
 const saving = ref(false);
@@ -46,10 +46,6 @@ const filterSearch = ref(
   typeof route.query.q === "string" ? route.query.q : "",
 );
 const pickRefreshUserId = ref<string | null>(null);
-
-const userNameById = computed(
-  () => new Map(users.value.map((u) => [u.userId, u.name])),
-);
 
 async function loadImpressions() {
   loading.value = true;
@@ -78,14 +74,13 @@ const modalOpen = ref(false);
 const isEdit = ref(false);
 const form = ref({
   userId: "",
-  displayName: "",
   impression: "",
   locked: true,
 });
 
 function openCreate() {
   isEdit.value = false;
-  form.value = { userId: "", displayName: "", impression: "", locked: true };
+  form.value = { userId: "", impression: "", locked: true };
   modalOpen.value = true;
 }
 
@@ -93,7 +88,6 @@ function openEdit(row: ImpressionRow) {
   isEdit.value = true;
   form.value = {
     userId: row.userId,
-    displayName: row.displayName,
     impression: row.impression,
     locked: row.locked,
   };
@@ -115,8 +109,6 @@ async function handleSave() {
     await apiFetch(`/api/admin/impressions/${encodeURIComponent(uid)}`, {
       method: "PUT",
       body: JSON.stringify({
-        displayName:
-          form.value.displayName.trim() || userNameById.value.get(uid) || "",
         impression: form.value.impression.trim(),
         locked: form.value.locked,
       }),
@@ -166,12 +158,16 @@ const columns: DataTableColumns<ImpressionRow> = [
   {
     title: "成员",
     key: "userId",
-    width: 190,
+    width: 220,
     ellipsis: { tooltip: true },
     render: (row) => {
-      const name = row.displayName || userNameById.value.get(row.userId) || "";
+      const name = row.displayName.trim();
+      const hasDistinctName = Boolean(name && name !== row.userId);
 
-      return name ? `${name} (${row.userId})` : row.userId;
+      return h("span", [
+        h("span", { class: "mono tabular" }, row.userId),
+        ...(hasDistinctName ? [" ", name] : []),
+      ]);
     },
   },
   {
@@ -306,9 +302,9 @@ onMounted(() => {
     <div class="filter-bar">
       <NInput
         v-model:value="filterSearch"
-        class="w-200"
+        class="w-220"
         clearable
-        placeholder="搜 QQ 号 / 昵称 / 印象"
+        placeholder="搜 QQ 号 / 姓名 / 昵称 / 印象"
         size="small"
         @clear="handleSearch"
         @keyup.enter="handleSearch"
@@ -351,7 +347,7 @@ onMounted(() => {
         :data="items"
         :loading
         :pagination="{ pageSize: 20 }"
-        :scroll-x="820"
+        :scroll-x="850"
         size="small"
       />
     </NCard>
@@ -372,9 +368,6 @@ onMounted(() => {
             placeholder="选择已知成员或直接输入 QQ 号"
             tag
           />
-        </NFormItem>
-        <NFormItem label="展示昵称（可选）">
-          <NInput v-model:value="form.displayName" maxlength="64" />
         </NFormItem>
         <NFormItem label="一句话印象（不超过 120 字）">
           <NInput

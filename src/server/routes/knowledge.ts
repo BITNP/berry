@@ -182,6 +182,29 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
   );
 
   // Member impressions
+  async function mapWithConcurrency<T, R>(
+    items: readonly T[],
+    limit: number,
+    fn: (item: T) => Promise<R>,
+  ): Promise<R[]> {
+    const results = Array.from<R>({ length: items.length });
+    let nextIndex = 0;
+
+    async function worker() {
+      while (nextIndex < items.length) {
+        const idx = nextIndex++;
+
+        results[idx] = await fn(items[idx]!);
+      }
+    }
+
+    await Promise.all(
+      Array.from({ length: Math.min(limit, items.length) }, () => worker()),
+    );
+
+    return results;
+  }
+
   router.get(
     "/api/admin/impressions",
     defineEventHandler(async (event) => {
@@ -191,7 +214,24 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
         Type.Object({ search: Type.Optional(Type.String()) }),
       );
 
-      return { items: await berry.store.impressions.list(query) };
+      const rows = await berry.store.impressions.list();
+      const resolved = await mapWithConcurrency(rows, 8, async (item) => {
+        const name = await berry.social.resolveMemberName(item.userId);
+
+        return name ? { ...item, displayName: name } : item;
+      });
+      const kw = query.search?.trim().toLowerCase() ?? "";
+
+      return {
+        items: kw
+          ? resolved.filter(
+              (item) =>
+                item.userId.includes(kw) ||
+                item.displayName.toLowerCase().includes(kw) ||
+                item.impression.toLowerCase().includes(kw),
+            )
+          : resolved,
+      };
     }),
   );
 
@@ -212,10 +252,14 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
           locked: Type.Optional(Type.Boolean()),
         }),
       );
+      const displayName =
+        body.displayName?.trim() ||
+        (await berry.social.resolveMemberName(userId)) ||
+        undefined;
 
       return berry.store.impressions.upsert({
         userId,
-        displayName: body.displayName,
+        displayName,
         impression: body.impression,
         source: "manual",
         locked: body.locked ?? true,

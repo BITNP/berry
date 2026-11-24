@@ -11,6 +11,7 @@ export interface DirectoryUser {
   subject: string;
   username: string;
   name: string;
+  realName: string | null;
   qq: string | null;
   enabled: boolean;
   permissions: BerryPermissions;
@@ -237,6 +238,7 @@ export class IdentityDirectory {
       subject: raw.id,
       username: raw.username?.trim() ?? raw.id,
       name: fullName || raw.username?.trim() || raw.id,
+      realName: fullName || null,
       qq: this.#extractQQ(raw),
       enabled: raw.enabled !== false,
       permissions: permissionsFromRoles(roles),

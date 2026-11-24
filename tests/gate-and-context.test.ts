@@ -1415,3 +1415,166 @@ test("member impressions refresh from history, respect manual locks, and inject 
 
   assert.match(capturedDialogUser, /"impression":"群串子，爱整活测试但人挺好"/);
 });
+
+test("impressions API resolves Keycloak real name first and falls back to QQ nickname", async (t) => {
+  const keycloakStub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+    if (url.pathname === "/realms/bitnp/protocol/openid-connect/token") {
+      res.end(JSON.stringify({ access_token: "kc-tok", expires_in: 300 }));
+
+      return;
+    }
+
+    if (url.pathname === "/admin/realms/bitnp/users") {
+      const q = url.searchParams.get("q") ?? "";
+
+      if (q === "qq_number:1971565258") {
+        res.end(
+          JSON.stringify([
+            {
+              id: "sub-zmh",
+              username: "zmh",
+              firstName: "朱明浩",
+              enabled: true,
+              attributes: { qq_number: ["1971565258"] },
+            },
+          ]),
+        );
+
+        return;
+      }
+
+      if (q === "qq_number:2681142127") {
+        // Bound user with no real name set -> should fall back to QQ nickname.
+        res.end(
+          JSON.stringify([
+            {
+              id: "sub-noname",
+              username: "1120240001",
+              enabled: true,
+              attributes: { qq_number: ["2681142127"] },
+            },
+          ]),
+        );
+
+        return;
+      }
+
+      res.end(JSON.stringify([]));
+
+      return;
+    }
+
+    if (url.pathname.endsWith("/role-mappings/realm/composite")) {
+      res.end(JSON.stringify([]));
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end("{}");
+  }, t);
+
+  const gatewayStub = await startStubServer((req, res, bodyText) => {
+    res.setHeader("Content-Type", "application/json");
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+    if (url.pathname.endsWith("/get_stranger_info")) {
+      const body = JSON.parse(bodyText || "{}") as { user_id?: number };
+
+      if (body.user_id === 2_681_142_127) {
+        res.end(
+          JSON.stringify({
+            status: "ok",
+            retcode: 0,
+            data: { user_id: 2_681_142_127, nickname: "IDA*" },
+          }),
+        );
+
+        return;
+      }
+
+      res.end(JSON.stringify({ status: "failed", retcode: 1404, data: null }));
+
+      return;
+    }
+
+    res.end(JSON.stringify({ status: "ok", retcode: 0, data: {} }));
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      devAuthBypass: true,
+      gatewayUrl: gatewayStub.url,
+      gatewayToken: "gw-test-token",
+      oidcIssuer: `${keycloakStub.url}/realms/bitnp`,
+      keycloakAdminUrl: `${keycloakStub.url}/admin/realms/bitnp`,
+      keycloakClientId: "berry-test",
+      keycloakClientSecret: "secret",
+    },
+    {},
+    t,
+  );
+
+  // Seed DB with stale per-group cards.
+  await app.store.impressions.upsert({
+    userId: "1971565258",
+    displayName: "技术-22-某群名片",
+    impression: "熟悉集群运维",
+    source: "auto",
+    locked: false,
+  });
+  await app.store.impressions.upsert({
+    userId: "2681142127",
+    displayName: "技术-24-某群名片",
+    impression: "常在群里讨论架构",
+    source: "auto",
+    locked: false,
+  });
+  await app.store.impressions.upsert({
+    userId: "99990001",
+    displayName: "本地留存名",
+    impression: "外部访客",
+    source: "manual",
+    locked: true,
+  });
+
+  const { url } = await app.listen();
+  const listed = (await (
+    await fetch(`${url}/api/admin/impressions`)
+  ).json()) as {
+    items: { userId: string; displayName: string }[];
+  };
+  const byId = new Map(
+    listed.items.map((item) => [item.userId, item.displayName]),
+  );
+
+  assert.equal(byId.get("1971565258"), "朱明浩");
+  assert.equal(byId.get("2681142127"), "IDA*");
+  assert.equal(byId.get("99990001"), "本地留存名");
+
+  // Search matches freshly resolved real name and QQ nickname.
+  const searchReal = (await (
+    await fetch(
+      `${url}/api/admin/impressions?search=${encodeURIComponent("朱明浩")}`,
+    )
+  ).json()) as { items: { userId: string }[] };
+
+  assert.deepEqual(
+    searchReal.items.map((item) => item.userId),
+    ["1971565258"],
+  );
+
+  const searchNick = (await (
+    await fetch(
+      `${url}/api/admin/impressions?search=${encodeURIComponent("IDA*")}`,
+    )
+  ).json()) as { items: { userId: string }[] };
+
+  assert.deepEqual(
+    searchNick.items.map((item) => item.userId),
+    ["2681142127"],
+  );
+});

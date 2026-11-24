@@ -191,7 +191,7 @@ export class BerryApp {
     const subagents = createDefaultSubagentRegistry();
     const mainTools = createDefaultMainToolRegistry(subagents);
     const agent = new BerryAgent(services, { subagents, mainTools });
-    const social = new SocialDistiller(store, getSettings);
+    const social = new SocialDistiller(store, directory, gateway, getSettings);
 
     const gate = new MessageGate(
       store,

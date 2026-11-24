@@ -3,6 +3,8 @@ import {
   resolveMaxOutputTokens,
   resolveThinkingEffort,
 } from "../config/settings.ts";
+import type { MessageGatewayClient } from "../gateway/client.ts";
+import type { IdentityDirectory } from "../identity/keycloak.ts";
 import type { Store } from "../store/index.ts";
 import type { ChatConfig, ChatKey, MemberImpressionRecord } from "../types.ts";
 import { errorMessage } from "../utils/time.ts";
@@ -128,11 +130,44 @@ export function parseJargonResponse(
 
 export class SocialDistiller {
   #store: Store;
+  #directory: IdentityDirectory;
+  #gateway: MessageGatewayClient;
   #getSettings: () => RuntimeSettings;
 
-  constructor(store: Store, getSettings: () => RuntimeSettings) {
+  constructor(
+    store: Store,
+    directory: IdentityDirectory,
+    gateway: MessageGatewayClient,
+    getSettings: () => RuntimeSettings,
+  ) {
     this.#store = store;
+    this.#directory = directory;
+    this.#gateway = gateway;
     this.#getSettings = getSettings;
+  }
+
+  /**
+   * Resolve a stable cross-group member label: Keycloak real name first, then
+   * QQ profile nickname (never a per-group card).
+   */
+  public async resolveMemberName(userId: string): Promise<string | null> {
+    const clean = userId.trim();
+
+    if (!clean) {
+      return null;
+    }
+
+    const identity = await this.#directory.byQQ(clean).catch(() => null);
+
+    if (identity?.realName) {
+      return identity.realName;
+    }
+
+    const qqNickname = await this.#gateway
+      .getUserDisplayName(clean)
+      .catch(() => null);
+
+    return qqNickname || null;
   }
 
   public async distillChatStyle(
@@ -328,10 +363,12 @@ export class SocialDistiller {
     }
 
     const cfg = this.#requireMainModel(settings, "提炼成员印象");
+    const resolvedName = await this.resolveMemberName(cleanUserId);
     const displayName =
       options?.displayName?.trim() ||
-      samples.at(-1)?.senderName.trim() ||
+      resolvedName ||
       existing?.displayName ||
+      samples.at(-1)?.senderName.trim() ||
       cleanUserId;
     const transcript = samples
       .map((m) => m.text.replace(/\s+/g, " ").slice(0, 120))
