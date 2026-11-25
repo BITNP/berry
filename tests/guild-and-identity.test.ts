@@ -3,6 +3,8 @@ import type { ServerResponse } from "node:http";
 import type { TestContext } from "node:test";
 import test from "node:test";
 
+import { ModelIds } from "../src/agent/model-ids.ts";
+import { guildResolveMemberTool } from "../src/tools/guild.ts";
 import {
   captureText,
   chatReply,
@@ -1187,4 +1189,153 @@ test("GuildInternalClient.listNodeTree returns all roots and nested children bey
 
   assert.equal(dupTrigger.alreadyActive, true);
   assert.equal(dupTrigger.jobId, firstTrigger.jobId);
+});
+
+test("guild_resolve_member bypasses stale Keycloak cache, returns departments/groups, and rejects role API errors", async (t) => {
+  let admittedInKeycloak = false;
+  let failRoleLookup = false;
+
+  const kcStub = await startStubServer((req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+
+    if (url.pathname === "/realms/bitnp/protocol/openid-connect/token") {
+      res.end(JSON.stringify({ access_token: "kc-tok", expires_in: 300 }));
+
+      return;
+    }
+
+    const user = {
+      id: "sub-lax",
+      username: "jkl857",
+      firstName: "刘安轩",
+      enabled: true,
+      attributes: { qq_number: ["88888"] },
+    };
+
+    if (url.pathname === "/admin/realms/bitnp/users") {
+      const q = url.searchParams.get("q") ?? "";
+      const search = url.searchParams.get("search") ?? "";
+
+      if (
+        q === "qq_number:88888" ||
+        search === "刘安轩" ||
+        search === "jkl857"
+      ) {
+        res.end(JSON.stringify([user]));
+
+        return;
+      }
+
+      res.end(JSON.stringify([]));
+
+      return;
+    }
+
+    if (
+      url.pathname ===
+      "/admin/realms/bitnp/users/sub-lax/role-mappings/realm/composite"
+    ) {
+      if (failRoleLookup) {
+        res.statusCode = 500;
+        res.end(JSON.stringify({ error: "boom" }));
+
+        return;
+      }
+
+      res.end(
+        JSON.stringify(
+          admittedInKeycloak
+            ? [
+                { name: "permission-techdept-access" },
+                { name: "position-techdept-member" },
+              ]
+            : [],
+        ),
+      );
+
+      return;
+    }
+
+    if (url.pathname === "/admin/realms/bitnp/users/sub-lax/groups") {
+      res.end(
+        JSON.stringify(
+          admittedInKeycloak
+            ? [{ id: "grp-1", name: "2026 技术部", path: "/2026 技术部" }]
+            : [],
+        ),
+      );
+
+      return;
+    }
+
+    res.statusCode = 404;
+    res.end("{}");
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      oidcIssuer: `${kcStub.url}/realms/bitnp`,
+      keycloakAdminUrl: `${kcStub.url}/admin/realms/bitnp`,
+      keycloakClientId: "berry-test",
+      keycloakClientSecret: "secret",
+    },
+    {},
+    t,
+  );
+
+  // First lookup caches pre-admission state.
+  const before = await app.directory.byQQ("88888");
+
+  assert.equal(before?.permissions.admitted, false);
+  assert.deepEqual(before?.groups, []);
+
+  // User accepts invite in Keycloak right away (well inside cache TTL).
+  admittedInKeycloak = true;
+
+  // Explicit guild_resolve_member lookup by userRef must bypass cache and return departments + groups.
+  const ids = new ModelIds();
+  const userRef = ids.userRef("88888");
+  const boundTool = guildResolveMemberTool.bind({
+    services: app.services,
+    ids,
+    actor: {
+      role: "admin",
+      chatKey: "private:11111",
+      senderQQ: "11111",
+      multiSpeaker: false,
+      actorSubject: "sub-admin",
+      actorName: "测试管理员",
+    },
+  });
+  const resolved = (await boundTool.execute({ userRef })) as {
+    matches: {
+      name: string;
+      username: string;
+      admitted: boolean;
+      departments: string[];
+      managedDepartments: string[];
+      groups?: string[];
+      positions: string[];
+    }[];
+  };
+
+  assert.equal(resolved.matches.length, 1);
+  assert.equal(resolved.matches[0]?.admitted, true);
+  assert.deepEqual(resolved.matches[0]?.departments, ["技术部"]);
+  assert.deepEqual(resolved.matches[0]?.managedDepartments, []);
+  assert.deepEqual(resolved.matches[0]?.groups, ["2026 技术部"]);
+  assert.deepEqual(resolved.matches[0]?.positions, ["技术部成员"]);
+
+  // Fresh lookup also refreshes the cache for subsequent byQQ calls.
+  const afterCached = await app.directory.byQQ("88888");
+
+  assert.equal(afterCached?.permissions.admitted, true);
+
+  // Role lookup failure throws rather than silently caching admitted=false.
+  failRoleLookup = true;
+  await assert.rejects(
+    () => app.directory.byQQ("88888", { fresh: true }),
+    /Keycloak role lookup failed.*HTTP 500/,
+  );
 });

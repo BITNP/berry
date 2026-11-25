@@ -14,10 +14,15 @@ export interface DirectoryUser {
   realName: string | null;
   qq: string | null;
   enabled: boolean;
+  groups: string[];
   permissions: BerryPermissions;
 }
 
-const POSITIVE_TTL_MS = 5 * 60 * 1000;
+export interface DirectoryLookupOptions {
+  fresh?: boolean;
+}
+
+const POSITIVE_TTL_MS = 60 * 1000;
 const NEGATIVE_TTL_MS = 30 * 1000;
 const MAX_CACHE_SIZE = 2000;
 
@@ -88,15 +93,20 @@ export class IdentityDirectory {
     );
   }
 
-  public async bySubject(subject: string): Promise<DirectoryUser | null> {
+  public async bySubject(
+    subject: string,
+    options?: DirectoryLookupOptions,
+  ): Promise<DirectoryUser | null> {
     if (!this.enabled || !subject) {
       return null;
     }
 
-    const cached = this.#bySubject.get(subject);
+    if (!options?.fresh) {
+      const cached = this.#bySubject.get(subject);
 
-    if (cached !== undefined) {
-      return cached.user;
+      if (cached !== undefined) {
+        return cached.user;
+      }
     }
 
     const res = await this.#adminGet<KeycloakUserRaw>(
@@ -121,21 +131,30 @@ export class IdentityDirectory {
       { user: resolved },
       { ttl: resolved ? POSITIVE_TTL_MS : NEGATIVE_TTL_MS },
     );
+    if (options?.fresh && resolved?.qq) {
+      // Invalidate QQ cache without bypassing byQQ()'s duplicate-binding check.
+      this.#byQQ.delete(resolved.qq);
+    }
 
     return resolved;
   }
 
-  public async byQQ(qq: string): Promise<DirectoryUser | null> {
+  public async byQQ(
+    qq: string,
+    options?: DirectoryLookupOptions,
+  ): Promise<DirectoryUser | null> {
     const clean = qq.trim();
 
     if (!this.enabled || !/^\d+$/.test(clean)) {
       return null;
     }
 
-    const cached = this.#byQQ.get(clean);
+    if (!options?.fresh) {
+      const cached = this.#byQQ.get(clean);
 
-    if (cached !== undefined) {
-      return cached.user;
+      if (cached !== undefined) {
+        return cached.user;
+      }
     }
 
     const res = await this.#adminGet<KeycloakUserRaw[]>("/users", {
@@ -184,7 +203,10 @@ export class IdentityDirectory {
     return matched;
   }
 
-  public async searchMembers(query: string): Promise<DirectoryUser[]> {
+  public async searchMembers(
+    query: string,
+    options?: DirectoryLookupOptions,
+  ): Promise<DirectoryUser[]> {
     const trimmed = query.trim();
 
     if (!this.enabled || !trimmed) {
@@ -192,7 +214,7 @@ export class IdentityDirectory {
     }
 
     if (/^\d{5,15}$/.test(trimmed)) {
-      const exact = await this.byQQ(trimmed);
+      const exact = await this.byQQ(trimmed, options);
 
       if (exact) {
         return [exact];
@@ -216,18 +238,44 @@ export class IdentityDirectory {
         continue;
       }
 
-      users.push(await this.#hydrateUser(raw));
+      const user = await this.#hydrateUser(raw);
+
+      this.#bySubject.set(user.subject, { user }, { ttl: POSITIVE_TTL_MS });
+      if (user.qq) {
+        // Invalidate QQ cache without bypassing byQQ()'s duplicate-binding check.
+        this.#byQQ.delete(user.qq);
+      }
+
+      users.push(user);
     }
 
     return users;
   }
 
   async #hydrateUser(raw: KeycloakUserRaw): Promise<DirectoryUser> {
-    const rolesRes = await this.#adminGet<{ name: string }[]>(
-      `/users/${encodeURIComponent(raw.id)}/role-mappings/realm/composite`,
-    );
-    const roles =
-      rolesRes.ok && rolesRes._data ? rolesRes._data.map((r) => r.name) : [];
+    const userPath = `/users/${encodeURIComponent(raw.id)}`;
+    const [rolesRes, groupsRes] = await Promise.all([
+      this.#adminGet<{ name: string }[]>(
+        `${userPath}/role-mappings/realm/composite`,
+      ),
+      this.#adminGet<{ name?: string; path?: string }[]>(
+        `${userPath}/groups`,
+      ).catch(() => null),
+    ]);
+
+    if (!rolesRes.ok || !Array.isArray(rolesRes._data)) {
+      throw new Error(
+        `Keycloak role lookup failed for ${raw.id}: HTTP ${rolesRes.status}`,
+      );
+    }
+
+    const roles = rolesRes._data.map((r) => r.name);
+    const groups =
+      groupsRes?.ok && Array.isArray(groupsRes._data)
+        ? groupsRes._data
+            .map((g) => g.name?.trim() || g.path?.trim().replace(/^\/+/, ""))
+            .filter((name): name is string => Boolean(name))
+        : [];
 
     const fullName = [raw.firstName, raw.lastName]
       .filter((part): part is string => Boolean(part?.trim()))
@@ -241,6 +289,7 @@ export class IdentityDirectory {
       realName: fullName || null,
       qq: this.#extractQQ(raw),
       enabled: raw.enabled !== false,
+      groups,
       permissions: permissionsFromRoles(roles),
     };
   }

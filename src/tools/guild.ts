@@ -1,3 +1,4 @@
+import { departmentLabel } from "bitnp-authz";
 import { Type } from "typebox";
 
 import type { ModelIds } from "../agent/model-ids.ts";
@@ -15,6 +16,14 @@ const formatDirectoryMember = (user: DirectoryUser, ids: ModelIds) => ({
   userRef: user.qq ? ids.userRef(user.qq) : null,
   admitted: user.permissions.admitted,
   manager: user.permissions.manager,
+  systemAdmin: user.permissions.systemAdmin,
+  departments: user.permissions.accessDepartments.map((d) =>
+    departmentLabel(d),
+  ),
+  managedDepartments: user.permissions.managedDepartments.map((d) =>
+    departmentLabel(d),
+  ),
+  ...(user.groups.length > 0 ? { groups: user.groups } : {}),
   positions: user.permissions.positions.map((p) => p.label),
 });
 
@@ -83,7 +92,7 @@ async function auditGuildMutation<
 export const guildResolveMemberTool = defineTool({
   name: "guild_resolve_member",
   description:
-    "通过姓名、用户名、QQ 号或 u_* 句柄查找网协 Keycloak 成员，返回 subject、姓名、职务、准入状态及对应的 u_* 句柄。",
+    "实时通过姓名、用户名、QQ 号或 u_* 句柄查找网协 Keycloak 成员，返回 subject、姓名、准入状态、所属部门、组织分组、职务及对应的 u_* 句柄。",
   parameters: Type.Object(
     {
       query: Type.Optional(Type.String()),
@@ -99,14 +108,18 @@ export const guildResolveMemberTool = defineTool({
     }
 
     if (args.userRef) {
-      const user = await directory.byQQ(ctx.ids.resolveUser(args.userRef));
+      const user = await directory.byQQ(ctx.ids.resolveUser(args.userRef), {
+        fresh: true,
+      });
 
       return {
         matches: user ? [formatDirectoryMember(user, ctx.ids)] : [],
       };
     }
 
-    const matches = await directory.searchMembers((args.query ?? "").trim());
+    const matches = await directory.searchMembers((args.query ?? "").trim(), {
+      fresh: true,
+    });
 
     return {
       matches: matches.map((user) => formatDirectoryMember(user, ctx.ids)),
