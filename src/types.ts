@@ -338,6 +338,8 @@ export interface StickerRecord {
   status: StickerStatus;
   enabled: boolean;
   useCount: number;
+  reviewedBy: string | null;
+  reviewedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }

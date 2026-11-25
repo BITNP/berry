@@ -38,6 +38,8 @@ interface StickerRow {
   status: StickerStatus;
   enabled: boolean;
   useCount: number;
+  reviewedBy: string | null;
+  reviewedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -340,6 +342,25 @@ const columns: DataTableColumns<StickerRow> = [
       ),
   },
   {
+    title: "审核人",
+    key: "reviewedBy",
+    width: 110,
+    ellipsis: { tooltip: true },
+    render: (row) => {
+      if (!row.reviewedBy) {
+        return h(NText, { depth: 3 }, { default: () => "—" });
+      }
+
+      return row.reviewedAt
+        ? h(
+            "span",
+            { title: `${row.reviewedBy} · ${formatTime(row.reviewedAt)}` },
+            row.reviewedBy,
+          )
+        : row.reviewedBy;
+    },
+  },
+  {
     title: "启用",
     key: "enabled",
     width: 70,
@@ -499,9 +520,9 @@ onUnmounted(() => {
       />
       <NInput
         v-model:value="filterSearch"
-        class="w-200"
+        class="w-220"
         clearable
-        placeholder="搜含义或情绪标签"
+        placeholder="搜含义 / 标签 / 审核人"
         size="small"
         @clear="handleSearch"
         @keyup.enter="handleSearch"
@@ -520,7 +541,7 @@ onUnmounted(() => {
         :data="items"
         :loading
         :pagination="{ pageSize: 20 }"
-        :scroll-x="920"
+        :scroll-x="1030"
         size="small"
       />
     </NCard>

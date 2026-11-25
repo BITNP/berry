@@ -224,6 +224,8 @@ export interface BerryTables {
     status: string;
     enabled: number;
     use_count: number;
+    reviewed_by: string | null;
+    reviewed_at: number | null;
     created_at: number;
     updated_at: number;
   };
@@ -926,6 +928,18 @@ const migrations: Record<string, Migration> = {
           );
         }
       }
+    },
+  },
+  "013_sticker_reviewer": {
+    async up(db) {
+      await db.schema
+        .alterTable("stickers")
+        .addColumn("reviewed_by", "text")
+        .execute();
+      await db.schema
+        .alterTable("stickers")
+        .addColumn("reviewed_at", "integer")
+        .execute();
     },
   },
 };

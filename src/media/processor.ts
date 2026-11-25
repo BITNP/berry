@@ -884,6 +884,8 @@ export class MediaProcessor {
       .filter((kw) => cleanMeaning.includes(kw))
       .slice(0, 6);
 
+    const status = settings.social.stickerAutoApprove ? "approved" : "pending";
+
     await this.#store.stickers.collectIfAbsent({
       sha256: file.sha256,
       filePath: file.filePath,
@@ -891,8 +893,9 @@ export class MediaProcessor {
       meaning: cleanMeaning || attachment.name || "表情包",
       tags: tags.length > 0 ? tags : ["表情包"],
       sourceChatKey: record.chatKey,
-      status: settings.social.stickerAutoApprove ? "approved" : "pending",
+      status,
       enabled: true,
+      reviewedBy: status === "approved" ? "自动通过" : null,
     });
   }
 }

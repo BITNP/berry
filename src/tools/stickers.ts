@@ -195,6 +195,10 @@ const saveStickerTool = defineTool({
       }
     }
 
+    const reviewer =
+      ctx.actor.actorName?.trim() ||
+      (ctx.actor.senderQQ ? `QQ:${ctx.actor.senderQQ}` : "管理员");
+
     const { record, created } =
       await ctx.services.store.stickers.collectIfAbsent({
         sha256: asset.sha256,
@@ -205,6 +209,7 @@ const saveStickerTool = defineTool({
         sourceChatKey: asset.chatKey,
         status: "approved",
         enabled: true,
+        reviewedBy: reviewer,
       });
 
     const finalRecord = created
@@ -214,6 +219,7 @@ const saveStickerTool = defineTool({
           tags,
           status: "approved",
           enabled: true,
+          reviewedBy: reviewer,
         })) ?? record);
 
     return {

@@ -33,9 +33,17 @@ function decodeSticker(
     status: row.status as StickerStatus,
     enabled: Boolean(row.enabled),
     useCount: row.use_count,
+    reviewedBy: row.reviewed_by,
+    reviewedAt: row.reviewed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function normalizeReviewer(raw?: string | null): string | null {
+  const clean = raw?.trim().slice(0, 64) ?? "";
+
+  return clean || null;
 }
 
 function normalizeTags(tags?: readonly string[]): string[] {
@@ -143,7 +151,8 @@ export class StickersStore {
     return decoded.filter(
       (item) =>
         item.meaning.toLowerCase().includes(kw) ||
-        item.tags.some((t) => t.toLowerCase().includes(kw)),
+        item.tags.some((t) => t.toLowerCase().includes(kw)) ||
+        (item.reviewedBy?.toLowerCase().includes(kw) ?? false),
     );
   }
 
@@ -156,6 +165,8 @@ export class StickersStore {
     sourceChatKey: string;
     status: StickerStatus;
     enabled?: boolean;
+    reviewedBy?: string | null;
+    reviewedAt?: number | null;
   }): Promise<{ record: StickerRecord; created: boolean }> {
     const existing = await this.getBySha256(input.sha256);
 
@@ -164,6 +175,12 @@ export class StickersStore {
     }
 
     const now = Date.now();
+    const reviewedBy =
+      input.status === "approved" ? normalizeReviewer(input.reviewedBy) : null;
+    const reviewedAt =
+      input.status === "approved" && reviewedBy
+        ? (input.reviewedAt ?? now)
+        : null;
     const record = await this.#database.writeTx(async (trx) => {
       const row = await trx
         .insertInto("stickers")
@@ -177,6 +194,8 @@ export class StickersStore {
           status: input.status,
           enabled: Number(input.enabled ?? true),
           use_count: 0,
+          reviewed_by: reviewedBy,
+          reviewed_at: reviewedAt,
           created_at: now,
           updated_at: now,
         })
@@ -207,6 +226,8 @@ export class StickersStore {
       tags?: string[];
       status?: StickerStatus;
       enabled?: boolean;
+      reviewedBy?: string | null;
+      reviewedAt?: number | null;
     },
   ): Promise<StickerRecord | null> {
     const existing = await this.get(id);
@@ -216,6 +237,21 @@ export class StickersStore {
     }
 
     const now = Date.now();
+    let reviewPatch: {
+      reviewed_by?: string | null;
+      reviewed_at?: number | null;
+    } = {};
+
+    if (patch.status === "pending" && existing.status !== "pending") {
+      reviewPatch = { reviewed_by: null, reviewed_at: null };
+    } else if (patch.status === "approved" && existing.status !== "approved") {
+      const reviewedBy = normalizeReviewer(patch.reviewedBy);
+
+      reviewPatch = {
+        reviewed_by: reviewedBy,
+        reviewed_at: reviewedBy ? (patch.reviewedAt ?? now) : null,
+      };
+    }
 
     return this.#database.writeTx(async (trx) => {
       const row = await trx
@@ -231,6 +267,7 @@ export class StickersStore {
           ...(patch.enabled === undefined
             ? {}
             : { enabled: Number(patch.enabled) }),
+          ...reviewPatch,
           updated_at: now,
         })
         .where("id", "=", id)

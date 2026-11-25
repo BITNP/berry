@@ -400,10 +400,13 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
     }),
   );
 
+  const reviewerName = (session: { name: string; subject: string }): string =>
+    session.name.trim() || session.subject;
+
   router.patch(
     "/api/admin/stickers/:id",
     defineEventHandler(async (event) => {
-      await berry.auth.requireAdmin(event);
+      const session = await berry.auth.requireAdmin(event);
       const { id } = await parseParams(event, idParamSchema, "无效的表情包 ID");
       const body = await parseBody(
         event,
@@ -414,7 +417,10 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
           enabled: Type.Optional(Type.Boolean()),
         }),
       );
-      const updated = await berry.store.stickers.update(id, body);
+      const updated = await berry.store.stickers.update(id, {
+        ...body,
+        reviewedBy: reviewerName(session),
+      });
 
       if (!updated) {
         throw createError({ statusCode: 404, statusMessage: "表情包不存在" });
@@ -437,7 +443,7 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
   router.post(
     "/api/admin/stickers/from-asset/:assetId",
     defineEventHandler(async (event) => {
-      await berry.auth.requireAdmin(event);
+      const session = await berry.auth.requireAdmin(event);
       const { assetId } = await parseParams(
         event,
         Type.Object({ assetId: Type.Integer({ minimum: 1 }) }),
@@ -461,6 +467,7 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
         sourceChatKey: asset.chatKey,
         status: "approved",
         enabled: true,
+        reviewedBy: reviewerName(session),
       });
 
       return { ok: true, created, item: record };
@@ -478,7 +485,7 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
   router.post(
     "/api/admin/stickers/upload",
     defineEventHandler(async (event) => {
-      await berry.auth.requireAdmin(event);
+      const session = await berry.auth.requireAdmin(event);
       const body = await parseBody(
         event,
         Type.Object({
@@ -534,6 +541,7 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
         .slice(0, 8);
       const status = body.status ?? "approved";
       const enabled = body.enabled ?? true;
+      const reviewer = status === "approved" ? reviewerName(session) : null;
 
       const { record, created } = await berry.store.stickers.collectIfAbsent({
         sha256,
@@ -544,6 +552,7 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
         sourceChatKey: "manual",
         status,
         enabled,
+        reviewedBy: reviewer,
       });
 
       const item = created
@@ -553,6 +562,7 @@ export function registerKnowledgeRoutes(router: Router, berry: BerryApp): void {
             tags: tags.length > 0 ? tags : record.tags,
             status,
             enabled,
+            reviewedBy: reviewer,
           })) ?? record);
 
       return { ok: true, created, item };

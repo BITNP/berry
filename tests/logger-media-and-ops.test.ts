@@ -3205,3 +3205,114 @@ test("QQ @ mentions resolve inbound @others cleanly and send outbound OneBot at 
     { type: "text", data: { text: "私聊提一下 @24-静B-郭逸戈 不发 at" } },
   ]);
 });
+
+test("stickers record reviewer on approval and upload, preserve reviewer on metadata edits, and support reviewer search", async (t) => {
+  const { app } = await createTestBerryApp(
+    {
+      devAuthBypass: true,
+      devAuthName: "李周任",
+    },
+    {},
+    t,
+  );
+
+  const { record: pending } = await app.store.stickers.collectIfAbsent({
+    sha256: "rev-sha-1",
+    filePath: "/tmp/rev-1.png",
+    mimeType: "image/png",
+    meaning: "抽象熊猫头",
+    tags: ["抽象"],
+    sourceChatKey: "group:12345",
+    status: "pending",
+    enabled: true,
+  });
+
+  assert.equal(pending.reviewedBy, null);
+  assert.equal(pending.reviewedAt, null);
+
+  const { url } = await app.listen();
+  const { csrfToken } = (await (
+    await fetch(`${url}/api/auth/status`)
+  ).json()) as { csrfToken: string };
+
+  // Approve pending sticker -> records logged-in admin name.
+  const approved = (await (
+    await fetch(`${url}/api/admin/stickers/${pending.id}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({ status: "approved" }),
+    })
+  ).json()) as {
+    status: string;
+    reviewedBy: string | null;
+    reviewedAt: number | null;
+  };
+
+  assert.equal(approved.status, "approved");
+  assert.equal(approved.reviewedBy, "李周任");
+  assert.ok(typeof approved.reviewedAt === "number" && approved.reviewedAt > 0);
+
+  // Subsequent metadata edit while staying approved preserves the original reviewer.
+  const edited = await app.store.stickers.update(pending.id, {
+    meaning: "抽象熊猫头（改文案）",
+    status: "approved",
+    reviewedBy: "另一位管理员",
+  });
+
+  assert.equal(edited?.reviewedBy, "李周任");
+  assert.equal(edited?.reviewedAt, approved.reviewedAt);
+
+  // Search by reviewer name finds the sticker.
+  const searchRes = (await (
+    await fetch(
+      `${url}/api/admin/stickers?search=${encodeURIComponent("李周任")}`,
+    )
+  ).json()) as { items: { id: number; reviewedBy: string | null }[] };
+
+  assert.deepEqual(
+    searchRes.items.map((item) => item.id),
+    [pending.id],
+  );
+
+  // Moving back to pending clears reviewer info.
+  const reverted = (await (
+    await fetch(`${url}/api/admin/stickers/${pending.id}`, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({ status: "pending" }),
+    })
+  ).json()) as { reviewedBy: string | null; reviewedAt: number | null };
+
+  assert.equal(reverted.reviewedBy, null);
+  assert.equal(reverted.reviewedAt, null);
+
+  // Direct upload with approved status records the uploader as reviewer.
+  const tinyPngBase64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  const uploaded = (await (
+    await fetch(`${url}/api/admin/stickers/upload`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRF-Token": csrfToken,
+      },
+      body: JSON.stringify({
+        dataUrl: `data:image/png;base64,${tinyPngBase64}`,
+        filename: "ok.png",
+        meaning: "严肃比OK",
+        status: "approved",
+      }),
+    })
+  ).json()) as {
+    item: { reviewedBy: string | null; reviewedAt: number | null };
+  };
+
+  assert.equal(uploaded.item.reviewedBy, "李周任");
+  assert.ok(uploaded.item.reviewedAt);
+});
