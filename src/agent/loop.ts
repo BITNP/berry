@@ -85,10 +85,12 @@ export async function runChatToolLoop<S extends TSchema>(options: {
   ];
 
   const turnMessages: TurnMessage[] = [];
+  const seenReadonlyCalls = new Set<string>();
   let mutated = false;
   let corrections = 0;
   let prevLoggedLen = 0;
   let lastPromptTokens = 0;
+  let duplicateLoopDetected = false;
 
   const thinkingEffort = options.thinkingEffort ?? "none";
   const startedAt = Date.now();
@@ -100,16 +102,20 @@ export async function runChatToolLoop<S extends TSchema>(options: {
       round > 0 &&
       Date.now() - startedAt >= options.maxDurationMs;
     const isFinalRound =
-      (round === options.maxRounds - 1 || overTimeBudget) &&
+      (round === options.maxRounds - 1 ||
+        overTimeBudget ||
+        duplicateLoopDetected) &&
       openAITools.length > 0;
 
     if (isFinalRound && round > 0 && !wrappedUp) {
       wrappedUp = true;
       messages.push({
         role: "user",
-        content: overTimeBudget
-          ? "已达到本次执行的时长预算，不再继续调用工具。请直接基于已获取的数据给出最终 JSON 答复。"
-          : "已达到工具调用上限，不再继续调用工具。请直接基于已获取的数据给出最终 JSON 答复。",
+        content: duplicateLoopDetected
+          ? "检测到重复调用相同只读工具，不再继续调用工具。请直接基于此前已获取的结果给出最终 JSON 答复。"
+          : overTimeBudget
+            ? "已达到本次执行的时长预算，不再继续调用工具。请直接基于已获取的数据给出最终 JSON 答复。"
+            : "已达到工具调用上限，不再继续调用工具。请直接基于已获取的数据给出最终 JSON 答复。",
       });
     }
 
@@ -202,24 +208,39 @@ export async function runChatToolLoop<S extends TSchema>(options: {
           const toolStarted = performance.now();
           let toolOk = false;
           let toolMutated = false;
+          let isDuplicate = false;
+          let readonlyCallKey: string | null = null;
           let resultPayload: unknown;
 
           if (tool) {
             try {
               const parsedArgs = parseToolArguments(call.function.arguments);
-              const result = await tool.execute(parsedArgs);
 
-              if (
-                tool.mutating ||
-                (result &&
-                  typeof result === "object" &&
-                  (result as { mutated?: unknown }).mutated === true)
-              ) {
-                toolMutated = true;
+              if (!tool.mutating) {
+                readonlyCallKey = `${call.function.name}:${canonicalizeValue(parsedArgs)}`;
               }
 
-              toolOk = true;
-              resultPayload = { ok: true, result };
+              if (readonlyCallKey && seenReadonlyCalls.has(readonlyCallKey)) {
+                isDuplicate = true;
+                resultPayload = {
+                  ok: false,
+                  error: `本轮已使用相同参数调用过 ${call.function.name} 并获得结果，请勿重复调用；请直接复用已有结果输出最终 JSON。`,
+                };
+              } else {
+                const result = await tool.execute(parsedArgs);
+
+                if (
+                  tool.mutating ||
+                  (result &&
+                    typeof result === "object" &&
+                    (result as { mutated?: unknown }).mutated === true)
+                ) {
+                  toolMutated = true;
+                }
+
+                toolOk = true;
+                resultPayload = { ok: true, result };
+              }
             } catch (error) {
               resultPayload = { ok: false, error: errorMessage(error) };
               logger.warn("Tool execution failed", {
@@ -239,7 +260,10 @@ export async function runChatToolLoop<S extends TSchema>(options: {
           const resultText = JSON.stringify(resultPayload);
 
           return {
+            toolOk,
             toolMutated,
+            isDuplicate,
+            readonlyCallKey,
             summary: {
               id: call.id,
               name: call.function.name,
@@ -258,15 +282,31 @@ export async function runChatToolLoop<S extends TSchema>(options: {
       );
 
       const executedToolCalls: LlmToolCallSummary[] = [];
+      let duplicateCount = 0;
 
       for (const item of results) {
         if (item.toolMutated) {
           mutated = true;
         }
 
+        if (item.isDuplicate) {
+          duplicateCount++;
+        } else if (item.toolOk && item.readonlyCallKey) {
+          seenReadonlyCalls.add(item.readonlyCallKey);
+        }
+
         executedToolCalls.push(item.summary);
         messages.push(item.turn);
         turnMessages.push(item.turn);
+      }
+
+      if (duplicateCount > 0 && duplicateCount === results.length) {
+        duplicateLoopDetected = true;
+        logger.warn("Breaking redundant read-only tool loop", {
+          chatKey: options.chatKey,
+          round: round + 1,
+          tools: executedToolCalls.map((c) => c.name),
+        });
       }
 
       if (recordedCallId !== null) {
@@ -343,4 +383,20 @@ function parseToolArguments(raw: string): Record<string, unknown> {
   }
 
   return parsed as Record<string, unknown>;
+}
+
+function canonicalizeValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalizeValue(item)).join(",")}]`;
+  }
+
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, v]) => v !== undefined)
+      .sort(([a], [b]) => a.localeCompare(b));
+
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalizeValue(v)}`).join(",")}}`;
+  }
+
+  return JSON.stringify(value);
 }

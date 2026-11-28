@@ -1343,3 +1343,83 @@ test("multi-bubble qq_reply pacing scales with text length and spaces consecutiv
   assert.ok(sendTimestamps[1]! - sendTimestamps[0]! >= 55);
   assert.ok(sendTimestamps[2]! - sendTimestamps[1]! >= 55);
 });
+
+test("runChatToolLoop breaks redundant read-only tool loops immediately instead of spinning to maxRounds", async (t) => {
+  let llmRounds = 0;
+
+  const llmStub = await startStubServer((_req, res, bodyText) => {
+    llmRounds++;
+    const reqJson = JSON.parse(bodyText) as {
+      tools?: unknown[];
+    };
+
+    res.setHeader("Content-Type", "application/json");
+    if (reqJson.tools && reqJson.tools.length > 0) {
+      // Simulate a model repeatedly calling the exact same read-only tool with identical args.
+      res.end(
+        JSON.stringify(
+          chatToolCalls([
+            {
+              id: `dup_${llmRounds}`,
+              name: "search_qq_emojis",
+              args: { query: "斜眼笑" },
+            },
+          ]),
+        ),
+      );
+
+      return;
+    }
+
+    res.end(
+      JSON.stringify(
+        chatReply({
+          units: [{ kind: "qq_reply", text: "收到" }],
+        }),
+      ),
+    );
+  }, t);
+
+  const { app } = await createTestBerryApp(
+    {
+      mainBaseUrl: `${llmStub.url}/v1`,
+      gateBaseUrl: `${llmStub.url}/v1`,
+    },
+    {},
+    t,
+  );
+
+  await app.store.chats.upsert({
+    kind: "group",
+    chatId: "8883",
+    title: "防死循环群",
+    enabled: true,
+    triggerMode: "smart_observe",
+  });
+
+  const msg = await captureText(app, {
+    kind: "group",
+    chatId: "8883",
+    id: "ob-loop-1",
+    userId: "12345",
+    senderName: "测试君",
+    text: "@树莓娘 测试一下",
+    mentionedBot: true,
+  });
+
+  const result = await app.agent.invoke({
+    source: "qq_batch",
+    chatKey: "group:8883",
+    kind: "group",
+    chatId: "8883",
+    triggerMessageIds: [msg.message.id],
+    senderId: "12345",
+    senderName: "测试君",
+  });
+
+  // Round 1 executes tool, round 2 detects identical duplicate and triggers wrap-up,
+  // round 3 produces final JSON with tools stripped (3 rounds instead of 12!).
+  assert.equal(llmRounds, 3);
+  assert.equal(result.units.length, 1);
+  assert.equal(result.units[0]?.kind, "qq_reply");
+});
