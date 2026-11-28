@@ -352,6 +352,116 @@ export function computeReplyPaceDelayMs(
   return Math.max(low, Math.min(high, Math.round(base + jitter)));
 }
 
+export async function validateOutputUnits(
+  rawUnits: readonly RawOutputUnit[],
+  ctx: {
+    store: Store;
+    ids: ModelIds;
+    input: UnifiedInput;
+    role: AccessRole;
+    isGroupAllowed: (groupId: string) => boolean;
+  },
+): Promise<string | null> {
+  const issues: string[] = [];
+  const missingStickerIds: number[] = [];
+  const unauthorizedTargets: string[] = [];
+  const unresolvableTargets: string[] = [];
+  const disallowedGroups: string[] = [];
+
+  const isTargetAuthorized = (targetChatKey: ChatKey): boolean =>
+    targetChatKey === ctx.input.chatKey || ctx.role === "admin";
+
+  for (const unit of rawUnits) {
+    if (unit.kind === "qq_image") {
+      const sticker = await ctx.store.stickers.get(unit.stickerId);
+
+      if (sticker?.status !== "approved" || !sticker.enabled) {
+        missingStickerIds.push(unit.stickerId);
+      }
+    }
+
+    if (unit.kind === "qq_reaction") {
+      try {
+        const meta = ctx.ids.resolveMessageMeta(unit.messageId);
+        const targetChatKey = meta.chatKey ?? ctx.input.chatKey;
+
+        if (!isTargetAuthorized(targetChatKey)) {
+          unauthorizedTargets.push(unit.messageId);
+        }
+      } catch {
+        // Leave unknown raw message IDs to resolveOutputDispatches.
+      }
+
+      continue;
+    }
+
+    const rawTarget = unit.targetRef?.trim();
+
+    if (!rawTarget) {
+      continue;
+    }
+
+    let targetChatKey: ChatKey;
+
+    try {
+      targetChatKey = ctx.ids.resolveTargetChatKey(rawTarget);
+    } catch {
+      unresolvableTargets.push(rawTarget);
+
+      continue;
+    }
+
+    if (!isTargetAuthorized(targetChatKey)) {
+      unauthorizedTargets.push(rawTarget);
+
+      continue;
+    }
+
+    if (
+      targetChatKey.startsWith("group:") &&
+      !ctx.isGroupAllowed(targetChatKey.slice("group:".length))
+    ) {
+      disallowedGroups.push(rawTarget);
+    }
+  }
+
+  if (unauthorizedTargets.length > 0) {
+    const refs = [...new Set(unauthorizedTargets)].join("、");
+
+    issues.push(
+      `当前发言人权限为 ${ctx.role}（非管理员），无权跨群或向他人发私信（已拦截 ${refs}）；请移除所有跨会话输出单元，绝不要先答应“我去发”，改为直接拒绝或如实说明仅管理员或网协管理层可跨会话代发`,
+    );
+  }
+
+  if (unresolvableTargets.length > 0) {
+    const refs = [...new Set(unresolvableTargets)].join("、");
+
+    issues.push(
+      `投递目标句柄 ${refs} 无效（严禁编造或复用旧句柄）；请先调用 qq_directory 或 guild_resolve_member 获取有效句柄后再输出，或移除该单元并如实告知对方`,
+    );
+  }
+
+  if (disallowedGroups.length > 0) {
+    const refs = [...new Set(disallowedGroups)].join("、");
+
+    issues.push(
+      `目标群 ${refs} 不在允许群聊白名单内，无法投递；请移除该跨群单元并如实告知对方`,
+    );
+  }
+
+  if (missingStickerIds.length > 0) {
+    const uniqueIds = [...new Set(missingStickerIds)]
+      .map((id) => `#${id}`)
+      .join("、");
+
+    issues.push(
+      `表情包 ${uniqueIds} 不存在、已删除或未启用（不要直接复用历史对话中的旧 stickerId），请先调用 search_stickers 查询当前可用表情包`,
+    );
+  }
+
+  return issues.length > 0 ? issues.join("；") : null;
+}
+
 export async function resolveOutputDispatches(
   rawUnits: readonly RawOutputUnit[],
   ctx: {

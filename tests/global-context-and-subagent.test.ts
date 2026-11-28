@@ -143,6 +143,26 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
     // Main Agent dispatch.
     const latestMsg = reqJson.messages.at(-1);
 
+    if (
+      latestMsg?.role === "user" &&
+      latestMsg.content?.includes("无权跨群或向他人发私信")
+    ) {
+      res.end(
+        JSON.stringify(
+          chatReply({
+            units: [
+              {
+                kind: "qq_reply",
+                text: "抱歉，仅管理员或网协管理层可以跨群或向他人发私信。",
+              },
+            ],
+          }),
+        ),
+      );
+
+      return;
+    }
+
     if (latestMsg?.role === "user") {
       mainHistories.push(reqJson.messages.slice(1, -1));
     }
@@ -237,6 +257,10 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
         JSON.stringify(
           chatReply({
             units: [
+              {
+                kind: "qq_reply",
+                text: "好啦，我去发",
+              },
               {
                 kind: "qq_reply",
                 text: "越权私信拦截测试",
@@ -426,8 +450,24 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
     senderName: "普通同学",
   });
 
-  // Non-admin cannot dispatch across chats (neither to another private chat nor to another group).
-  assert.equal(routingRes.units.length, 0);
+  // Non-admin cannot dispatch across chats: pre-dispatch validation rejects the whole batch
+  // (preventing "好啦，我去发" from leaking out) and prompts the model to reply with a refusal instead.
+  assert.equal(routingRes.units.length, 1);
+  assert.equal(
+    dispatches.some((d) =>
+      (JSON.stringify(d.body.message) ?? "").includes("好啦，我去发"),
+    ),
+    false,
+  );
+  assert.equal(
+    dispatches.some(
+      (d) =>
+        d.action === "send_private_msg_async" &&
+        d.body.user_id === 20_002 &&
+        (JSON.stringify(d.body.message) ?? "").includes("仅管理员或网协管理层"),
+    ),
+    true,
+  );
   assert.equal(
     dispatches.some(
       (d) => d.action === "send_private_msg_async" && d.body.user_id === 9999,
@@ -464,7 +504,7 @@ test("global single context, isolated chat_analyst cross-group summary, privacy 
     senderName: "管理员",
   });
 
-  assert.equal(adminRoutingRes.units.length, 2);
+  assert.equal(adminRoutingRes.units.length, 3);
   assert.equal(
     dispatches.some(
       (d) =>

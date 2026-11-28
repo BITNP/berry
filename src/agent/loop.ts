@@ -314,7 +314,7 @@ export async function runChatToolLoop<S extends TSchema>(options: {
     if (truncatedByLength) {
       correctionPrompt = `上一次输出因达到最大输出长度被截断导致 JSON 不完整（第 ${corrections}/2 次纠正）。请大幅精简回复内容（不要输出大段代码或冗长全文），只输出简短合法的纯 JSON 对象。`;
     } else if (validation.ok) {
-      correctionPrompt = `上一次输出未通过发送前校验（第 ${corrections}/2 次纠正）：${validationIssue}。请先调用必要工具（如 search_stickers）获取最新有效数据后再重新输出合法 JSON，或移除无效输出单元。`;
+      correctionPrompt = `上一次输出未通过发送前校验（第 ${corrections}/2 次纠正）：${validationIssue}。请按要求修正（必要时先调用对应工具获取最新有效数据）后重新输出合法 JSON，或移除无效输出单元。`;
     } else {
       correctionPrompt = `上一次输出未通过格式校验（第 ${corrections}/2 次纠正）：${validationIssue}。请只输出符合协议的纯 JSON 对象，不要附加额外说明或代码围栏。`;
     }
