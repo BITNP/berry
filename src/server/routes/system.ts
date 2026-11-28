@@ -51,8 +51,19 @@ const botStateBodySchema = Type.Object({
   paused: Type.Boolean({ default: false }),
 });
 
+const purgeScopeSchema = Type.Union([
+  Type.Literal("llm_traces"),
+  Type.Literal("archived_tape"),
+  Type.Literal("runtime_logs"),
+  Type.Literal("messages"),
+]);
+
 const purgeBodySchema = Type.Object({
-  olderThanDays: Type.Integer({ minimum: 1, default: 30 }),
+  olderThanDays: Type.Integer({ minimum: 1, maximum: 3650, default: 7 }),
+  scopes: Type.Array(purgeScopeSchema, {
+    minItems: 1,
+    default: ["llm_traces", "archived_tape", "runtime_logs"],
+  }),
 });
 
 export function registerSystemRoutes(router: Router, berry: BerryApp): void {
@@ -372,13 +383,22 @@ export function registerSystemRoutes(router: Router, berry: BerryApp): void {
     "/api/admin/storage/purge",
     defineEventHandler(async (event) => {
       await berry.auth.requireAdmin(event);
-      const { olderThanDays } = await parseBody(
+      const { olderThanDays, scopes } = await parseBody(
         event,
         purgeBodySchema,
-        "保留天数须为大于或等于 1 的整数",
+        "请指定有效的清理范围及大于等于 1 的保留天数",
       );
 
-      return berry.store.maintenance.purgeOldData(olderThanDays);
+      return berry.store.maintenance.purgeData({ olderThanDays, scopes });
+    }),
+  );
+
+  router.post(
+    "/api/admin/storage/compact",
+    defineEventHandler(async (event) => {
+      await berry.auth.requireAdmin(event);
+
+      return berry.store.maintenance.compactDatabase();
     }),
   );
 }

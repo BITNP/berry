@@ -18,6 +18,7 @@ export class ScheduleRunner {
   #lastJargonCheck = 0;
   #lastImpressionCheck = 0;
   #lastMemoryPurge = 0;
+  #lastStoragePurgeCheck = 0;
 
   constructor(
     services: AgentServices,
@@ -107,6 +108,14 @@ export class ScheduleRunner {
         if (purged > 0) {
           this.#logger.info("Purged expired memories", { count: purged });
         }
+      }
+
+      if (
+        settings.storage.autoPurgeEnabled &&
+        now - this.#lastStoragePurgeCheck >= 600_000
+      ) {
+        this.#lastStoragePurgeCheck = now;
+        await this.#checkStorageAutoPurge(now);
       }
     } catch (error) {
       this.#logger.warn("Scheduler tick failed", {
@@ -383,6 +392,74 @@ export class ScheduleRunner {
       await store.cursors.set(cursorKey, String(now));
       this.#wake();
     }
+  }
+
+  public async runStorageAutoPurge(now = Date.now()): Promise<boolean> {
+    const { store } = this.#services;
+    const { storage } = this.#services.getSettings();
+
+    if (!storage.autoPurgeEnabled) {
+      return false;
+    }
+
+    const cursorKey = "storage_auto_purge";
+    const saved = await store.cursors.get(cursorKey);
+    const lastRunAt = saved ? Number(saved) : 0;
+
+    if (lastRunAt > 0 && now - lastRunAt < 86_400_000) {
+      return false;
+    }
+
+    // Auto-purge ONLY operational records (never local chat messages).
+    const [llmRes, tapeRes, logRes] = [
+      await store.maintenance.purgeData({
+        olderThanDays: storage.llmTracesRetentionDays,
+        scopes: ["llm_traces"],
+        compact: false,
+      }),
+      await store.maintenance.purgeData({
+        olderThanDays: storage.archivedTapeRetentionDays,
+        scopes: ["archived_tape"],
+        compact: false,
+      }),
+      await store.maintenance.purgeData({
+        olderThanDays: storage.runtimeLogsRetentionDays,
+        scopes: ["runtime_logs"],
+        compact: false,
+      }),
+    ];
+
+    const affected =
+      llmRes.trimmedLlmUsage +
+      tapeRes.deletedTapeEntries +
+      logRes.deletedDecisions +
+      logRes.deletedJobs +
+      logRes.deletedDeliveries +
+      logRes.deletedExpiredMemories;
+
+    let freedBytes = 0;
+
+    if (affected > 0) {
+      const compacted = await store.maintenance.compactDatabase();
+
+      freedBytes = compacted.freedBytes;
+      this.#logger.info("Auto-purged operational storage records", {
+        trimmedLlmUsage: llmRes.trimmedLlmUsage,
+        deletedTapeEntries: tapeRes.deletedTapeEntries,
+        deletedDecisions: logRes.deletedDecisions,
+        deletedJobs: logRes.deletedJobs,
+        deletedDeliveries: logRes.deletedDeliveries,
+        freedBytes,
+      });
+    }
+
+    await store.cursors.set(cursorKey, String(now));
+
+    return affected > 0;
+  }
+
+  async #checkStorageAutoPurge(now: number): Promise<void> {
+    await this.runStorageAutoPurge(now);
   }
 
   async #enqueueScheduleTask(

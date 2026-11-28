@@ -31,7 +31,10 @@ import type {
   McpToolRow,
 } from "../components/settings/McpSettingsPane.vue";
 import McpSettingsPane from "../components/settings/McpSettingsPane.vue";
-import type { StorageSummary } from "../components/settings/StorageMaintenancePane.vue";
+import type {
+  StoragePolicyForm,
+  StorageSummary,
+} from "../components/settings/StorageMaintenancePane.vue";
 import StorageMaintenancePane from "../components/settings/StorageMaintenancePane.vue";
 
 type ThinkingEffort = "none" | "low" | "medium" | "high";
@@ -142,6 +145,7 @@ interface RuntimeSettingsView {
     stickerAutoApprove: boolean;
     stickerMaxCount: number;
   };
+  storage: StoragePolicyForm;
 }
 
 interface EnvSummaryView {
@@ -1378,7 +1382,11 @@ onMounted(() => {
       </NTabPane>
 
       <NTabPane name="storage" tab="存储维护">
-        <StorageMaintenancePane :storage @purged="loadSettings" />
+        <StorageMaintenancePane
+          v-model:policy="settings.storage"
+          :storage
+          @purged="loadSettings"
+        />
       </NTabPane>
     </NTabs>
   </div>

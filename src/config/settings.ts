@@ -280,6 +280,27 @@ export const runtimeSettingsSchema = Type.Object(
       },
       { default: {}, additionalProperties: false },
     ),
+    storage: Type.Object(
+      {
+        autoPurgeEnabled: Type.Boolean({ default: true }),
+        llmTracesRetentionDays: Type.Integer({
+          minimum: 1,
+          maximum: 365,
+          default: 7,
+        }),
+        archivedTapeRetentionDays: Type.Integer({
+          minimum: 1,
+          maximum: 365,
+          default: 7,
+        }),
+        runtimeLogsRetentionDays: Type.Integer({
+          minimum: 1,
+          maximum: 365,
+          default: 14,
+        }),
+      },
+      { default: {}, additionalProperties: false },
+    ),
   },
   { additionalProperties: false },
 );

@@ -108,6 +108,20 @@ export class BerryDatabase {
     return run;
   }
 
+  // Run VACUUM and WAL truncation outside any transaction while serialized against writeTx.
+  public compact(): Promise<void> {
+    const run = this.#txQueue.then(() => {
+      this.#sqlite.exec("VACUUM; PRAGMA wal_checkpoint(TRUNCATE);");
+    });
+
+    this.#txQueue = run.then(
+      () => {},
+      () => {},
+    );
+
+    return run;
+  }
+
   public async close(): Promise<void> {
     await this.#txQueue;
     await this.db.destroy();

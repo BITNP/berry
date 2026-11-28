@@ -631,10 +631,76 @@ test("MaintenanceStore.purgeOldData preserves memory-referenced messages", async
     createdAt: oldTs,
   });
 
-  const purged = await app.store.maintenance.purgeOldData(30);
+  // Seed bulky old llm_usage payload (token stats must survive, trace text must be trimmed)
+  // and old sidecar tape entry (must be deleted) while keeping recent active tape.
+  await app.store.usage.record({
+    purpose: "dialog",
+    model: "gpt-test",
+    chatKey: "group:888",
+    inputTokens: 1200,
+    cachedInputTokens: 600,
+    outputTokens: 80,
+    durationMs: 300,
+    requestPreview: "x".repeat(8000),
+    responseText: "y".repeat(4000),
+    toolCalls: [{ name: "search", arguments: "{}", result: "z".repeat(4000) }],
+  });
+  await app.store.database.db
+    .updateTable("llm_usage")
+    .set({ created_at: oldTs })
+    .execute();
 
-  assert.equal(purged.deletedMessages, 1);
-  assert.equal(purged.deletedDecisions, 1);
+  await app.store.conversations.appendSidecar(
+    "old-sidecar",
+    {
+      chatKey: "group:888",
+      kind: "chat_analyst",
+      task: "old task",
+      forked: false,
+    },
+    [{ role: "user", content: "old sidecar payload" }],
+  );
+  await app.store.database.db
+    .updateTable("tape_entries")
+    .set({ created_at: oldTs })
+    .where("tape_id", "=", "sidecar:old-sidecar")
+    .execute();
+
+  const beforeStorage = await app.store.maintenance.inspectStorage();
+
+  assert.ok(beforeStorage.tableBytes.llmUsage > 0);
+  assert.ok(beforeStorage.tables.tapeEntries >= 1);
+
+  // 1. Operational auto-purge cleans llm_traces, archived_tape, and runtime_logs,
+  //    and NEVER deletes local chat messages.
+  const autoRan = await app.scheduler.runStorageAutoPurge(Date.now());
+
+  assert.equal(autoRan, true);
+  assert.ok(await app.store.messages.findByOnebotId("group:888", "old-keep"));
+  assert.ok(await app.store.messages.findByOnebotId("group:888", "old-drop"));
+
+  // LLM usage row and token counters survive, while bulky trace previews are cleared.
+  const { items: usageRows } = await app.store.usage.listRecent({ limit: 10 });
+
+  assert.equal(usageRows.length, 1);
+  assert.equal(usageRows[0]?.inputTokens, 1200);
+  assert.equal(usageRows[0]?.requestPreview, null);
+  assert.equal(usageRows[0]?.responseText, null);
+  assert.deepEqual(usageRows[0]?.toolCalls, []);
+
+  // Old sidecar tape entries and old gate decisions were pruned by auto-purge.
+  const afterAutoStorage = await app.store.maintenance.inspectStorage();
+
+  assert.equal(afterAutoStorage.tables.gateDecisions, 0);
+  assert.equal(afterAutoStorage.tables.tapeEntries, 0);
+
+  // 2. Explicit manual cleanup of messages deletes unprotected old messages while keeping memory-referenced ones.
+  const purgedMsgs = await app.store.maintenance.purgeData({
+    olderThanDays: 30,
+    scopes: ["messages"],
+  });
+
+  assert.equal(purgedMsgs.deletedMessages, 1);
   assert.ok(await app.store.messages.findByOnebotId("group:888", "old-keep"));
   assert.equal(
     await app.store.messages.findByOnebotId("group:888", "old-drop"),

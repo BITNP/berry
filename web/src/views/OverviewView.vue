@@ -62,6 +62,7 @@ interface OverviewResponse {
     tables: {
       messages: number;
       deliveries: number;
+      llmUsage: number;
     };
   };
 }
@@ -457,14 +458,15 @@ onMounted(() => {
         @click="router.push('/settings?tab=storage')"
       >
         <div class="metric-card-top">
-          <span class="metric-label">本地存储</span>
+          <span class="metric-label">SQLite 存储</span>
           <ArrowRight class="metric-arrow" :size="13" />
         </div>
         <span class="metric-value">
           {{ formatBytes(overview.storage.dbBytes) }}
         </span>
         <span class="metric-sub">
-          消息 {{ overview.storage.tables.messages.toLocaleString() }} 条
+          消息 {{ overview.storage.tables.messages.toLocaleString() }} 条 · 调用
+          {{ overview.storage.tables.llmUsage.toLocaleString() }} 次
         </span>
       </button>
     </div>
